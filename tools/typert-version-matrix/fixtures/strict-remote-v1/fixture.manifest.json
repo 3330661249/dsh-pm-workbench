@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "1",
+  "fixture": "strict-remote-v1",
+  "files": {
+    "packages/probe/package.template.json": "ecbeb6d8375fedd7b347b3dd352e200e3811e815823a25ddb280b004dde76619",
+    "packages/probe/src/index.ts": "f68402a28307311f527e029e73e36eeab48514f22c8d548df1ca586578849bf9",
+    "packages/probe/tsconfig.json": "1b19cf7162555431c79f6a065e6cdb00013c9b2921724735239cd9b26f1b4a3e",
+    "tsconfig.host.json": "2414d8f79531bf0c8c19344533462b81e71a2e601c4ac1d132d57d526a126bc6",
+    "tsdown.config.mjs": "9ab3f5ba4eb318280472d90db9c2b63561148c3b14225659ee53610e19617b5c"
+  }
+}

@@ -558,8 +558,8 @@ argv elements, not interpolated shell text:
 | Stage | Program and argv |
 | --- | --- |
 | Registry | pinned npm CLI: `view`, `[name]@[exactVersion]`, `--json`, `--registry=https://registry.npmjs.org/`, `--cache=[caseCache]`, `--userconfig=[caseNpmrc]` |
-| Resolve lock | pinned npm CLI: `install`, `--package-lock-only`, `--ignore-scripts`, `--no-audit`, `--no-fund`, registry/cache/userconfig args |
-| Frozen install | pinned npm CLI: `ci`, `--ignore-scripts=false`, `--no-audit`, `--no-fund`, registry/cache/userconfig args |
+| Resolve lock | pinned npm CLI: `install`, `--package-lock-only`, `--ignore-scripts`, `--no-audit`, `--no-fund`, registry/cache/userconfig args; `900_000ms` timeout |
+| Frozen install | pinned npm CLI: `ci`, `--ignore-scripts=false`, `--no-audit`, `--no-fund`, registry/cache/userconfig args; `900_000ms` timeout |
 | Tree | pinned npm CLI: `ls`, `--all`, `--json` |
 | Compile | case TypeScript CLI: `-b`, `tsconfig.host.json`, `--pretty`, `false` |
 | Direct API | runner adapter child: `--workspace`, `[caseWorkspace]`, `--output`, `[directJson]` |
@@ -568,6 +568,14 @@ argv elements, not interpolated shell text:
 
 No case can supply an extra flag. Registry output is parsed in memory and only the safe
 fields in `RegistryEvidence` are persisted.
+
+Timeouts are closed runner policy rather than Matrix JSON or CLI input. `resolve-lock` and
+`install` use a bounded `900_000ms` budget because each case intentionally starts with a
+cold, isolated npm cache and npm 11 resolves tsdown's optional-peer metadata graph before
+writing the lock. Every other command stage uses `180_000ms`. A timeout or signal remains
+an infrastructure failure and makes the aggregate inconclusive; it cannot become a
+compatibility failure or pass. The runner does not shorten resolution with
+`--legacy-peer-deps`, `--force`, or dependency omission flags.
 
 The child environment is constructed from an allowlist rather than inherited wholesale.
 It excludes `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `GH_TOKEN`, API keys, Harness variables, and
