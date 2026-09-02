@@ -14,9 +14,17 @@ functionality.
 ## Current status: Gate A No-Go
 
 The current architecture requires generated, strict Typert Host/Client Remote
-artifacts. In the isolated `0.1.0-rc.6` probe, the workspace package was
-discovered but the generator emitted no Remote artifacts. The required files
-were absent, so Gate A was recorded as **NO-GO** and all downstream work stopped.
+artifacts. The initial isolated `0.1.0-rc.6` probe discovered the workspace
+package but emitted no Remote artifacts. A later hardened frozen matrix repeated
+the same synthetic probe across eight exact official cohorts from
+`0.1.0-rc.6` through `0.1.2-alpha.4`. All eight completed as
+`FAIL_COMPATIBILITY / GENERATION_EMPTY`: automatic and forced generation each
+returned zero outputs, so none produced the five required files. The selection
+decision is `NO_ELIGIBLE_CANDIDATE`; Gate A remains **NO-GO** and all downstream
+work remains stopped.
+
+The source-free canonical result set is retained in
+[`docs/matrix-results/2026-09-02-darwin-arm64/`](docs/matrix-results/2026-09-02-darwin-arm64/).
 
 The repository currently contains a private static package skeleton and
 technical evidence only. It has **not** established that the package:
@@ -33,16 +41,21 @@ No handwritten descriptor, copied generated file, private HTTP fallback,
 dynamic Cordis fallback, protocol vendoring, or generator patch is accepted as
 proof that Gate A passed.
 
-## Next approved investigation
+## Completed bounded investigation and next decision
 
-The next bounded task is an isolated official-version compatibility matrix. It
-must reuse one fixed synthetic Remote probe for every tested version, preserve
-the raw exit status and artifact assertions, and subject any apparent success
-to adversarial review before the architecture decision changes.
+The approved official-version matrix is complete. It reused one fixed synthetic
+Remote probe, exact reviewed locks, a clean committed runner, and source-free
+canonical evidence for every tested version. Independent adversarial review
+found no remaining P0 or P1 issue in the evidence path; its residual P2 findings
+are recorded alongside the results.
 
-Version-matrix work does not authorize UI development, persistence, a real
-model, real interviews, installation into the user's active Harness profile, or
-public distribution.
+No tested candidate is eligible for an isolated mount probe under the current
+strict generated-Remote architecture. The next step is therefore a human
+architecture decision: stop this approach, seek an upstream generator change,
+or explicitly approve and gate a different extension boundary. No alternative
+has been selected or authorized here. Matrix completion does not authorize UI
+development, persistence, a real model, real interviews, installation into the
+user's active Harness profile, or public distribution.
 
 ## Data boundary
 
@@ -95,4 +108,3 @@ visibility is an access setting; it does not grant a reuse license.
 Third-party dependencies and reference projects remain subject to their own
 licenses. Their presence in documentation does not mean their source code was
 copied or approved for redistribution.
-

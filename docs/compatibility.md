@@ -50,11 +50,35 @@ npm-installed `@deepseek-ai/dsh-typert-protocol@0.1.0-rc.6` package. This is a
 narrow result for the currently approved third-party-plugin architecture, not
 a claim that the PM Workbench product is impossible.
 
-## Compatibility matrix
+## Official Typert version matrix
+
+The later hardened frozen matrix used the same five-file synthetic Remote
+fixture for eight exact official cohorts. It ran from clean commit
+`d1cb6c6cb86374748001282fd7a6bbd8675f5ad0` on Darwin arm64 with Node
+`24.14.0` and tool-local npm `11.9.0`. Every reviewed lock and installed graph
+matched the eight-case manifest before compatibility assertions ran.
 
 | Harness version | Static bundle/patch | Host load | Client load | strict Remote | persistence/restart | install/remove | browser E2E | status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `0.1.0-rc.6` | Pass | Not run | Not run | **Fail: generator emitted no artifacts** | Not run | Not run | Not run | **Gate A No-Go; downstream probes stopped** |
+| `0.1.0-rc.6` | Pass for the original rc.6 static check | Not run | Not run | **Fail: automatic 0, forced 0, artifacts 0/5** | Not run | Not run | Not run | control failed |
+| `0.1.0-rc.7` | Not run | Not run | Not run | **Fail: automatic 0, forced 0, artifacts 0/5** | Not run | Not run | Not run | candidate failed |
+| `0.1.0-rc.8` | Not run | Not run | Not run | **Fail: automatic 0, forced 0, artifacts 0/5** | Not run | Not run | Not run | candidate failed |
+| `0.1.1-rc.1` | Not run | Not run | Not run | **Fail: automatic 0, forced 0, artifacts 0/5** | Not run | Not run | Not run | candidate failed |
+| `0.1.1-rc.2` | Not run | Not run | Not run | **Fail: automatic 0, forced 0, artifacts 0/5** | Not run | Not run | Not run | candidate failed |
+| `0.1.2-alpha.2` | Not run | Not run | Not run | **Fail: automatic 0, forced 0, artifacts 0/5** | Not run | Not run | Not run | experimental only; failed |
+| `0.1.2-alpha.3` | Not run | Not run | Not run | **Fail: automatic 0, forced 0, artifacts 0/5** | Not run | Not run | Not run | experimental only; failed |
+| `0.1.2-alpha.4` | Not run | Not run | Not run | **Fail: automatic 0, forced 0, artifacts 0/5** | Not run | Not run | Not run | experimental only; failed |
+
+The five-case selection report concluded `NO_ELIGIBLE_CANDIDATE` with no
+incomplete case. The three alpha cases concluded `EXPLORATORY_ONLY`; they were
+ineligible for selection by policy and also failed the same B03 generation
+assertion. The canonical JSON, Markdown, JUnit and exact hashes are in
+[`matrix-results/2026-09-02-darwin-arm64/`](matrix-results/2026-09-02-darwin-arm64/).
+
+This is not a general compatibility claim. No tested cohort was loaded into
+Harness, mounted in a profile, exercised in the browser, or tested with storage.
+The result only rejects the currently specified strict generated-Remote path for
+this fixed fixture. Gate A remains **NO-GO**.
 
 No handwritten descriptor, copied generated file, HTTP fallback, dynamic
 Cordis fallback, protocol vendoring, or generator patch was used. Any such

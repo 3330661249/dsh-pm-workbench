@@ -12,7 +12,7 @@ and synthetic inputs. A failed required sub-probe stops every downstream item.
 | Technical-probe check | State | Fresh evidence | Result |
 | --- | --- | --- | --- |
 | Static Host/Client bundle contract and additive patch syntax | Passed as a static check only | `cd plugins/dsh-pm-workbench && npm run typecheck && npm test && npm run build && npm run verify:package && npm run pack:dry`; pristine structured copy with offline `npm ci`; isolated `dsh --profile web --patch .../cordis.patch.yml --dump-config` | Typecheck passed; 6/6 tests passed locally and in the pristine copy; build/package checks passed; 9-file dry-run pack; patch parsed and appended one `dsh-pm-workbench` row. This is not a profile load result. |
-| Generated strict Typert Host/Client Remote descriptors | **Failed** | `cd .tmp/dsh-pm-workbench/typert-probe-a && npm run build:host`; `npm run test:generated`; direct `WorkspaceTypertGenerator.generate()`; independent normalized-install review | Ordinary build exited 0, but all five required Typert artifacts were absent; generated-artifact test exited 1; automatic and forced generation both returned `[]`. The normalized npm workspace copy reproduced the same failure. |
+| Generated strict Typert Host/Client Remote descriptors | **Failed** | Original rc.6 isolated probe; then frozen selection and experimental matrices from clean commit `d1cb6c6` with one hashed synthetic fixture and eight reviewed exact dependency graphs; canonical results in [`matrix-results/2026-09-02-darwin-arm64/`](matrix-results/2026-09-02-darwin-arm64/) | The original rc.6 ordinary bundle existed while all five required Typert artifacts were absent. The hardened matrix reproduced this across rc.6, rc.7, rc.8, 1.1-rc.1, 1.1-rc.2, and alpha.2-alpha.4: each exact package was discovered once, while automatic and forced generation both returned 0 and artifacts remained 0/5. Selection: `NO_ELIGIBLE_CANDIDATE`; experimental: `EXPLORATORY_ONLY`. |
 | Host and Client package load/mount/health | Not run — stopped | Prohibited after the strict Remote failure | No load, mount, `$mount`, transport, or health result was tested. |
 | Additive `sidebar.footer.action` opens `shell.overlay`; no root replacement | Not run — stopped | Prohibited after the strict Remote failure | No UI implementation or browser interaction was started. |
 | Strict JSON Remote creates and reads one synthetic Project | Not run — stopped | Prohibited after the strict Remote failure | No project API or data was implemented. |
@@ -27,7 +27,7 @@ Strict Remote evidence:
 
 | Gate decision field | Value |
 | --- | --- |
-| Decision | **NO-GO.** The approved architecture requires generated strict Host/Client Remote artifacts. rc.6 produced no artifacts for a normal npm-installed third-party protocol import. Stop before UI, storage, Mock Run, profile install, or E2E. |
+| Decision | **NO-GO.** The approved architecture requires generated strict Host/Client Remote artifacts. All eight tested exact official cohorts produced no generator output for the fixed normal npm-workspace fixture. No selection candidate is eligible for the next isolated mount probe. Stop before UI, storage, Mock Run, profile install, or E2E until a human approves a new architecture and a fresh Gate A. |
 
 ## Gate B — allow the text-only personal Alpha
 

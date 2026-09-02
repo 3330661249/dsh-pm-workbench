@@ -114,11 +114,20 @@ review the committed Darwin locks and preserved installed-graph hashes. Their re
 predate the hardened provenance and report schema, have been isolated from canonical dated
 results, and are not admissible evidence for a candidate decision.
 
-The final hardened frozen selection and experimental runs against those reviewed locks are
-still pending. Until their canonical JSON passes `verify-report`, its derived Markdown and
-JUnit match byte-for-byte, and the result receives manual review, this repository has no
-eligible candidate conclusion or version recommendation. Raw workspaces, caches, logs,
-npmrc files, and direct-generator source are never publication artifacts.
+The final hardened frozen selection and experimental runs against those reviewed locks
+completed on 2026-09-02 from clean source commit
+`d1cb6c6cb86374748001282fd7a6bbd8675f5ad0`. All eight cases reached the
+direct generator conclusively and returned automatic count `0`, forced count
+`0`, and no required artifacts. The selection decision is
+`NO_ELIGIBLE_CANDIDATE`; the alpha decision is `EXPLORATORY_ONLY`. There is no
+version recommendation and Gate A remains No-Go.
+
+The reviewed source-free result set, exact run identities, output hashes, and
+decision boundary are retained in
+[`../../docs/matrix-results/2026-09-02-darwin-arm64/`](../../docs/matrix-results/2026-09-02-darwin-arm64/).
+Both JSON reports passed `verify-report` and canonical round-trip comparison;
+their derived Markdown and JUnit matched byte-for-byte. Raw workspaces, caches,
+logs, npmrc files, and direct-generator source are not publication artifacts.
 
 `verify-report` recomputes the aggregate decision and validates the closed PASS evidence
 graph, including lock, installed graph, registry, stage, direct-generator summary, and
