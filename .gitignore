@@ -1,0 +1,56 @@
+# Dependencies and package-manager state
+node_modules/
+.npm/
+.npmrc
+
+# Local caches, probes, profiles, and runtime state
+.tmp/
+.runtime/
+.dsh/
+profiles/local/
+artifacts/
+
+# Generated build and test output
+packages/*/lib/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.tgz
+*.log
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+
+# Real interview and user data must never enter Git history
+data/
+user-data/
+uploads/
+interviews/
+recordings/
+transcripts/
+provider-responses/
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.flac
+*.mp4
+*.mov
+*.mkv
+*.webm
+
+# IDE and operating-system files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
