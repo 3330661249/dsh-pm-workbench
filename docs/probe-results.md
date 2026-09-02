@@ -1,8 +1,17 @@
 # Probe results
 
+This is the repository's canonical phase and gate-status ledger. Its run-ID
+blocks are append-only and immutable; a promoter may regenerate only the
+designated summary rows from the latest accepted block after it revalidates the
+frozen source/run closure. A summary row cannot delete, rewrite, or supersede an
+earlier run block. Package-local documentation is an immutable build-time
+statement and cannot supersede this ledger; every later runtime observation
+must identify the exact source and tgz hashes it applies to.
+
 This record preserves the historical, then-approved generated-Typert Gate A
-result and separately tracks the owner-selected Connection RPC Gate A′ design,
-which remains under review and has not run. `Not run` is not evidence of
+result and separately tracks the owner-approved Connection RPC architecture and
+its implementation plan set, which is pending owner review. Gate A′ has not run.
+`Not run` is not evidence of
 compatibility or authorization. Gates B–E retain their product-scope release
 meanings.
 
@@ -33,10 +42,12 @@ Strict Remote evidence:
 
 ## Architecture decision after the historical Gate A
 
-On 2026-09-02, the owner selected public Connection RPC plus a shared strict Zod
+On 2026-09-02, the owner approved public Connection RPC plus a shared strict Zod
 endpoint registry and `WorkbenchTransport` abstraction for the next design. The
 decision does not revise the historical result above. It creates a different,
-still-unproved Gate A′.
+still-unproved Gate A′. The implementation plan set exists at
+[`superpowers/plans/2026-09-02-dsh-pm-workbench-v0.1-rollout.md`](superpowers/plans/2026-09-02-dsh-pm-workbench-v0.1-rollout.md),
+remains pending owner review, and authorizes no code or runtime action.
 
 ## Gate A′ — isolated Connection RPC integration probe
 

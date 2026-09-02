@@ -5,7 +5,9 @@
 > plan to implement the current product architecture. The owner-selected
 > Connection RPC design is
 > [`../specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md`](../specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md);
-> its implementation plan has not been written or approved.
+> its gated implementation plan set now exists at
+> [`./2026-09-02-dsh-pm-workbench-v0.1-rollout.md`](./2026-09-02-dsh-pm-workbench-v0.1-rollout.md)
+> and remains pending owner review. Neither document authorizes implementation.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

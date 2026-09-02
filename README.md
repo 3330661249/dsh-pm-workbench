@@ -11,7 +11,15 @@ extension.
 The long-term workflow is a product direction, not a statement of implemented
 functionality.
 
-## Current status: historical Typert No-Go; Gate A′ not run
+## Documentation-baseline status: historical Typert No-Go; Gate A′ not run
+
+The canonical implementation and gate-status ledger, with append-only run blocks, is
+[`docs/probe-results.md`](docs/probe-results.md). Future phase and gate evidence
+commits update that ledger and bind observations to exact source/tgz hashes;
+this README provides orientation and must not be used to infer a newer runtime
+state. README/compatibility files packed inside any tgz describe only that
+artifact's build-time state, while the external ledger is authoritative for
+later observed runs of the same hash.
 
 The historical architecture required generated, strict Typert Host/Client Remote
 artifacts. The initial isolated `0.1.0-rc.6` probe discovered the workspace
@@ -23,19 +31,23 @@ returned zero outputs, so none produced the five required files. The selection
 decision is `NO_ELIGIBLE_CANDIDATE`; that generated-Typert Gate A remains a
 historical **NO-GO**.
 
-On 2026-09-02, the owner selected a revised architecture for specification:
+On 2026-09-02, the owner approved a revised architecture specification:
 public Connection RPC, a shared strict Zod endpoint registry, Host-owned state,
 and a `WorkbenchTransport` abstraction that preserves a later Typert migration
-path. The canonical design draft is
+path. The approved canonical specification is
 [`docs/superpowers/specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md`](docs/superpowers/specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md).
-Its replacement integration gate, Gate A′, has **not run**. Selecting the design
-does not establish that Connection RPC works from this third-party tarball.
+Its gated implementation plan set is pending owner review at
+[`docs/superpowers/plans/2026-09-02-dsh-pm-workbench-v0.1-rollout.md`](docs/superpowers/plans/2026-09-02-dsh-pm-workbench-v0.1-rollout.md).
+No implementation phase is authorized. Gate A′ has **not run**. Approving the
+architecture does not establish that Connection RPC works from this third-party
+tarball.
 
 The source-free canonical result set is retained in
 [`docs/matrix-results/2026-09-02-darwin-arm64/`](docs/matrix-results/2026-09-02-darwin-arm64/).
 
-The repository currently contains a private static package skeleton and
-technical evidence only. It has **not** established that the package:
+At this reviewed documentation baseline, the repository contains a private
+static package skeleton and technical evidence only. The canonical ledger has
+**not** established that the package:
 
 - can be installed into DeepSeek Harness;
 - can load or mount in a Harness profile;
@@ -59,11 +71,12 @@ found no remaining P0 or P1 issue in the evidence path; its residual P2 findings
 are recorded alongside the results.
 
 No tested candidate is eligible for an isolated mount probe under the old
-strict generated-Remote architecture. The owner has selected Connection RPC as
-the next boundary to specify, not as a proved compatibility result. The next
-technical step, after design and implementation-plan review, is a new bounded
-Gate A′ using only `health`, a synthetic persisted counter, an additive launcher
-and overlay, and a real tarball in an isolated profile. This design decision
+strict generated-Remote architecture. The owner has approved Connection RPC as
+the next architecture boundary, not as a proved compatibility result. The next
+eligible technical step, only after implementation-plan review and a separate
+phase authorization, is the F0 shared foundation followed by a bounded Gate A′
+using only `health`, a synthetic persisted counter, an additive launcher and
+overlay, and a real tarball in an isolated profile. This design decision
 does not authorize full UI development, a real model, real interviews,
 installation into the user's active Harness profile, merge, or public
 distribution.

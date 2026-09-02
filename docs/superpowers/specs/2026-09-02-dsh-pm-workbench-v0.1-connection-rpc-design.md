@@ -2,7 +2,7 @@
 
 - **日期：** 2026-09-02
 - **设计选择：** 已由 owner 批准采用方案 A：Connection RPC、双端严格 schema、`WorkbenchTransport` 迁移缝。
-- **文档状态：** 待 owner 审阅；本文件不是完整功能开发、安装、合并或发布授权。
+- **文档状态：** 架构规格已于 2026-09-02 获 owner 批准；实施计划待 owner 审阅。批准本规格不构成功能开发、依赖安装、Harness 运行、合并或发布授权。
 - **目标宿主：** 本机 DeepSeek Harness `0.1.0-rc.6` Developer Preview。
 - **产品形态：** 一个可独立安装的 Bundle，内部为模块化单体。
 - **数据边界：** Gate D 之前只允许合成、无身份信息的 TXT / Markdown fixture。
@@ -78,7 +78,31 @@ AI 产品经理完成访谈后，材料、观察、需求候选、优先级和 P
 | D | Gate D：Real Data | 可在明确授权且符合已验收边界的范围内处理真实材料 | 通用隐私合规、企业部署或安全擦除 |
 | E | Gate E：Public Alpha | 可按明确批准的许可证、仓库和发布范围公开 Alpha | DeepSeek 官方、生产就绪或一般安全保证 |
 
-H0、P0 与 P1 可以分别验证；H1 必须同时消费已通过的 H0、P0 与 P1 结果。M、D、E 各自需要新的授权与证据，并且不能跳级。
+H0、P0 与 P1 可以分别验证；H1 必须同时消费已通过的 P0/P1 结果与 **H1-eligible
+accepted H0 evidence**。H0 的 runtime PASS 只表示冻结源码对应的 Gate A′ 四文件
+run closure 中 A01–A22 全部通过；它本身不是可供 H1 导入的 accepted evidence。
+只有该 closure 之后依次完成第 10.1 节规定的人工脱敏决定、独立授权 sealed handoff
+export、确定性 promotion、evidence-only commit，并由 owner 接受该完整 commit SHA，H0
+才成为 H1-eligible。M、D、E 各自需要新的授权与证据，并且不能跳级。
+
+F0、P0、P1 与 Gate B 的运行结果都不是自动获准的证据。每个阶段必须先在负责 wrapper
+验证 canonical action decision 后封存一个与冻结 source 绑定的完整 run closure。promoter
+先在共享 pointer lock 下进行无候选输出 preview，两次内存渲染一致后只输出固定 path/SHA-256
+与 `candidateSetSha256`。F0 的 evidence decision 必须绑定该候选；P0 与 P1 的人工
+review/sanitization decision 和后续 evidence-write/commit decision 都必须绑定相同候选字节。
+Gate B 另有一个 post-preview、pre-output 的 candidate-materialization 决定：renderer 必须在
+任何 candidate 目录或文件创建前验证该决定，并把 exact closure、render policy、set hash、
+两份候选 bytes 与固定三文件 schema 固化为不可变 candidate receipt。Gate B 后续人工 review
+与 evidence-write/commit decision 必须同时绑定 materialization decision/authorization receipt、
+candidate receipt 及相同候选字节。
+Gate A′ 的候选只能在 sealed handoff 存在后生成，因此其 evidence decision 绑定候选，较早的
+sanitization decision 仍直接绑定 pre-export 五字段 closure。write mode 重渲染候选并生成不可变
+promotion receipt；同一 source/run/final/report/candidate/receipt 身份必须依次通过无写入
+`--check`、staged index blob hash 与 committed blob hash 核对。F0 只追加 canonical ledger
+一份文档；P0、P1、Gate A′ 与 Gate B 只生成各自固定 Gate 报告与 ledger 两份文档。
+evidence commit 必须只有 frozen source 一个 parent，raw NUL diff 只含对应 regular-file
+allowlist，且 commit blobs 与 receipt 完全一致；只有可重算 PASS 且 commit 获 owner 接受时，
+才能成为下一阶段输入。
 
 ## 4. 总体架构
 
@@ -907,8 +931,11 @@ Host 释放顺序固定为：
 ```
 
 Client 先撤销 slot，再 abort 当前读取与轮询，移除 focus、keydown、resize 等
-监听并清除临时内存状态。disable/enable、unload/reload 和 remove/restart 都不能
-产生重复按钮、重复 channel、旧监听或 Domain close 后的异步写入。
+监听并清除临时内存状态。组件 contract tests 必须直接驱动 Cordis disposer/remount hooks，
+覆盖 disable/enable 与 unload/reload 等效生命周期；真实 Gate 只声明 exact rc.6 public surface
+能够驱动并已冻结的动作。本版真实 profile 图使用 remove/re-add 加 restart/remount，不能把它
+重命名成“插件保持安装但 disabled/enabled”。两类证据都不得产生重复按钮、重复 channel、
+旧监听或 Domain close 后的异步写入。
 
 有先后依赖的 Host 资源必须由一个 lifecycle coordinator 或单一 async disposer
 按上述顺序释放，不能只因为多个 effect 属于同一个 Cordis fiber 就推断清理顺序。
@@ -917,9 +944,11 @@ Gate A′ 必须观察 route 注销、handler drain 和 Domain close 的真实�
 对 `counter.increment`，Host 必须在一次原子写入中完成 version 检查、幂等记录
 和 counter 更新。Host 在入队前检查合并后的 signal；获得项目串行锁后、查询
 receipt/CAS/持久化之前必须再次检查；H1 获得全局 catalog commit coordinator
-后、开始原子 commit 前再检查一次。任一 pre-commit 检查发现 abort 时，不执行
-CAS、不写 snapshot 或 receipt，并返回安全的 `cancelled`。单记录 CAS commit 一旦
-开始就完整完成并写入 command receipt，不能在中途回滚成半条记录。若 signal
+后、写 fixed pending intent 前再检查一次。任一 pre-intent 检查发现 abort 时，不执行
+CAS、不写 intent、snapshot 或 receipt，并返回安全的 `cancelled`。Gate A′ 单记录
+CAS commit 一旦开始就完整完成并写入 command receipt；H1 intent 一旦写入则必须
+完成或由 recovery 收敛到完整旧/新版，并按第 5.8 节同步清理后才返回 accepted，不能
+在中途暴露半条记录。若 signal
 在入队前或排队等待时中止，状态不能改变；若 commit 已开始或已完成但响应丢失，Client 必须显示
 “结果未知”，并以同一 `commandId` 查询 receipt 或权威 snapshot，不能换一个
 commandId 盲目重试。测试需覆盖这两个时序，不能把“请求被取消”直接等同于
@@ -948,6 +977,9 @@ accepted receipt 只保存紧凑 `ProjectCommandOutput`，不保存 `ProjectOver
 receipt”：
 
 - schema / api version 无法形成合法命令，或 `commandId` 无法解析；
+- `source.importText` 规范化后的内容 hash 不在 owner 已接受的固定合成 fixture
+  revision 集合中；该检查必须发生在创建/修改任何 project、source、receipt 或
+  version 之前，并固定返回不回显内容的 `invalid-input`；
 - 非 create 命令的目标 project 不存在，返回 `not-found`；
 - `project.create` 因 project 总数已满而返回 `limit-exceeded`；
 - projected receipt-ledger、project、profile 或事务临时空间 quota 已满而返回
@@ -1039,6 +1071,11 @@ fail closed 为固定、脱敏的 outer `internal`，且没有 side effect。其
 `limit-exceeded` 或 `source-too-large`，不得截断、抽样后假装完整，或创建半个
 revision。`health` 返回实际上限，Client 不能硬编码比 Host 更宽松的值。
 
+Client 的“最多 8 个在途”是可取消的本地队列，不是对第 9 个请求返回业务拒绝：
+第 9 个请求在本地等待可用名额，等待期间 abort 返回 transport `cancelled`，且
+不得调用 Host。只有绕过 Client 直接制造第 17 个 Host 在途请求时，才由 Host
+在 service 前返回上述固定 outer `internal`。
+
 每个已有 project 的 mutation 先进入该 project 的串行队列，再在最终 commit
 点进入一个短时全局 catalog commit coordinator；`project.create` 直接进入该
 coordinator。锁顺序只能是 project → catalog，任何代码不得反向获取。这样不同
@@ -1077,20 +1114,50 @@ read-after-write closure 是领域 invariant；测试必须证明每个 accepted
 entity 和 PRD 都能逐页/逐块完整读取并复算 hash。
 
 持久化 quota 以 canonical persisted encoding 计量，覆盖当前 head、所有保留的
-immutable revisions、catalog、cursor key 和 receipts；不能只统计 wire view。
-Host 在 catalog commit coordinator 内，先计算新 project、receipt ledger 与整个
-profile 的 projected bytes，再写任何 staging record。任一 count/byte quota 超限
-都返回 `limit-exceeded`，不写新 receipt、snapshot 或 version；只要使用量未改变，
-相同请求保持同一拒绝。该 quota preflight 属于第 5.6 节“不创建 receipt”的前置
-拒绝，因为系统没有安全空间再保存拒绝 outcome。
+immutable revisions、catalog、cursor key、receipts、所有 active/inactive staging
+generation、固定 prepared intent、待回收 superseded record 与其他插件自有物理记录；
+不能只统计逻辑 head 或 wire view。首版只允许一个已知 journal key
+`journals/pending-v1`，因为窄 public driver 不依赖 table enumeration。任一 transaction
+必须先在内存中分配所有 generation ID，并构造 `PendingIntentV1`：它绑定 transaction、
+旧 root identity（首次初始化为 `NO_ROOT_V1`）、完整 target root/hash、每个未来 staging
+ref/hash、每个 superseded ref、projected physical bytes 与 prepared 状态。root/catalog
+可达记录与该 fixed intent 列出的记录之并集就是可发现、可计量、可清理的物理 inventory；
+不得让随机 staging key 只存在于可能丢失的进程内存。
 
-adapter 必须先完整写入并校验 staging/journal，再以单一 commit marker/公开原子
-primitive 切换可见版本，最后回收旧 staging。临时写入也受表中 72 MiB 上限；
-无法取得所需临时空间、Domain quota 或磁盘写入失败时，旧 committed state 必须
-仍可读，新 snapshot/receipt/version 不可见，并返回脱敏 outer `internal`。如果
-commit marker 是否生效无法确定，Client 按“结果未知”处理，重启 recovery 必须
-确定选择完整旧版或完整新版，再用同一 command 对账；绝不能拼接两版。不能证明
-这些故障语义的 storage adapter 不得通过 Gate B。
+Host 在 catalog commit coordinator 内，先完成业务校验、read-after-write closure，
+再计算包含 pending intent、全部 staging、superseded 与整个 profile 的 projected bytes；
+任一 count/byte quota 超限都返回 `limit-exceeded`，且不写 intent、receipt、snapshot
+或 version。该 quota preflight 属于第 5.6 节“不创建 receipt”的前置拒绝，因为系统
+没有安全空间再保存拒绝 outcome。
+
+adapter 的第一个物理写必须是 fixed pending intent，并须 reread/hash 验证；在它成功
+之前禁止写任何 project/receipt/catalog staging。随后只可写入 intent 已列出的 staging，
+完整 reread 验证后，以单一公开、版本锁定且有明确 crash-atomic 契约的 root replacement
+切换可见版本，最后**同步**回收 superseded 与 intent、复核物理计量，成功后才向 Client
+返回 accepted。临时写入也受表中 72 MiB 上限；无法取得所需临时空间、Domain quota
+或磁盘写入失败时，旧 committed state 必须仍可读，新 snapshot/receipt/version 不可见，
+并返回脱敏 outer `internal`。如果 commit marker 是否生效无法确定，或 root 已切换但
+cleanup/recount 失败，先进入 `recovery-required`，再返回 outer `internal` 与“结果未知”；
+不得先返回 accepted 后后台清理。重启 recovery 必须以 root 的 committedTransactionId
+及 fixed intent 的 old/target identity 确定完整旧版或完整新版，再用同一 command 对账；
+绝不能拼接两版。
+
+首次初始化也使用同一 fixed intent：在无 root/no intent 状态下先在内存中生成唯一
+cursor key、空 catalog 与 target root，完成 quota 后写/reread initialization intent，
+再 stage/reread catalog、原子 replace root、同步 cleanup。无 root + valid init intent
+在 reopen 时只能完成该 target 或清除 intent 明确列出的不完整 staging 后重试；无 root
++ malformed/mismatched intent、无法验证或无法清理其所列记录时必须 fail closed，禁止
+静默 reset 或另建 signing key。实现与测试还必须证明所有 generation write 的唯一入口
+都要求 ref 已在 fixed intent 中，因而自身不会产生无法发现的随机 key；没有 public
+enumeration 能力时不得声称可发现外部制造的未知记录。并发 double-open 在同一 Host
+进程内串行化；多 Host
+进程共享同一 profile 仍不支持。
+
+root 已切换后若 superseded record 或 intent cleanup 失败，repository 允许读取已提交
+完整状态，但拒绝所有新 mutation，且拒绝本身不得再写入。只有下一次 `open()` 完成并
+复核全部 cleanup 后才能恢复写入；连续 cleanup 失败必须持续只读，不能继续制造 orphan
+绕过 profile quota。不能证明以上 journal、初始化、response ordering 与故障语义的
+storage adapter 不得通过 Gate B。
 
 故障测试不能替换 `HarnessProjectRepository`。生产 repository 必须把最底层
 storageDomain 原语收敛为窄 `StorageDomainDriver`（read/write/remove/commit 所需
@@ -1460,10 +1527,20 @@ per-project command receipts
 
 一次 accepted command 对 project snapshot、receipt，以及受影响的 catalog
 version/summary 必须具有单一原子可见点；crash recovery 后只能看到 commit 前或
-commit 后，不能看到混合状态。物理实现只能使用在实施阶段核实过的公开
-storageDomain 能力：如果没有可证明的原子 transaction，可采用单 writer 的
-versioned root + atomic replacement 或带明确 recovery test 的 journal；不能假设
-多个普通 key 写入天然原子。若目标 rc.6 无法满足这一点，Gate B 为 No-Go。
+commit 后，不能看到混合状态。H1 实现前必须把精确 resolved rc.6 storage package
+的版本、integrity、公开 declaration/implementation entry hash 和权威公开契约冻结为
+可复算证据，并由 contract test 证明一个 awaited `Domain.global.set` 对单一 root key
+具有 crash-atomic replacement 语义。类型签名、方法名、memory driver 或一次正常
+reread 都不是这项保证。无法从版本锁定的公开材料证明时，H1 在 repository 实现前
+No-Go，不得靠 journal 掩盖一个不确定的 commit marker。
+
+在上述契约成立后，物理实现采用 single-writer versioned root + fixed discoverable
+pending intent。intent 必须先于任何 staging 写入，并列全 transaction/generation refs、
+hash、superseded refs、target root 与 projected physical quota；root 的
+`committedTransactionId` 决定恢复旧版还是新版。Gate B 还要通过已安装 Product 的
+production storage path，在安全 begin/returned 事件周围对隔离 Harness 做 bounded
+hard-kill/restart，观测每次只有 old/new checksum。该运行观察支持但不能替代权威
+原子契约。不能证明任一层时 Gate B 为 No-Go。
 
 读取时先验证根 schema，再验证每个 aggregate、receipt、catalog summary 与
 hash/ref 一致性；任一损坏都 fail closed，不“修好后继续”或丢弃未知片段。第一版
@@ -1521,15 +1598,112 @@ stable error code
 - 使用项目内隔离 `DSH_HOME`；
 - 使用非 3080 端口，默认 `3186`；
 - Web Server 只绑定 loopback；`trustedHosts` 为空，不使用 LAN、`0.0.0.0`、反向代理或隧道；
-- 从真实 tgz 安装，不能用源码 link 冒充安装；
-- 不修改当前活动 profile、3080 服务、涟漪包、真实 Workspace 或浏览器数据；
+- 从真实 tgz 安装，不能用源码 link 冒充安装；`dsh` CLI 也必须先由 owner 选择为
+  外部输入，封存 executable entry、完整 package/dependency tree、版本与 hash，禁止
+  PATH/global/npx fallback；
+- 不修改当前活动 profile、3080 服务、涟漪包、真实 Workspace 或浏览器数据；A17
+  只能安装一份 owner 接受、hash 封存的独立涟漪 tgz 到本次隔离 profile，并用固定
+  argv 完成 enable/disable（若 public CLI 支持）或 remove/re-add 与最终 cleanup；
 - 不调用模型、网络 provider、Subagent、文件读取工具或真实数据；
+- H0 worktree 的 accepted-lock hydration 与固定 rc.6/Playwright/jsdom 依赖安装是两个独立
+  action scope，各自必须在任何动作输出前由 F0 repository wrapper 校验 canonical decision；
+  hydration action 必须绑定一个封闭的 offline-first、immutable classified-miss、最多一次固定
+  public-registry retry 状态机，而不是只绑定第一条 argv；第二阶段还必须用另一个绑定该 miss
+  receipt 与 retry argv 的 network decision。依赖安装的
+  固定 public-registry 下载也需要与其 action decision 不同的 network decision。四个 ID
+  不得跨 scope 替换，不得传给 npm child；path-free receipts 与 pre/post source/lock/manifest
+  hash 必须进入 H0 source evidence；
+- Gate A′ Chromium/bootstrap 网络是运行前的独立授权步骤。负责 wrapper 必须由已接受的
+  Node executable 直接启动，在分配动作输出前验证 canonical bootstrap decision；不得先经
+  外层 npm。它只消费一份 owner 已审阅、按 bytes hash 固定的 policy，该 policy 绑定 exact
+  archive URL、Playwright/Chromium、封闭的官方 HTTPS initial/redirect origin allowlist、
+  redirect ceiling、expected byte length/SHA-256、archive format/root 与 executable relative
+  path。仓库自有 downloader 禁用自动 redirect，每个 initial/redirect URL 在读取 body 前核对；
+  archive SHA/length 通过后交叉核对每个 ZIP central-directory 与 local-header 的 filename、
+  flags、compression、CRC、sizes、offset 与非重叠 data interval，拒绝 absolute/escaping/
+  backslash/NUL/empty/duplicate/case-or-Unicode-colliding path、encrypted/data-descriptor/ZIP64/
+  multi-disk/sparse/truncated/overlapping/ambiguous/link/special/unsupported-compression/
+  unexplained-trailing-data entry、extra root 与 size/count/ratio overflow；再由固定
+  downloader 必须让同一个 exclusive no-follow archive file descriptor 贯穿 stream、fsync、
+  length/hash、ZIP preflight 与 extraction，并记录/复核 device/inode identity；materializer 从该
+  descriptor 解压每个受支持 entry 以核对 CRC、size 与 content SHA-256，随后 unlink 临时文件名，
+  把保留 descriptor 映射到 child fd 3，只用经合成 capability test 绑定身份的
+  `/usr/bin/ditto -x -k /dev/fd/3 …` 离线解包到临时树。post-walk 的 path/type/mode/size 和每个
+  regular-file content hash 都必须与预检 inventory 一致后才可原子发布。下载
+  前清除 inherited `PLAYWRIGHT_*` host、proxy、custom CA、credential、npm
+  config 与 `NODE_OPTIONS`；policy 不得由默认值或已发现 host 扩大。stock Playwright downloader、
+  body-first/事后审计、partial tree 或未哈希 interception seam 都不能满足该边界；
 - 探针代码只实现 health、counter、入口和小 overlay。
 
-Gate 报告必须从运行环境独立记录真实 `dsh --version`、profile 实际解析的
+Gate 报告必须通过已封存 CLI entry 的固定 argv 独立记录真实 `dsh --version`（不是
+PATH 查找或裸全局命令）、profile 实际解析的
 Harness 与 `@deepseek-ai/dsh-client-connection` 版本/export、Node、npm、OS、
 architecture、source commit、lock hash 和 tgz SHA-256。`health.harnessTarget`
 只是插件的编译目标常量，不能替代这些环境证据。
+
+Gate A′ 从运行到 H1 输入的顺序固定为下面这个无环 DAG；后一步只能引用已经存在的
+前一步，不得把未来 document、commit 或 hash 反向写进 handoff manifest：
+
+```text
+frozen H0 source
+→ Gate A′ four-file closure (result.json, report.md, junit.xml, run.final.json)
+→ human sanitization decision bound directly to sourceCommit + runId +
+  runFinalSha256 + reportSha256 + sanitizationOutcome
+→ separately authorized sealed handoff export
+→ promoter verifies that exact handoff manifest and writes the identical
+  handoffManifestSha256 into the fixed Gate A′ report and canonical ledger
+→ evidence-only commit
+→ H1 reads that hash independently from both fixed blobs of the exact accepted
+  H0 evidence commit and imports the sealed handoff
+```
+
+sealed handoff 的共享根只能按 H0 冻结源码所属 Git repository family 确定性推导。
+exporter 必须从冻结 H0 worktree 执行固定的 Git 查询，并依次满足：
+
+```text
+commonDir = git rev-parse --path-format=absolute --git-common-dir
+commonDirRealpath = realpath(commonDir)
+git rev-parse --is-bare-repository == false
+primaryCheckout = realpath(dirname(commonDirRealpath))
+两次 git worktree list --porcelain -z 输出逐字节一致；解析 realpath 后，primaryCheckout 在集合中恰好出现一次
+familyId = sha256(UTF-8(commonDirRealpath))，编码为 64 个 lowercase hex 字符
+derivedRoot = <parent-of-primary-checkout>/.dsh-pm-workbench-handoffs/<familyId>
+```
+
+`commonDirRealpath`、`primaryCheckout`、worktree list 和 `derivedRoot` 的每个既有路径组件都
+必须通过 no-follow/realpath 检查；repository 必须为 non-bare，且 `derivedRoot` 位于
+所有列出的 checkout 之外。owner decision 或 caller 可以携带 handoff root，但该值
+只能作为对 `derivedRoot` 的**精确相等断言**：不得覆盖推导结果，不得选择另一目录，
+也不得接受 symlink alias、相对路径、前缀匹配、路径规范化后“近似相等”或 fallback。
+
+人工脱敏决定必须绑定已经完成的四文件 closure 和真实 PASS、FAIL 或 INCONCLUSIVE
+状态；它不创建 handoff，也不改 Git。随后单独的 handoff-export 授权只能允许 exporter
+在上述 `derivedRoot` 下创建一个新的 content-addressed、manifest-last closure。exporter
+重新验证 frozen source、`current-run`、四文件、accepted CLI artifact closure、ripple
+acceptance/owner decision/tgz、Probe package 与所需 bootstrap manifest，并复制规定的
+sealed bytes。`handoff-manifest.json` 只绑定已经存在的这些输入、人工脱敏决定和 export
+授权、path-free `familyId`，以及 relative path/mode/SHA-256；它不得记录 common-dir 或
+derived-root 的绝对路径，也不得包含、引用或预言尚未生成的
+`docs/gate-results/gate-a-connection-rpc.md`、`docs/probe-results.md` promoted block、
+promoter output hash、evidence commit SHA 或其他 future promoted document。
+
+export 完成后，promoter 只能读取当前完成指针和这个精确
+`handoffManifestSha256`，逐个验证 regular-file/no-follow/realpath/same-read hash 与所有
+source/run/input binding。它先在 pointer lock 下两次内存渲染且不写文件，返回固定两个
+path/SHA-256 与 `candidateSetSha256`；evidence decision 必须绑定这些候选身份。write mode
+再确定性写入固定 Gate A′ report 和 canonical ledger，并 final-write 一个绑定 pointer、closure、
+decision、renderer 与两个 path hash 的不可变 promotion receipt。两个 Git blob 必须记录完全
+相同的 `handoffManifestSha256`、source commit、run ID、`runFinalSha256` 和真实 outcome，且
+`--check`、staged index blobs 和最终 commit-object blobs 必须全部等于 receipt。随后
+evidence-only commit 的唯一 parent 必须是冻结 H0 source commit，且相对该 parent 只能改变
+这两个固定文档。owner 接受的是该完整、字节闭合的 evidence-only commit SHA，而不是 branch、
+working-tree 文件或 runtime PASS 文案。
+
+runtime PASS、sanitization accepted、handoff exported 或 documents rendered 中任何一个
+单独状态都不能称为 H1-eligible accepted evidence。只有 A01–A22 runtime PASS、上述
+DAG 全部闭合、两个 committed blob 一致且 evidence-only commit 获 owner 接受后才可供
+H1 使用；FAIL/INCONCLUSIVE handoff 可以留作审计，但永远不能解锁 H1。raw logs、
+browser profile、本机绝对路径以及 repository-local `.tmp` 不得进入 handoff。
 
 ### 10.2 必须通过
 
@@ -1548,7 +1722,9 @@ architecture、source commit、lock hash 和 tgz SHA-256。`health.harnessTarget
 12. 写满 256 条 receipt 后，第 257 个新 id 稳定返回 `limit-exceeded`、不新增 receipt、不改变 counter/version；相同已存在 id 仍能读取原 outcome。
 13. Client adapter 不发出第 9 个并发请求；绕过 Client 直接发起第 17 个 Host 在途请求时，该请求在 application service 前安全失败且 side-effect 为零。
 14. 停止并重启隔离 Harness 后，counter、version 与 receipts 恢复。
-15. 重复 disable/enable、mount/reload 不产生重复 route、launcher、监听或 Domain close 后写入。
+15. 真实 public remove/re-add 加 restart/remount 不产生重复 route、launcher、监听或 Domain
+    close 后写入；组件 contract test 另行直接驱动 disposer/remount hooks，但 Gate A′ 不声称
+    观察了不存在于固定命令图中的 installed-but-disabled 状态。
 16. 负向验证错误 Host、错误 Origin、`sec-fetch-site: cross-site`、GET、错误 Content-Type 和非法 Connection envelope 均在业务 handler 前失败且 side-effect 为零；监听表只出现 loopback 地址。
 17. 安装涟漪主题的隔离副本后，入口、overlay、聊天和主题交互共存。
 18. remove 工作台并重启后：
@@ -1569,6 +1745,10 @@ architecture、source commit、lock hash 和 tgz SHA-256。`health.harnessTarget
 只允许写：
 
 > 在记录的精确 Harness 版本、隔离 profile 和真实 tgz 下，公共 Connection RPC、additive UI slot、synthetic storageDomain、restart 与 remove 生命周期的最小组合探针通过。
+
+这只是 `Gate A′ runtime PASS` 声明，不表示 sealed handoff、promotion 或 evidence-only
+commit 已经完成，也不能称为 H1-eligible accepted evidence；后者必须额外闭合第 10.1
+节的完整 DAG。
 
 不得写“插件兼容 DeepSeek Harness”“PM 工作台完成”“访谈可安全处理”或“AI 分析可用”。
 
@@ -1607,6 +1787,21 @@ architecture、source commit、lock hash 和 tgz SHA-256。`health.harnessTarget
 
 该句只作为输入数据显示。P0 不调用模型、网络、shell 或本地文件工具，因此它只能证明 fixture 流程不会执行文本，不能证明未来真实模型抵抗提示注入。
 
+这一个 fixture case 包含两份一并由 owner 按 hash 接受的文本 revision：R1 用于
+主流程，R2 只用于验证上游变更后的 stale 传播。manifest 同时绑定每份文件的
+原始 bytes hash、按第 6.2 节规则规范化后的 content hash，以及整个 artifact set
+hash。P0、P1 和 H1 的 `source.importText` service 只接受这两个规范化 hash；
+因此去 BOM、CRLF/CR→LF 或 NFC 前原始 bytes 不同但规范化结果相同的输入属于同一
+获准 content identity。任意其他规范化 hash 的粘贴或 `.txt`/`.md` 选择必须在任何
+持久化写入前拒绝。repository fixture/golden loader 仍逐份校验 manifest 绑定的原始
+bytes hash；“规范化等价输入可导入”不能放宽仓库内受审 artifact 的 exact-raw-byte 校验。
+
+构建/验收脚本读取 manifest、fixture 与 golden 时必须使用同一个 strict input
+loader：`lstat` 要求非 symlink regular file，`realpath` 仍位于固定
+`fixtures/synthetic` 根内，以 no-follow/fstat 等价检查确认打开对象未被替换，
+只读取一次，并对实际交给 parser/构建器的同一份 bytes 计算 hash。仅有 clean Git
+或 allowlisted 相对路径不足以证明该边界。
+
 ### 11.2 Golden path
 
 1. 创建 project 并导入 fixture，得到 `SourceRevision R1`。
@@ -1620,7 +1815,7 @@ architecture、source commit、lock hash 和 tgz SHA-256。`health.harnessTarget
 9. B1 只包含人工确认后的 A，不把 deferred B 混入当前范围。
 10. 从 B1 生成 `PrdRevision P1`；关键结论与需求理由均有可解析脚注。
 11. 同一输入重复渲染产生相同 Markdown bytes 和 hash。
-12. 修改被引用原文产生 R2；旧 D1、evidence、requirements、B1、P1 显示基于旧版本。
+12. 导入同一 accepted fixture case 中预先接受的 R2；旧 D1、evidence、requirements、B1、P1 显示基于旧版本。
 13. stale B1 不能生成新的 current PRD；旧 P1 仍可查看。
 14. 两个基于同一旧 aggregate version 的不同命令中，第二个稳定返回冲突。
 
@@ -1635,10 +1830,38 @@ architecture、source commit、lock hash 和 tgz SHA-256。`health.harnessTarget
 - fixture / AI actor 冒充 human decision；
 - 无证据 fixture / AI requirement 进入 baseline；
 - 空输入或超大输入；
+- 不在 accepted fixture revision hash 集合中的任意粘贴或 TXT/Markdown 文件，且
+  此拒绝不创建/修改 project、source、receipt 或 version；
+- fixture/golden manifest 或内容为 symlink、打开后越出固定根、读取中身份变化，
+  或 hash 与交给消费者的 bytes 不一致；
 - raw HTML 执行；
 - Client 提交任意本地路径；
 - PRD Markdown 注入导致脚注或结构逃逸；
 - 日志和错误泄露正文、quote、姓名或路径。
+
+### 11.4 P0 证据落盘边界
+
+P0 runner 只能从 clean frozen source 运行。它在创建结果目录前必须验证一个单独的 canonical
+acceptance-runtime decision，绑定 exact source/lock、fixture/golden receipts、P001–P018 action
+graph、fresh output root 与 expiry；缺失、复用或跨 scope 决定在零写入时拒绝。每次尝试创建
+独立、不可覆盖的结果目录，PASS、FAIL 与 INCONCLUSIVE 都保留。该 decision ID 与 path-free
+receipt 必须进入 result/report/JUnit/final/pointer/evidence。完成指针只有在 final marker 最后
+写入、退出状态与所有固定 artifact hash 重算一致后才能在共享锁下原子更新，不能按 mtime
+或“latest”选择。promoter 必须先在该 pointer lock 下执行无写入 preview，两次内存渲染一致，
+并只返回两个固定 path/SHA-256 与 `candidateSetSha256`。人工 review 决定必须绑定 acceptance
+decision、frozen source、`runId`、`runFinalSha256`、sanitized report hash、脱敏结果和这些
+候选字节；随后另一个 evidence-write/commit 决定绑定相同 closure/candidate、两个固定输出
+路径和固定 commit message。两项决定必须有不同的 canonical ID，且不能授权重跑、改源码、
+P1、H1、模型、真实数据、网络或远程 Git 操作。
+
+P0 promoter 必须显式接收上述 exact run/source/final/report、acceptance-runtime ID、candidate
+set 与两个 decision ID，在读取、渲染、写入及 receipt finalization 期间锁定并反复校验固定
+completed-run pointer，以拒绝并发替换、symlink、hardlink、截断或 retarget。它只能写
+`docs/gate-results/evidence-core-p0.md` 和 `docs/probe-results.md`，并生成一个不可变
+promotion receipt。随后使用同一组参数执行无写入 `--check`、staged index-blob 核对和
+post-commit blob 核对。evidence commit 的唯一 parent 必须是 frozen P0 source，
+NUL-delimited raw diff 必须恰好包含这两个 regular-file 路径；任何 candidate/receipt/blob
+或 topology 不一致都使候选失效且禁止 amend。FAIL/INCONCLUSIVE 可以形成审计记录，但不能解锁 P1。
 
 ## 12. Shell-neutral Review UI P1 验收
 
@@ -1653,6 +1876,21 @@ P0 的同一固定 fixture 与 product contract；不能用静态稿或截图替
 - 不加载 Harness、Connection RPC、storageDomain、活动 3080 profile 或涟漪包；
 - 不调用网络、模型、provider、shell 或本地任意路径；只读取仓库内已审阅的合成
   fixture；
+- 唯一网络例外是另行授权的 Chromium bootstrap。直接 Node phase wrapper 在输出分配前
+  校验 bootstrap decision，并调用第 10.1 节同一个 repository-owned downloader/materializer，
+  不调用 stock `playwright install` 或外层 npm。owner-reviewed policy 绑定精确 archive URL、
+  Playwright/Chromium、非空封闭的官方 HTTPS initial/redirect origin allowlist、redirect
+  ceiling、expected length/SHA-256、archive layout 与 executable relative path；每个 URL
+  在正文前验证，下载到临时文件，hash/长度通过后才以固定离线解包器构建并原子发布浏览器
+  树。HTTP downgrade、userinfo、loop、超限、未列目标、partial body/tree 或 layout 漂移
+  立即拒绝。所有继承的 `PLAYWRIGHT_*` download-host、proxy、custom CA、npm config、
+  registry、auth/token/credential 与 `NODE_OPTIONS` 均被移除，policy 不得由默认值、环境或
+  redirect 自动扩展；
+- browser bootstrap、Tasks 1–8 development browser execution、frozen P1 acceptance 使用
+  三个 canonical、互异、scope/source/policy/browser/action/expiry-bound decision ID。每个
+  ID 传给负责的 direct-Node wrapper；bootstrap manifest 记录 bootstrap receipt，development
+  closure 记录 development receipt，P1 run/evidence closure 记录 bootstrap 与 acceptance
+  receipt。任一缺失、复用或 cross-scope substitution 都在 action output 前失败；
 - 至少在 Chromium 的 `1440×900` 与 `1024×768` viewport 执行；
 - 证据只包含命令/结果、合成数据截图、无敏感内容的 trace 摘要与源码 commit；
   不保存本机绝对路径、浏览器 session、临时目录或原始调试日志。
@@ -1675,8 +1913,10 @@ P0 的同一固定 fixture 与 product contract；不能用静态稿或截图替
    cursor 被拒绝、chunk/hash 不符时丢弃未完成聚合结果，禁止下载或标成完整。
 7. 所有主要动作可只用键盘完成；有可见 focus、合理 tab 顺序和语义化 label；
    dialog/panel 打开时 focus 进入，关闭后回到触发点，不出现 focus trap 逃逸。
-8. `prefers-reduced-motion` 下关闭非必要位移/涟漪式动画；缩放至 200% 和两个
-   viewport 下不遮挡确认、错误、证据引用或下载动作。
+8. `prefers-reduced-motion` 下关闭非必要位移/涟漪式动画；在不改变 CSS viewport 的
+   前提下使用浏览器真实 page zoom/reflow 到 200%，并在两个 viewport 下验证不裁切、
+   不重叠、无非预期横向滚动、focus 可见且所有动作键盘可达。CSS `zoom`、
+   `transform: scale`、deviceScaleFactor 或缩小 viewport 不能替代该证据。
 9. 关闭/remount test view 不产生重复监听；未提交内存状态的保留/丢弃行为与 UI
    文案一致，正式 in-memory project state 仍由 API 权威返回。
 10. Playwright/contract tests 与人工截图状态一致；任何 snapshot、trace 或 console
@@ -1694,26 +1934,136 @@ P0 的同一固定 fixture 与 product contract；不能用静态稿或截图替
 导致编辑丢失、低 version 回退 UI、未完整数据被标成完整，或测试证据只剩静态
 截图，P1 均为 No-Go。
 
+### 12.4 P1 证据落盘边界
+
+Chromium bootstrap manifest 必须记录 bootstrap decision ID/receipt、reviewed policy
+bytes/hash、exact archive URL hash、origin allowlist、redirect ceiling、实际 initial/redirect
+origin chain、archive length/hash/layout、downloader/materializer source hash、Playwright/
+Chromium 身份、sanitized environment receipt 与 browser tree hash。P1 acceptance runner 只
+消费这一份不可变 manifest，并在输出分配前验证独立 acceptance-runtime decision；它把该
+decision/receipt、frozen source、P0/F0 前置身份、fixture/golden set、browser policy/manifest、
+真实浏览器观察、进程退出和固定 artifacts 封存为一个唯一 run closure。development-runtime
+decision 只进入对应开发 closure，不能充当 acceptance evidence。关闭后才能在 marker-owned
+lock 下更新固定 completed-run pointer。
+
+promoter 先在 pointer lock 下无写入地两次内存渲染，返回两个固定 path/SHA-256 与
+`candidateSetSha256`。人工 review 决定与独立 evidence-write/commit 决定分别绑定
+bootstrap/acceptance decisions、exact `runId`、frozen source、final-marker hash、sanitized
+report hash、脱敏结果及同一候选字节；后者再绑定固定的
+`docs/gate-results/shell-neutral-review-ui-p1.md`、`docs/probe-results.md` 与 commit message。
+promoter 必须显式接收这些身份，在 validation/render/write/receipt/`--check` 前后验证同一
+pointer 的 file identity 与 bytes，且只能写上述两份文档与 Git 外不可变 promotion receipt。
+提交前后的 index/commit blobs 必须匹配 receipt。根 README/security/compatibility 与
+package-local 文档在 source freeze 前只保留 build-time/source 边界和 canonical-ledger
+指针，promotion 不得改写。P1 evidence commit 必须满足第 3 节的一父节点、两路径 diff
+和 exact committed-byte 规则；只有可重算 PASS 才能成为 H1 输入。
+
 ## 13. Gate B：合成数据 DSH Plugin Alpha
 
-Gate B 不是把 H0、P0、P1 的报告相加。它是新的 H1 组合验收，只有 H0、P0、
-第 12 节 P1 各自通过、owner 批准相应实施计划，并且下面的真实组合路径全部通过后，才
-允许使用 H1 声明。
+Gate B 不是把 H0、P0、P1 的报告相加。它是新的 H1 组合验收，只有 H0 已形成第
+10.1 节定义的 H1-eligible accepted evidence、P0 与第 12 节 P1 各自通过、owner
+批准相应实施计划，并且下面的真实组合路径全部通过后，才允许使用 H1 声明。
 
 ### 13.1 执行边界
 
-- 从待验源码 commit 构建新的真实 tgz，安装到项目内临时 `DSH_HOME`；
+- 从待验源码 commit 构建新的真实 tgz，安装到项目内临时 `DSH_HOME`；package freeze
+  需独立授权，固定 npm-pack argv、`--ignore-scripts` 与 marker-owned output，不包含
+  network、profile 或发布；
+- 所有 npm/浏览器准备与 Gate 子进程都必须复用同一受测 environment builder：为每次
+  invocation 创建不同 inode 的空 `NPM_CONFIG_USERCONFIG` 与
+  `NPM_CONFIG_GLOBALCONFIG` regular file，清除继承的 user/global npmrc、config、prefix、
+  registry、cache、script-shell、auth/token/proxy/provider 与 `NODE_OPTIONS` 覆盖，并在
+  path-free receipt 中记录两个空文件 hash、binding hash 与 builder source hash；
+- 合并 H0/P1 后，composition verifier 必须从两个 accepted Git tree 确定性生成一份
+  content-addressed exact-union manifest。lock-reconstruction action decision 必须绑定完整的
+  offline-first/immutable classified-miss/最多一次固定 network retry 状态机及两条 lock-only
+  argv；第二阶段另需绑定该 miss 与 retry argv 的 lock-network decision。随后新的 hydration
+  action decision 对 union lock 绑定另一套同结构状态机；其第二阶段需要第四个、绑定自己 miss
+  receipt 的 hydration-network decision。四项 decision 与两份 miss receipt 互不替代，全部由 direct-Node
+  wrapper 在输出前验证并写 path-free receipt；成功前禁止任何 merged-tree npm/Vitest/
+  TypeScript/build/package 命令；
 - 使用非 3080 的专用端口，继续只绑定 `127.0.0.1`、`trustedHosts=[]`；
 - 只使用版本固定的中文合成 fixture；不调用模型、provider、网络或真实访谈；
-- 记录实际 `dsh` 版本、resolved Harness/Connection 版本与公开 exports、Node、
-  npm、OS/arch、源码 commit、lock hash、tgz hash；
+- H1 只接受一个 owner 已接受的 H0 evidence-only commit 的完整、不可移动 SHA；先从该
+  exact commit 分别读取固定 `docs/gate-results/gate-a-connection-rpc.md` blob 与
+  `docs/probe-results.md` blob，不读取当前 checkout 中的同名文件；同时验证该 commit
+  只有一个 parent、该 parent 等于两份 blob 声明的 H0 frozen source，且相对 parent
+  只改变这两个固定路径。两份 blob 必须都声明 runtime PASS，并包含完全相同的
+  `handoffManifestSha256`、H0 frozen source、`runId`、`runFinalSha256` 与 outcome；
+  任一缺失或不一致即 H1 No-Go；
+- H1 同样从 exact accepted P1 evidence commit 的 Git objects 验证：恰有一个 parent 等于
+  P1 frozen source，raw NUL diff 恰有固定 P1 report 与 canonical-ledger 两个 regular-file
+  add/modify，且没有第三路径、rename/copy、mode/type substitution 或 submodule。只看 branch、
+  working-tree 文件、newline name list 或报告 PASS 文案均不够；
+- H1 按第 10.1 节从自己的 real Git common-dir 独立重算同一个 `derivedRoot`，再只按上述
+  双 blob 一致的 manifest SHA 导入 CLI/ripple/four-file closure。它逐项重算 handoff
+  manifest、manifest 内与本地重算一致的 path-free `familyId`、relative
+  file/mode/hash、CLI artifact tree/entry/version、ripple/Probe/bootstrap binding、
+  实际 Harness/Connection 版本与公开 exports、Node、npm、OS/arch、
+  源码 commit、lock hash 和 tgz hash。该 importer 在复制前必须验证独立 canonical
+  handoff-import decision，绑定 H1 source、accepted H0 evidence commit、derived root、manifest、
+  destination、action graph 与 expiry，并把 path-free receipt 写入 composition record/closure；
+  禁止按 working-tree document、另一 worktree
+  `.tmp`、mtime、“latest”、PATH、caller-selected root 或手工路径取件；
 - 不读取、修改或复用正在运行的 3080 profile；不把临时 profile、原始日志或
   浏览器数据提交仓库。
+- Product package freeze、Gate B bootstrap、runtime orchestration、isolated-profile
+  install/remove/re-add lifecycle 与 intentional kill/restart 必须各有 canonical、互不相同、
+  scope-bound 的 decision ID。负责命令必须显式接收相应 ID；`result.json`、sanitized
+  report、JUnit、final marker 和最终 evidence 都绑定五项 decision 及其 exact source、
+  lock、tgz、bootstrap、profile、command graph 和 expiry/scope。任一缺失、复用、替代或
+  source/artifact drift 都是 Gate B No-Go；
+- Gate B bootstrap 必须复用第 10.1/12.1 节的 direct-Node repository downloader/materializer
+  和相同 pre-body policy semantics。stock Playwright downloader、外层 npm、未哈希 transport、
+  下载失败后残留 partial archive/tree 或 inherited host/proxy/custom CA 均为 No-Go；
+- Gate B 另有一份 owner 按 canonical bytes 审阅的 offline-store policy，绑定 frozen H1
+  source/union lock、Product/ripple/CLI artifacts、完整排序的 exact package name/version/integrity
+  set、accepted Node/npm/pnpm JavaScript entry/version/hash、两种已按该版本实测的固定 grammar、
+  唯一 `https://registry.npmjs.org/` origin 与 marker-owned output root。H1 自有 seeder 由 direct
+  Node wrapper 调用；它不能把 F0 的 npm-only hydrator 冒充 pnpm-store producer。每个 sorted
+  exact package 只能走 code-owned `npm cache add` 或 `pnpm store add` argv，禁止 `pnpm fetch`、
+  `--lockfile-dir`、隐式/生成的 `pnpm-lock.yaml`、range/tag、任意 argv、PATH/outer package manager
+  与 lifecycle script。package-manager JavaScript entry 只经 accepted Node 与 source-hash-verified
+  preload 启动；guard 把 bootstrap decision、source/argv hash 与 exact registry origin 绑定，
+  验证并 pin public DNS address 到实际 peer，拒绝 direct-IP、private/loopback/link-local/reserved、
+  rebinding、cross-origin redirect、unchecked socket 与 descendant spawn，并产生 bounded path-free
+  origin/address receipt。网络阶段关闭后，必须从候选 npm cache 与 pnpm store 完成一次 disposable、
+  no-script、zero-request offline install，复现完整 exact closure；child exit 0 或目录非空不构成
+  可用性证据。browser/npm-cache/pnpm-store 三棵树只有在该证明和临时目录清理后才能原子发布，
+  并由 final bootstrap manifest 分别绑定 tree hash；
 - quota 边界和磁盘/Domain 故障必须运行 production `HarnessProjectRepository`
   的同一 codec、quota、journal、commit 与 recovery 代码；只允许在其下方以
   test-only `StorageDomainDriver` 注入失败，并用 constructor-only test config
   缩小阈值。driver/override seam 不能成为 runtime endpoint、用户配置或 tgz
   文件，产品 health 仍必须报告正式常量。
+- Gate B 启动前必须重算权威 rc.6 storage atomicity evidence 与精确 package
+  version/integrity/entry hash。普通 stop、成功结束和 failure cleanup 只能走 runtime
+  decision 覆盖的 purpose-locked graceful path：authenticated readiness 后重验 live sentinel、
+  fresh PID/PGID/parent/birth/member receipt，只对与 runner 不同的已验证负 PGID 发送恰好一次
+  `SIGTERM`，再 bounded wait 证明全部 child/descendant 与 loopback listener 消失；身份或成员
+  不确定时不得 signal，timeout 或 survivor 使该 run 保持 INCONCLUSIVE，且没有自动
+  `SIGKILL` 升级，不能借用 B10 kill decision。intentional
+  B10 crash 只能由专用 supervisor 启动一个 fresh、
+  detached、与 runner 自身不同的 POSIX process group；owned IPC launch sentinel、PID、
+  PGID、parent PID、spawn monotonic instant、accepted entry/profile hash 和 OS process-birth
+  observation 共同形成 ownership receipt。每次 signal 前都重新验证 sentinel、birth
+  identity、group membership 与全部 registered descendants，拒绝 PID reuse、self group、
+  foreign/reused/unknown member、name/port/caller-selected target 或任何歧义；已按原 birth
+  identity 证明退出的 registered member 与未知 missing member 必须区分。B10 的唯一序列是：
+  外部 collector 已认证并 ACK 真实 production `root-replace-begin`，该 frame 明示 primitive
+  已调用，且尚无 matching `root-replace-returned` → 对完整已验证组发送 `SIGSTOP` → bounded
+  wait 证明 remaining members stopped → 在已静止组上把 authenticated event channel 排空到
+  committed-frame watermark，拒绝 partial/gap/duplicate/reorder，并因果证明 matching returned
+  frame 在 confirmed stop 前未 committed/ACKed → 重验所有 survivor、channel 与 ACK ledger →
+  对同一负 PGID 发送 `SIGKILL` → bounded wait 证明 group/listener 消失。若 returned frame
+  抢先或在 stop/drain barrier 中出现、ACK/排空不完整、stopped state 不确定、身份/成员/channel
+  漂移或所有关键 storage-owning member 已退出，则该尝试 INCONCLUSIVE，不得把它记为 crash
+  observation；若组已安全 stopped，后续清理也不补足该 observation。只有证明 begin ACK、
+  stopped-state、完整 drain/no-return、实际 SIGSTOP/SIGKILL delivery、整组消失、同一隔离
+  profile 重启，且安装后的 Product
+  production path 在 begin/returned bracket 周围只观测到完整 old/new checksum 二选一，才能
+  记为 hard-kill observation；原始 PID/PGID/
+  birth/sentinel 留在 Git 外。该运行观察只支持公开契约，不能替代它。
 
 ### 13.2 必须通过的组合验收
 
@@ -1741,12 +2091,18 @@ Gate B 不是把 H0、P0、P1 的报告相加。它是新的 H1 组合验收，�
    hash、chunk offset/hash，以及 `EntityRef.projectId` 指向另一 project。Client
    均返回 `protocol-invalid`，不把结果标成完整或触发下载。
 9. 边界 fixture 覆盖 request/response JSON escaping、item/page/chunk byte budget
-   和对象/数组上限；每个 accepted source、entity、PRD 均能完整读回并复算 hash，
-   超限输入在 commit 前拒绝且无半个 revision。
+   和对象/数组上限；BOM、CRLF/CR 与 NFD 形式不同但按冻结规则规范化为 R1/R2 的
+   输入映射到同一 accepted identity，任一改变 normalized identity 的单字节/字符变更
+   在首个持久化写入前拒绝；每个 accepted source、entity、PRD 均能完整读回并复算
+   hash，超限输入在 intent/commit 前拒绝且无半个 revision。
 10. 通过上述 production repository + test-only driver 在 receipt-ledger、project、
     profile 与 transaction temporary quota 的边界前后执行写入；quota refusal 不写
-    receipt/snapshot/version。注入 staging、journal、commit marker 前后和
-    磁盘/Domain 写失败，重启后只能恢复完整旧版或完整新版；tarball 审计证明
+    fixed intent/receipt/snapshot/version。覆盖初始化与 mutation 的 intent 前后、每项
+    staging before/write-then-throw/after、全部 staging 后进程消失、commit marker 前后、
+    cleanup 与磁盘/Domain 写失败；每个 post-intent orphan 都可由 fixed intent 发现、
+    计量与清理，重启后只能恢复完整旧版或完整新版。root 已切换后 cleanup 失败须在
+    response 前进入 recovery-required 并返回 unknown，不得先返回 accepted 或后台写。
+    同时，real rc.6 hard-kill observation 只能出现 old/new checksum。tarball 审计证明
     faulting driver 与 quota override wiring 未进入产品包；真实
     `HarnessProjectRepository` 的 codec/journal/recovery 文件与受测文件 hash 一致。
 11. 两个基于同一 aggregate version 的不同 command 保持 CAS；同 ID 同 hash 返回
@@ -1765,15 +2121,19 @@ Gate B 不是把 H0、P0、P1 的报告相加。它是新的 H1 组合验收，�
 16. 停止/重启后 project、revisions、decisions、baseline、PRD、catalog/project
     versions 与 receipts 完整恢复；绑定仍为 current snapshot / immutable content 的
     cursor 继续有效，已 stale 的 cursor 明确拒绝并从首屏重启。
-17. disable/enable、unload/reload 不产生重复入口/handler；remove 后代码和 UI
-    消失但数据保留；重新安装同一 tgz 后可读回。purge 仍是独立确认动作。
+17. 组件 contract test 直接驱动 Cordis disposer/remount hooks，证明重复 lifecycle 不产生
+    重复入口/handler；真实隔离 profile 使用 public remove/re-add 加 restart/remount，证明
+    remove 后代码和 UI 消失但数据保留，重新安装同一 tgz 后可读回。两种证据必须分栏，
+    不把 remove/re-add 冒充 installed-but-disabled 状态；purge 仍是独立确认动作。
 18. 涟漪主题保持独立开关，开/关两态下工作台均可用；工作台卸载不修改主题
     文件或设置，主题卸载不破坏 project data。
 19. canary fault、HTTP body、Host stdout/stderr、profile 日志、browser console、
     UI、下载文件名与验收报告均不泄露 payload、正文、quote、token、stack 或
     本机绝对路径。
 20. 至少完成键盘可达、focus trap/恢复、loading/empty/error/stale/unknown-result
-    状态与 `prefers-reduced-motion` 的真实浏览器验收。
+    状态与 `prefers-reduced-motion` 的真实浏览器验收；200% 必须使用真实 page
+    zoom/reflow，拒绝 CSS/deviceScaleFactor/viewport 替代，并验证无裁切/重叠、focus
+    可见和键盘可达。
 
 ### 13.3 Pass / No-Go
 
@@ -1788,6 +2148,52 @@ Gate B 不是把 H0、P0、P1 的报告相加。它是新的 H1 组合验收，�
 写入后不能完整读回、snapshot 混页、probe contract 残留、关联错误未 fail
 closed、生命周期重复注册或 canary 泄露，Gate B 均为 No-Go，不得只凭 H0/P0/P1
 单项绿灯降级通过。
+
+### 13.4 Gate B 证据落盘边界
+
+Gate B runner 生成唯一四文件 closure，并在每个文件中绑定五项 Gate action decision、H1
+union/hydration/import prerequisite decision receipts、frozen source/lock/tgz/bootstrap、H0/P0/P1
+前置 evidence、Gate A handoff、storage atomicity、
+process-ownership receipt hash、signal/wait outcome、真实退出状态和 artifact hashes。完成指针
+只在 final marker 最后写入且 closure 重算一致后，在 runner、candidate renderer 与 promoter
+共享的 marker-owned、regular、single-link、non-symlink exclusive `current-run.lock` 下更新。
+遗留歧义锁、contention、replacement、hardlink 或 owner-marker mismatch 都失败关闭，不能自动删除。
+
+Candidate renderer 首先在该锁下以 `--preview` 两次内存渲染，返回固定两个
+path/SHA-256/Git-blob-OID tuple 与 `candidateSetSha256`，不创建 candidate root、document 或
+receipt。随后必须取得一个 fresh、unexpired、non-replayable candidate-materialization decision；
+它绑定 exact source/run/final/report/tgz/prerequisite identities、canonical render-policy hash、
+preview 的两项 tuple/set hash、固定 content-addressed root
+`<sourceCommit>/<runId>/<candidateSetSha256>/`、固定两份候选文档加最终 receipt 的三文件 schema
+及 scope/expiry。Renderer 必须在任何 candidate `mkdir`、staging file 或 final file 之前验证并
+原子消费该决定；已经消费或消费后崩溃的 ID 不能重放，只能重新获批新决定。随后 renderer
+在同一 pointer lock 下重渲染、逐字节核对 preview，在 exclusive staging root 内先写两份文档、
+最后生成 `candidate-receipt.json`、核对 exact three regular single-link files，再一次性原子发布
+整个 fixed root。Receipt 绑定 materialization decision/authorization
+receipt、closure/render/set/root/schema、两份候选 SHA-256/Git blob OID 与 pointer identity。Existing
+root、replay、partial/extra output、link/special file、root replacement、closure/render/pointer drift
+均失败关闭，不允许 overwrite/resume。
+
+人工 review 决定必须绑定 exact closure、脱敏结果、candidate-materialization decision/authorization
+receipt、candidate receipt path/hash、set hash 与两份持久化候选字节；另一个 evidence-write/commit
+决定绑定相同 identities、人工决定、固定 Gate B report、canonical ledger 和 commit message。
+三项 post-run 决定必须彼此不同，也不能复用五项 Gate action 或 prerequisite action/network
+decision。
+
+Gate B promoter 必须显式接收 exact `runId`、source commit、final-marker hash、report hash、
+candidate set hash、candidate-materialization decision ID、candidate-receipt hash、human-review
+decision ID 与 evidence decision ID，并从选择 pointer 开始到 closure/materialization/receipt/decision
+validation、render、两次 atomic document replacement、promotion receipt finalization 或无写入
+`--check` 完成为止持续持有上述同一 pointer lock。它只从这些 assertions 派生固定 candidate root，
+拒绝 path scan、replacement、ABA retarget、mtime/“latest”或 caller result path/status。它只能写
+`docs/gate-results/dsh-pm-workbench-gate-b.md`、`docs/probe-results.md` 与 Git 外不可变 receipt；
+promotion receipt 也必须绑定 materialization decision/authorization receipt、candidate receipt
+及相同 bytes。精确 staging 两份 allowlisted 文档后、commit 前以相同参数执行无写入逐字节
+`--check` 并核对 index blobs；commit 后再核对 commit-object blob hashes。Evidence commit 的
+唯一 parent 必须是 frozen H1 source，raw
+NUL-delimited diff 必须恰好是这两个 regular-file 路径，且 committed bytes 必须等于 receipt；
+root/package 文档保持冻结 build-time statement。任何不一致都使候选失效且禁止 amend。
+FAIL/INCONCLUSIVE 可以保留，但不能获得 H1 PASS 声明。
 
 ## 14. 明确延后
 
@@ -1859,6 +2265,34 @@ Source、Evidence、Requirement、Decision、Baseline 和 PRD 的事务与 migra
 6. source 只改一个标点导致粗粒度 stale 时，系统是否宁可要求重确认，也不冒充当前有效？
 7. uninstall 后数据默认保留时，UI 和文档是否避免写成“数据已删除”？
 8. active 3080 环境、真实涟漪包和真实访谈是否继续不被探针触碰？
+9. 每个 staging key 是否在首个 staging write 前已由 fixed intent 持久化并可在重启后定位？
+10. 无 root 初始化、root writes-then-throws 与 cleanup 失败是否都有确定状态，且不会先返回 accepted？
+11. exact rc.6 的公开证据是否真的保证 root 单 key crash-atomic replacement，而非仅凭类型/命名推断？
+12. 给定 owner 接受的 exact H0 evidence-only commit 完整 SHA，H1 是否从该 commit 的
+    固定 Gate A′ report blob 与 canonical-ledger blob 独立读出完全相同的
+    `handoffManifestSha256`，按自己的 real Git common-dir 重算同一个 `derivedRoot` 后
+    精确导入，而不是读取 working tree、另一 worktree `.tmp`、mtime、“latest”、PATH、
+    caller-selected root 或手工路径？manifest 是否明确不含未来 promoted docs 或
+    evidence commit，从而不存在 hash/commit 循环？
+13. H1 是否进一步从 Git object 分别验证 H0 与 P1 evidence commit 恰好一 parent 等于各自
+    frozen source，且 raw NUL diff 只有各自两条 fixed regular-file evidence path，避免夹带？
+14. 每个 dependency/lock/browser action 与 network retry 是否由 direct-Node repository wrapper
+    验证独立 canonical decision 并记录 path-free receipt，同时 npm 子进程固定空 user/global
+    config？Chromium 是否由真实 repository downloader 在 body 前核对 owner-reviewed exact
+    URL/origin/redirect/length/hash policy，再离线安全解包，而不是 stock Playwright、outer npm
+    或事后日志？
+15. H1 merged tree 是否在消费 verifier-derived exact-union manifest、分别授权重建 lock 与
+    hydrate 后才运行任何 npm/test/build，两个 network retry 是否各有独立授权，sealed handoff
+    import 是否另有 source/root/manifest-bound decision？
+16. F0/P0/P1/Gate B runner 与 promoter 是否把 exact action/run/review/evidence decisions 机器
+    绑定，先生成无写入 candidate hashes，再以 immutable promotion receipt 贯穿 `--check`、index
+    blobs 与 committed blobs，并验证 evidence commit 的 frozen-source parent 与 exact regular-file
+    allowlist？Gate B cache/store 是否只按审阅的 exact package/integrity set 与版本固定的
+    `npm cache add`/`pnpm store add` grammar，经 hash-bound exact-origin/address-pinning guard 构建，
+    并以 zero-network disposable install 证明可用？Gate B ordinary cleanup 是否有可执行且单独
+    授权的单次 group-SIGTERM/no-escalation 机制，B10 是否绑定 ACKed post-invocation begin、fresh
+    process-group ownership、birth/PID-reuse 防护，以及 bounded SIGSTOP/stopped-state/event-drain/
+    no-return/revalidation/SIGKILL/disappearance？
 
 任一答案不清楚，都应先修订规格，不进入实现。
 
@@ -1872,6 +2306,78 @@ Phase P0：Evidence Core 纯领域与 fixture golden tests
 Phase P1：shell-neutral 人工审阅 UI
 Phase H1：在 H0 + P0/P1 通过后组合为 DSH Plugin Alpha
 ```
+
+各阶段的授权和证据顺序必须写死，任何批准都不得向后继动作隐式传递。F0 先以各自 action/
+network decisions 完成 exact hydration 与 exact-add；冻结 source 后再用独立 static-verification
+decision 生成四文件 closure，最后以另一个 evidence decision 只追加 canonical ledger，并验证
+该 evidence commit 的 frozen-source parent 与单一 regular-file diff。H0 顺序为：
+
+```text
+separate Gate A′ runtime authorization
+→ frozen-source runtime produces one four-file closure
+→ human sanitization decision for that exact closure
+→ separate sealed-handoff export authorization for the derivedRoot
+→ manifest-last export returns handoffManifestSha256
+→ read-only candidate preview returns two exact path hashes
+→ explicit evidence-write/commit authorization binds those hashes
+→ promoter verifies the export, writes those bytes, and finalizes immutable receipt
+→ index and committed blobs plus topology verify against receipt
+→ evidence-only commit and owner acceptance of its full SHA
+→ separate H1 worktree/import/runtime authorizations
+```
+
+P0 与 P1 各自使用下面的证据顺序；浏览器 bootstrap/development/acceptance 仍是 P1 另行
+授权的三个边界：
+
+```text
+direct-Node runner validates a separately authorized frozen-source action decision
+→ the run produces its fixed decision-bound closure
+→ read-only candidate preview returns the fixed path hashes
+→ human review/sanitization decision bound to exact source/run/final/report/candidate
+→ distinct evidence-write/commit authorization bound to candidate/two paths/message
+→ pointer-race-safe promoter renders only those bytes and finalizes immutable receipt
+→ same-identity non-writing --check plus index/committed-blob verification
+→ one-parent exact-two-path exact-byte evidence commit and owner acceptance of full SHA
+```
+
+H1/Gate B 顺序为：
+
+```text
+verify exact H0 and P1 evidence commits' one-parent/raw-NUL-two-regular-path topology
+→ verifier-derived content-addressed H0∪P1 exact-union manifest
+→ separately authorize lock reconstruction and its optional network retry
+→ separately authorize reconstructed-lock hydration and its optional network retry
+→ separately authorize and record the H0-evidence-derived sealed-handoff import
+→ separate Product package-freeze and Gate B bootstrap decisions
+→ separate runtime + isolated-package-lifecycle + intentional-B10-stop/kill decisions
+→ frozen-source Gate B produces one decision-bound four-file closure
+→ zero-candidate-output preview returns exact tuples and candidateSetSha256
+→ distinct candidate-materialization decision binds closure/render/set/root/schema
+→ renderer validates before output and atomically publishes two candidates plus receipt
+→ human sanitization decision binds that materialization decision/receipt and exact bytes
+→ distinct evidence-write/commit authorization binds the same materialization and candidate
+→ pointer-race-safe two-document promoter + immutable receipt + non-writing --check
+→ index/committed-blob and one-parent exact-two-path verification
+→ exact-byte evidence commit and owner acceptance of full SHA
+```
+
+runtime authorization 不允许 handoff export、promotion、Git 写入或 H1；人工脱敏决定
+不允许复制或 Git 写入；handoff-export 授权不允许 promotion、commit 或 H1；evidence
+write/commit 授权不允许改源码、重跑 Gate A′、改 sealed handoff 或启动 H1；接受 H0
+evidence commit 也不构成 H1 的 worktree、依赖、导入、Harness、浏览器或 runtime 授权。
+
+同理，dependency/browser bootstrap、lock reconstruction、hydration、handoff import、package
+freeze、runtime、isolated-profile install/remove、intentional signal、candidate materialization、
+human review 与 evidence promotion 互不授权。负责的 direct-Node wrapper 在 action output 前验证
+canonical ID，并把 path-free receipt 写入相应 closure 或 immutable candidate/promotion receipt。
+Gate B 同时需要的五项 Gate action decision ID 必须互不相同；candidate-materialization、review、
+evidence decisions 还必须彼此不同，并与这五项以及 H1 prerequisite action IDs 不同。普通/final/failure
+shutdown 只走 runtime-decision-bound、authenticated-readiness、identity/member-revalidated 的单次
+负 PGID `SIGTERM` 加 bounded disappearance，且 timeout 不自动升级；B10 只走独立 kill decision
+授权的 ACKed post-invocation begin、`SIGSTOP`、stopped-state/event-drain/no-return、revalidation、
+`SIGKILL` 与 disappearance。任何缺失 ID、scope/artifact/candidate/receipt 不匹配、未执行
+`--check`、未验证 index/committed blob、pointer race、非 frozen-source parent 或第三条
+committed path 都使该 evidence 不可接受。
 
 实施计划不能自动授权执行、安装、合并或发布。每个阶段必须记录实际命令、实际输出、失败状态和声明边界；不能把计划、构建成功、配置状态、截图或 agent 报告当成最终验收。
 
