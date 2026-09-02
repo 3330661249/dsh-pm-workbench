@@ -4,6 +4,8 @@
 研究范围：只使用 `deepseek-ai/deepseek-harness` 官方 GitHub 仓库、其标签/提交/源码，以及 `https://registry.npmjs.org` 返回的 npm 官方 registry 元数据和官方 tarball。
 本轮性质：**只读研究**。没有修改产品代码、没有安装到 Harness Profile、没有执行候选包代码、没有创建或修改远程仓库。
 
+> **快照边界：**本文固定记录上述核查时点的只读来源、查询结果与当时状态；例如“没有创建或修改远程仓库”描述的是本次研究动作，不是仓库后续状态。本文不追踪随后发生的 resolve/frozen 执行、私有 GitHub 仓库或 Pull Request 状态。后续执行结论应以 `docs/matrix-results/<date-platform>/` 下通过当前 verifier 的 dated canonical results 为准；该目录没有合格结果时，运行结论仍是未确定。Gate 是否开放则继续以 `docs/probe-results.md` 为准。不得用后续状态反向改写本文的历史观察。
+
 ## 1. 结论摘要
 
 1. 截至核查日，四个核心包共同存在 **11 个可精确安装的版本 cohort**。针对“rc.6 之后是否有官方版本解除阻塞”的主矩阵，应测 `0.1.0-rc.6` 到 `0.1.2-alpha.4` 共 **8 组**；更早的 `0.0.1-rc.5`、`0.1.0-rc.2`、`0.1.0-rc.3` 可作为低优先级降级诊断。[四包官方 packument：dsh](https://registry.npmjs.org/@deepseek-ai%2Fdsh)、[generator](https://registry.npmjs.org/@deepseek-ai%2Fdsh-typert-generator)、[protocol](https://registry.npmjs.org/@deepseek-ai%2Fdsh-typert-protocol)、[invariants](https://registry.npmjs.org/@deepseek-ai%2Fdsh-invariants)（核查：2026-09-02）

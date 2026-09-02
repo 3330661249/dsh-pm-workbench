@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+import type { DescriptorValidationEvidence } from '../types.js'
 import { CompatibilityEvidenceError } from './errors.js'
 
 const PACKAGE = '@knight/dsh-typert-matrix-probe'
@@ -43,14 +45,23 @@ function strictCodec(value: unknown, label: string): StrictCodec {
 function assertPayloads(
   codec: StrictCodec,
   valid: unknown,
-  invalid: readonly unknown[],
+  requiredInvalid: readonly unknown[],
+  extraKeyInvalid: unknown,
   label: string,
-): void {
+): { readonly validAcceptedCount: 1; readonly requiredInvalidRejectedCount: number; readonly extraKeyRejectedCount: 1 } {
   if (codec.safeParse(valid).success !== true) {
     throw new CompatibilityEvidenceError('CODEC_VALID_REJECTED', `${label} rejected the valid payload`)
   }
-  if (invalid.some((value) => codec.safeParse(value).success === true)) {
+  if (requiredInvalid.some((value) => codec.safeParse(value).success === true)) {
     throw new CompatibilityEvidenceError('CODEC_INVALID_ACCEPTED', `${label} accepted a malformed ${label} payload`)
+  }
+  if (codec.safeParse(extraKeyInvalid).success === true) {
+    throw new CompatibilityEvidenceError('CODEC_INVALID_ACCEPTED', `${label} accepted a malformed ${label} payload`)
+  }
+  return {
+    validAcceptedCount: 1,
+    requiredInvalidRejectedCount: requiredInvalid.length,
+    extraKeyRejectedCount: 1,
   }
 }
 
@@ -68,7 +79,7 @@ function invocation(value: unknown, label: string): Record<string, unknown> {
 export function validateStrictDescriptors(
   hostModule: unknown,
   remoteModule: unknown,
-): { readonly methodIds: readonly string[]; readonly requestTypeSymbol: string; readonly resultTypeSymbol: string } {
+): DescriptorValidationEvidence {
   const host = object(hostModule, 'Host module')
   const remote = object(remoteModule, 'Remote module')
   const hostContribution = object(host.TYPERT, 'Host TYPERT')
@@ -110,7 +121,6 @@ export function validateStrictDescriptors(
 
   const requestInvalid = [
     { nonce: 'wrong' },
-    { nonce: 'matrix-v1', extra: true },
     {},
     [],
     'matrix-v1',
@@ -120,20 +130,77 @@ export function validateStrictDescriptors(
     { ok: false, apiVersion: 'v1' },
     { ok: true, apiVersion: 'v2' },
     { ok: true },
-    { ok: true, apiVersion: 'v1', extra: true },
     [],
     'v1',
     null,
   ]
-  for (const [codec, label] of [[hostRequest, 'request'], [remoteRequest, 'request']] as const) {
-    assertPayloads(codec, { nonce: 'matrix-v1' }, requestInvalid, label)
-  }
-  for (const [codec, label] of [[hostResult, 'result'], [remoteResult, 'result']] as const) {
-    assertPayloads(codec, { ok: true, apiVersion: 'v1' }, resultInvalid, label)
-  }
+  const requestResults = [hostRequest, remoteRequest].map((codec) => assertPayloads(
+    codec,
+    { nonce: 'matrix-v1' },
+    requestInvalid,
+    { nonce: 'matrix-v1', extra: true },
+    'request',
+  ))
+  const resultResults = [hostResult, remoteResult].map((codec) => assertPayloads(
+    codec,
+    { ok: true, apiVersion: 'v1' },
+    resultInvalid,
+    { ok: true, apiVersion: 'v1', extra: true },
+    'result',
+  ))
+  const codecEvidence = (
+    typeSymbol: string,
+    results: typeof requestResults,
+  ) => ({
+    hostMode: 'strict' as const,
+    remoteMode: 'strict' as const,
+    hostHasSafeParse: true as const,
+    remoteHasSafeParse: true as const,
+    typeSymbolBytes: Buffer.byteLength(typeSymbol),
+    typeSymbolSha256: createHash('sha256').update(typeSymbol).digest('hex'),
+    symbolsAgree: true as const,
+    validAcceptedCount: results.reduce((total, result) => total + result.validAcceptedCount, 0),
+    requiredInvalidRejectedCount: results.reduce(
+      (total, result) => total + result.requiredInvalidRejectedCount,
+      0,
+    ),
+    extraKeyRejectedCount: results.reduce((total, result) => total + result.extraKeyRejectedCount, 0),
+  })
+  const methodIds = [METHOD_ID]
   return {
-    methodIds: [METHOD_ID],
-    requestTypeSymbol: hostRequest.typeSymbol,
-    resultTypeSymbol: hostResult.typeSymbol,
+    host: {
+      exportName: 'TYPERT',
+      package: PACKAGE,
+      face: 'host',
+      methodIds,
+      invocationCount: hostInvocations.length,
+    },
+    remote: {
+      exportName: 'TYPERT_REMOTE',
+      package: PACKAGE,
+      defaultIdentity: true,
+      methodIds,
+      descriptorCount: remoteDescriptors.length,
+    },
+    method: {
+      id: METHOD_ID,
+      service: 'matrixProbe',
+      namespace: 'matrixProbe',
+      method: 'health',
+      hostParameterCount: hostParameters.length,
+      remoteParameterCount: remoteParameters.length,
+      fieldsAgree: true,
+    },
+    requestCodec: codecEvidence(hostRequest.typeSymbol, requestResults),
+    resultCodec: codecEvidence(hostResult.typeSymbol, resultResults),
+    unknownLookup: {
+      id: 'matrixProbe/unknown',
+      hostMatchCount: hostInvocations.filter((entry) => (
+        typeof entry === 'object' && entry !== null && (entry as { id?: unknown }).id === 'matrixProbe/unknown'
+      )).length,
+      remoteMatchCount: remoteDescriptors.filter((entry) => (
+        typeof entry === 'object' && entry !== null && (entry as { id?: unknown }).id === 'matrixProbe/unknown'
+      )).length,
+    },
   }
 }

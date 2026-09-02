@@ -8,6 +8,7 @@ export type CliArguments =
     readonly platformKey?: string
   }
   | { readonly command: 'verify-report'; readonly input: string }
+  | { readonly command: 'verify-locks'; readonly platformKey: string }
 
 function flags(args: readonly string[]): Map<string, string> {
   if (args.length % 2 !== 0) throw new Error('every CLI flag requires one value')
@@ -43,6 +44,14 @@ export function parseCliArguments(argv: readonly string[]): CliArguments {
   if (command === 'verify-report') {
     allowOnly(values, ['--input'])
     return { command, input: requireFlag(values, '--input') }
+  }
+  if (command === 'verify-locks') {
+    allowOnly(values, ['--platform-key'])
+    const platformKey = requireFlag(values, '--platform-key')
+    if (!/^[a-z0-9][a-z0-9.-]{0,63}$/.test(platformKey)) {
+      throw new Error('--platform-key is unsafe')
+    }
+    return { command, platformKey }
   }
   if (command === 'run') {
     allowOnly(values, ['--matrix', '--lock-mode', '--output', '--platform-key'])

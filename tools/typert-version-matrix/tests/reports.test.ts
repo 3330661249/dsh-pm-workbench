@@ -2,19 +2,47 @@ import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, test } from 'vitest'
-import { aggregateMatrix, REQUIRED_PASS_ASSERTIONS } from '../src/aggregate.js'
+import {
+  aggregateMatrix,
+  REQUIRED_PASS_ASSERTIONS,
+  type AggregateMetadata,
+} from '../src/aggregate.js'
+import {
+  buildDirectGeneratorSummary,
+  deriveFailureAssertion,
+  derivePassAssertions,
+} from '../src/assertion-results.js'
 import { REQUIRED_ARTIFACTS } from '../src/assertions/artifacts.js'
+import { validateDirectGeneration } from '../src/assertions/generation.js'
 import { parseMatrixConfig } from '../src/config.js'
+import { hashMatrixConfig } from '../src/provenance.js'
 import { renderJUnit } from '../src/report-junit.js'
 import { parseAndVerifyReport, serializeMatrixReport } from '../src/report-json.js'
 import { renderMarkdown } from '../src/report-markdown.js'
 import { redactText } from '../src/redact.js'
+import { bindReviewedLockEvidence } from '../src/run-case.js'
 import type { CaseEvidence, MatrixConfig } from '../src/types.js'
 
 let config: MatrixConfig
 let cases: CaseEvidence[]
 
+function reportMetadata(
+  runId: string,
+  overrides: Partial<AggregateMetadata> = {},
+): AggregateMetadata {
+  return {
+    runId,
+    platform: 'darwin',
+    arch: 'arm64',
+    node: config.runtime.node,
+    npmCli: config.runtime.npmCli,
+    ...overrides,
+  }
+}
+
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex')
+const FIXTURE_SHA256 = 'f'.repeat(64)
+const CONFIG_FILE_SHA256 = 'c'.repeat(64)
 const fakeGitHubToken = ['ghp_', 'abcdefghijklmnopqrstuvwxyz0123456789'].join('')
 const fakeBearerToken = [
   'Bearer ',
@@ -31,21 +59,167 @@ const generated = {
   'lib/typert.remote-client.d.ts.map': '{"version":3,"file":"typert.remote-client.d.ts","sources":["../src/index.ts"]}',
 } as const
 
-function processStage(program: 'npm-cli' | 'typescript' | 'tsdown' | 'workspace-adapter', index: number) {
+function directEmitEvidence(): {
+  package: string
+  packageRoot: string
+  face: string
+  exports: string[]
+  js: string
+  dts: string
+  remote: { js: string; dts: string; dtsMap: string }
+} {
+  return {
+    package: '@knight/dsh-typert-matrix-probe',
+    packageRoot: 'packages/probe',
+    face: 'host',
+    exports: ['.'],
+    js: generated['lib/typert.host.js'],
+    dts: generated['lib/typert.host.d.ts'],
+    remote: {
+      js: generated['lib/typert.remote-client.js'],
+      dts: generated['lib/typert.remote-client.d.ts'],
+      dtsMap: generated['lib/typert.remote-client.d.ts.map'],
+    },
+  }
+}
+
+type DirectFailureCode =
+  | 'DISCOVERY_MISMATCH'
+  | 'GENERATION_EMPTY'
+  | 'GENERATION_IDENTITY'
+  | 'REMOTE_GENERATION_EMPTY'
+  | 'GENERATION_DISAGREEMENT'
+
+function directFailureInput(code: DirectFailureCode): NonNullable<CaseEvidence['directGenerator']> {
+  const discovery = [{
+    package: '@knight/dsh-typert-matrix-probe',
+    root: 'packages/probe',
+    faces: ['host'],
+  }]
+  const automatic = directEmitEvidence()
+  const forced = directEmitEvidence()
+  if (code === 'DISCOVERY_MISMATCH') discovery[0]!.root = 'packages/other'
+  if (code === 'GENERATION_EMPTY') return { discover: discovery, automatic: [], forced: [] }
+  if (code === 'GENERATION_IDENTITY') automatic.packageRoot = 'packages/other'
+  if (code === 'REMOTE_GENERATION_EMPTY') automatic.remote.dts = ''
+  if (code === 'GENERATION_DISAGREEMENT') forced.dts = `${forced.dts} `
+  return { discover: discovery, automatic: [automatic], forced: [forced] }
+}
+
+function withDirectFailure(
+  base: CaseEvidence,
+  claimedCode: DirectFailureCode,
+  evidence: NonNullable<CaseEvidence['directGenerator']>,
+): CaseEvidence {
+  const failed = structuredClone(base) as unknown as Record<string, unknown>
+  failed.directGenerator = evidence
+  failed.failure = { code: claimedCode, stage: 'direct-generator' }
+  failed.assertions = [deriveFailureAssertion(
+    'FAIL_COMPATIBILITY',
+    { code: claimedCode, stage: 'direct-generator' },
+  )]
+  return failed as unknown as CaseEvidence
+}
+
+function runProvenance(
+  matrixConfig: MatrixConfig,
+): NonNullable<CaseEvidence['provenance']> {
+  return {
+    schemaVersion: '1' as const,
+    configSha256: hashMatrixConfig(matrixConfig),
+    configFileSha256: CONFIG_FILE_SHA256,
+    fixtureSha256: FIXTURE_SHA256,
+    runnerGit: { sourceGitCommit: 'a'.repeat(40), worktreeClean: true as const },
+    runnerArtifacts: {
+      sourceTreeSha256: '1'.repeat(64),
+      distJsSha256: '2'.repeat(64),
+      toolPackageLockSha256: '3'.repeat(64),
+    },
+    lockMode: 'resolve' as const,
+    platformKey: null,
+    runStartedAt: '2026-09-02T00:00:00.000Z',
+    runCompletedAt: '2026-09-02T00:01:00.000Z',
+    ci: {
+      provider: 'github-actions',
+      repository: null,
+      workflow: null,
+      runId: null,
+      runAttempt: null,
+      commit: 'a'.repeat(40),
+    },
+  }
+}
+
+function processStage(
+  program: 'npm-cli' | 'typescript' | 'tsdown' | 'workspace-adapter',
+  args: string[],
+  index: number,
+) {
+  const stdout = program === 'typescript' || program === 'workspace-adapter' ? '' : `stdout-${index}`
+  const stderr = ''
   return {
     program,
-    args: [`stage-${index}`],
+    args,
     cwdToken: '<workspace>' as const,
     startedAt: '2026-09-02T00:00:00.000Z',
     durationMs: index + 1,
     exitCode: 0,
     signal: null,
     timedOut: false,
-    stdoutSha256: sha256(`stdout-${index}`),
-    stderrSha256: sha256(`stderr-${index}`),
+    stdoutSha256: sha256(stdout),
+    stderrSha256: sha256(stderr),
+    stdoutBytes: Buffer.byteLength(stdout),
+    stderrBytes: Buffer.byteLength(stderr),
     stdoutTruncated: false,
     stderrTruncated: false,
   }
+}
+
+function exactStages(
+  matrixCase: MatrixConfig['cases'][number],
+  count = 12,
+  lockMode: 'resolve' | 'frozen' = 'resolve',
+) {
+  const npm = '<repo>/tools/typert-version-matrix/node_modules/npm/bin/npm-cli.js'
+  const isolated = [
+    '--registry=https://registry.npmjs.org/',
+    '--cache=<case-root>/npm-cache',
+    '--userconfig=<case-root>/npmrc',
+  ]
+  const versions: Array<[string, string]> = [
+    ['@deepseek-ai/dsh', matrixCase.release['@deepseek-ai/dsh']],
+    ...Object.entries(matrixCase.packages),
+  ]
+  const registry = versions.map(([name, version], index) => processStage('npm-cli', [
+    npm, 'view', `${name}@${version}`, 'name', 'version', 'dist.integrity', 'dist.tarball',
+    'repository', '--json', ...isolated,
+  ], index))
+  const lockArgs = lockMode === 'resolve'
+    ? ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', ...isolated]
+    : ['ci', '--dry-run', '--ignore-scripts', '--no-audit', '--no-fund', ...isolated]
+  return [
+    ...registry,
+    processStage('npm-cli', [npm, ...lockArgs], 5),
+    processStage('npm-cli', [
+      npm, 'ci', '--ignore-scripts=false', '--no-audit', '--no-fund', ...isolated,
+    ], 6),
+    processStage('npm-cli', [npm, 'ls', '--all', '--json'], 7),
+    processStage('typescript', [
+      '<workspace>/node_modules/typescript/bin/tsc', '-b', 'tsconfig.host.json', '--pretty', 'false',
+    ], 8),
+    processStage('workspace-adapter', [
+      '<repo>/tools/typert-version-matrix/dist/adapters/workspace-v1.js',
+      '--workspace', '<workspace>', '--output', '<case-root>/logs/direct-generator.json',
+      '--case-root', '<case-root>',
+    ], 9),
+    processStage('tsdown', [
+      '<workspace>/node_modules/tsdown/dist/run.mjs', '--config', 'tsdown.config.mjs',
+    ], 10),
+    processStage('npm-cli', [
+      npm, 'pack', '--dry-run', '--json', '--workspace', '@knight/dsh-typert-matrix-probe',
+      ...isolated,
+    ], 11),
+  ].slice(0, count)
 }
 
 function passingEvidence(matrixCase: MatrixConfig['cases'][number]): CaseEvidence {
@@ -63,66 +237,159 @@ function passingEvidence(matrixCase: MatrixConfig['cases'][number]): CaseEvidenc
       dtsMap: generated['lib/typert.remote-client.d.ts.map'],
     },
   }
-  const stages = [
-    ...Array.from({ length: 7 }, (_, index) => processStage('npm-cli', index)),
-    processStage('typescript', 7),
-    processStage('workspace-adapter', 8),
-    processStage('tsdown', 9),
-    processStage('npm-cli', 10),
-  ]
+  const stages = exactStages(matrixCase)
+  const directGenerator = {
+    discover: [{
+      package: '@knight/dsh-typert-matrix-probe',
+      root: 'packages/probe',
+      faces: ['host'],
+    }],
+    automatic: [directEmit],
+    forced: [structuredClone(directEmit)],
+  }
+  const artifacts = REQUIRED_ARTIFACTS.map((artifactPath, index) => ({
+    path: artifactPath,
+    size: Buffer.byteLength(generated[artifactPath]),
+    sha256: sha256(generated[artifactPath]),
+    createdAtMs: 1_788_259_200_000 + index,
+  }))
+  const lockSha256 = sha256('lock')
+  const installedGraphSha256 = sha256('installed-graph')
+  const registry = exactRegistry(matrixCase)
+  const directGeneratorSummary = buildDirectGeneratorSummary(directGenerator, true)!
+  const validationEvidence = completeValidationEvidence(matrixCase, artifacts)
   return {
     schemaVersion: '1',
     case: matrixCase,
+    fixtureSha256: FIXTURE_SHA256,
     status: 'PASS',
-    assertions: REQUIRED_PASS_ASSERTIONS.map((id) => ({
-      id,
-      status: 'PASS',
-      expected: true,
-      actualSummary: true,
-      evidenceRefs: [],
-    })),
-    artifacts: REQUIRED_ARTIFACTS.map((artifactPath, index) => ({
-      path: artifactPath,
-      size: Buffer.byteLength(generated[artifactPath]),
-      sha256: sha256(generated[artifactPath]),
-      createdAtMs: 1_788_259_200_000 + index,
-    })),
-    lockSha256: sha256('lock'),
-    installedGraphSha256: sha256('installed-graph'),
-    registry: [
-      '@deepseek-ai/dsh',
-      '@deepseek-ai/dsh-typert-generator',
-      '@deepseek-ai/dsh-typert-protocol',
-      '@deepseek-ai/dsh-invariants',
-      '@deepseek-ai/cordis',
-    ].map((name) => {
-      const version = name === '@deepseek-ai/cordis'
-        ? matrixCase.packages['@deepseek-ai/cordis']
-        : release
-      return {
-        name,
-        requestedVersion: version,
-        returnedVersion: version,
-        integrity: `sha512-${Buffer.from(`${name}@${version}`).toString('base64')}`,
-        tarballOrigin: 'https://registry.npmjs.org',
-        ...(name === '@deepseek-ai/cordis'
-          ? {}
-          : { repositoryUrl: 'git+https://github.com/deepseek-ai/deepseek-harness.git' }),
-        observedAt: '2026-09-02T00:00:00.000Z',
-      }
-    }) as NonNullable<CaseEvidence['registry']>,
+    assertions: derivePassAssertions({
+      config,
+      matrixCase,
+      fixtureSha256: FIXTURE_SHA256,
+      lockSha256,
+      installedGraphSha256,
+      registry,
+      stages,
+      artifacts,
+      directGeneratorSummary,
+      nonDecisiveDiagnostics: {
+        ordinaryBundle: { path: 'lib/index.js', decisive: false, state: 'regular-file', size: 17, sha256: sha256('ordinary-bundle') },
+      },
+      validationEvidence,
+    }),
+    artifacts,
+    lockSha256,
+    installedGraphSha256,
+    registry,
     stages,
-    directGenerator: {
-      discover: [{
-        package: '@knight/dsh-typert-matrix-probe',
-        root: 'packages/probe',
-        faces: ['host'],
-      }],
-      automatic: [directEmit],
-      forced: [structuredClone(directEmit)],
+    directGenerator,
+    nonDecisiveDiagnostics: {
+      ordinaryBundle: { path: 'lib/index.js', decisive: false, state: 'regular-file', size: 17, sha256: sha256('ordinary-bundle') },
     },
-    nonDecisiveDiagnostics: { ordinaryBundleIsDecisive: false },
+    validationEvidence,
+    provenance: runProvenance(config),
   }
+}
+
+function earlyValidationEvidence(matrixCase: MatrixConfig['cases'][number]) {
+  const directVersions = { ...matrixCase.packages, ...config.toolchain }
+  return {
+    fixtureCopy: {
+      fixture: 'strict-remote-v1' as const,
+      fileCount: 5,
+      sourceSha256: FIXTURE_SHA256,
+      copiedSha256: FIXTURE_SHA256,
+    },
+    lock: { lockfileVersion: 3 as const, directVersions },
+    installedGraph: { problemCount: 0 as const, directVersions },
+    workspaceLink: { entryKind: 'symlink' as const, resolvesTo: 'packages/probe' as const },
+    preseed: { checkedPaths: [...REQUIRED_ARTIFACTS], presentPaths: [] },
+  }
+}
+
+function completeValidationEvidence(
+  matrixCase: MatrixConfig['cases'][number],
+  artifacts: CaseEvidence['artifacts'],
+) {
+  return {
+    ...earlyValidationEvidence(matrixCase),
+    generatedArtifacts: {
+      files: artifacts.map((artifact) => ({
+        ...artifact,
+        fileType: 'regular' as const,
+        symlink: false as const,
+        withinProbe: true as const,
+        fresh: true as const,
+      })),
+      packageExports: {
+        './typert': { types: './lib/typert.host.d.ts', default: './lib/typert.host.js' },
+        './remote': { types: './lib/typert.remote-client.d.ts', default: './lib/typert.remote-client.js' },
+      },
+      generatedHeaders: { checkedArtifactCount: 4, matchingHeaderCount: 4 },
+      sourceMap: { file: 'typert.remote-client.d.ts', sourceCount: 1, absoluteSourceCount: 0 },
+      pack: {
+        inventorySha256: sha256('pack-inventory'),
+        totalFileCount: 5,
+        includedRequiredArtifacts: [...REQUIRED_ARTIFACTS],
+        forbiddenFileCount: 0,
+        absolutePathCount: 0,
+        manifestRequiredArtifactCount: 5,
+      },
+    },
+    descriptors: {
+      host: {
+        exportName: 'TYPERT' as const,
+        package: '@knight/dsh-typert-matrix-probe' as const,
+        face: 'host' as const,
+        methodIds: ['matrixProbe/health'],
+        invocationCount: 1,
+      },
+      remote: {
+        exportName: 'TYPERT_REMOTE' as const,
+        package: '@knight/dsh-typert-matrix-probe' as const,
+        defaultIdentity: true as const,
+        methodIds: ['matrixProbe/health'],
+        descriptorCount: 1,
+      },
+      method: {
+        id: 'matrixProbe/health', service: 'matrixProbe', namespace: 'matrixProbe', method: 'health',
+        hostParameterCount: 1, remoteParameterCount: 1, fieldsAgree: true as const,
+      },
+      requestCodec: {
+        hostMode: 'strict' as const, remoteMode: 'strict' as const,
+        hostHasSafeParse: true as const, remoteHasSafeParse: true as const,
+        typeSymbolBytes: 25, typeSymbolSha256: sha256('request-symbol'), symbolsAgree: true as const,
+        validAcceptedCount: 2, requiredInvalidRejectedCount: 10, extraKeyRejectedCount: 2,
+      },
+      resultCodec: {
+        hostMode: 'strict' as const, remoteMode: 'strict' as const,
+        hostHasSafeParse: true as const, remoteHasSafeParse: true as const,
+        typeSymbolBytes: 24, typeSymbolSha256: sha256('result-symbol'), symbolsAgree: true as const,
+        validAcceptedCount: 2, requiredInvalidRejectedCount: 12, extraKeyRejectedCount: 2,
+      },
+      unknownLookup: {
+        id: 'matrixProbe/unknown' as const, hostMatchCount: 0, remoteMatchCount: 0,
+      },
+    },
+  }
+}
+
+function exactRegistry(
+  matrixCase: MatrixConfig['cases'][number],
+): NonNullable<CaseEvidence['registry']> {
+  return [
+    ['@deepseek-ai/dsh', matrixCase.release['@deepseek-ai/dsh']],
+    ...Object.entries(matrixCase.packages),
+  ].map(([name, version]) => ({
+    name,
+    requestedVersion: version,
+    returnedVersion: version,
+    integrity: `sha512-${createHash('sha512').update(`${name}@${version}`).digest('base64')}`,
+    tarballOrigin: 'https://registry.npmjs.org',
+    repositoryUrl: 'git+https://github.com/deepseek-ai/deepseek-harness.git',
+    observedAt: '2026-09-02T00:00:00.000Z',
+  })) as NonNullable<CaseEvidence['registry']>
 }
 
 function reportWithPassingCandidate() {
@@ -130,7 +397,89 @@ function reportWithPassingCandidate() {
   const passCases = cases.map((entry) => (
     entry.case.id === candidate.id ? passingEvidence(candidate) : entry
   ))
-  return aggregateMatrix(config, passCases, { runId: 'passing-run' })
+  return aggregateMatrix(config, passCases, reportMetadata('passing-run'))
+}
+
+function reportWithFrozenReviewedLocks() {
+  const manifestSha256 = sha256('reviewed-lock-manifest')
+  const frozenCases = cases.map((item) => {
+    const frozen = structuredClone(item) as CaseEvidence & {
+      provenance: NonNullable<CaseEvidence['provenance']>
+    }
+    frozen.provenance = {
+      ...frozen.provenance,
+      lockMode: 'frozen',
+      platformKey: 'darwin-arm64-node24-npm11',
+    }
+    ;(frozen as unknown as { stages: CaseEvidence['stages'] }).stages = exactStages(
+      frozen.case,
+      11,
+      'frozen',
+    )
+    return bindReviewedLockEvidence(frozen, {
+      lockMode: 'frozen',
+      reviewedLock: {
+        schemaVersion: '1',
+        platformKey: 'darwin-arm64-node24-npm11',
+        manifestSha256,
+        manifestCaseCount: 8,
+        lockSha256: frozen.lockSha256!,
+        installedGraphSha256: frozen.installedGraphSha256!,
+      },
+    })
+  })
+  return aggregateMatrix(config, frozenCases, reportMetadata('frozen-reviewed-locks'))
+}
+
+function regenerateRawPassAssertions(passing: CaseEvidence): void {
+  const directGeneratorSummary = buildDirectGeneratorSummary(passing.directGenerator, true)!
+  ;(passing as unknown as { assertions: CaseEvidence['assertions'] }).assertions = derivePassAssertions({
+    config,
+    matrixCase: passing.case,
+    fixtureSha256: passing.fixtureSha256,
+    lockSha256: passing.lockSha256!,
+    installedGraphSha256: passing.installedGraphSha256!,
+    registry: passing.registry!,
+    stages: passing.stages!,
+    artifacts: passing.artifacts,
+    directGeneratorSummary,
+    nonDecisiveDiagnostics: passing.nonDecisiveDiagnostics!,
+    validationEvidence: passing.validationEvidence as Required<NonNullable<CaseEvidence['validationEvidence']>>,
+  })
+}
+
+function laterCompatibilityFailure(
+  matrixCase: MatrixConfig['cases'][number],
+  code: 'TSDOWN_FAILED' | 'PACK_DRY_RUN_FAILED' | 'DESCRIPTOR_SHAPE',
+): CaseEvidence {
+  const input = structuredClone(passingEvidence(matrixCase)) as unknown as Record<string, any>
+  const stage = code === 'TSDOWN_FAILED'
+    ? 'tsdown'
+    : code === 'PACK_DRY_RUN_FAILED'
+      ? 'pack-dry-run'
+      : 'descriptors'
+  input.status = 'FAIL_COMPATIBILITY'
+  input.failure = { code, stage }
+  input.assertions = [deriveFailureAssertion(
+    'FAIL_COMPATIBILITY',
+    { code, stage },
+  )]
+  if (code === 'TSDOWN_FAILED') {
+    input.stages = input.stages.slice(0, 11)
+    input.stages[10].exitCode = 1
+    input.artifacts = []
+    delete input.nonDecisiveDiagnostics
+    delete input.validationEvidence.generatedArtifacts
+    delete input.validationEvidence.descriptors
+  } else if (code === 'PACK_DRY_RUN_FAILED') {
+    input.stages[11].exitCode = 1
+    input.artifacts = []
+    delete input.validationEvidence.generatedArtifacts
+    delete input.validationEvidence.descriptors
+  } else {
+    delete input.validationEvidence.descriptors
+  }
+  return input as CaseEvidence
 }
 
 beforeAll(async () => {
@@ -139,35 +488,181 @@ beforeAll(async () => {
     'utf8',
   )))
   cases = config.cases.map((matrixCase) => ({
-    schemaVersion: '1',
-    case: matrixCase,
-    status: 'FAIL_COMPATIBILITY',
-    assertions: [{ id: 'B03', status: 'FAIL', expected: 1, actualSummary: 0, evidenceRefs: ['cases/log.sha256'] }],
-    artifacts: [],
-    failure: { code: 'GENERATION_EMPTY', stage: 'direct-generator' },
-  }))
+      schemaVersion: '1',
+      case: matrixCase,
+      fixtureSha256: FIXTURE_SHA256,
+      status: 'FAIL_COMPATIBILITY',
+      assertions: [deriveFailureAssertion(
+        'FAIL_COMPATIBILITY',
+        { code: 'GENERATION_EMPTY', stage: 'direct-generator' },
+      )],
+      artifacts: [],
+      lockSha256: sha256('lock'),
+      installedGraphSha256: sha256('installed-graph'),
+      registry: exactRegistry(matrixCase),
+      stages: exactStages(matrixCase, 11),
+      directGenerator: {
+        discover: [{
+          package: '@knight/dsh-typert-matrix-probe',
+          root: 'packages/probe',
+          faces: ['host'],
+        }],
+        automatic: [],
+        forced: [],
+      },
+      nonDecisiveDiagnostics: {
+        ordinaryBundle: { path: 'lib/index.js', decisive: false, state: 'missing' },
+      },
+      validationEvidence: earlyValidationEvidence(matrixCase),
+      failure: { code: 'GENERATION_EMPTY', stage: 'direct-generator' },
+      provenance: runProvenance(config),
+    }))
 })
 
 describe('canonical reports', () => {
   test('serializes deterministically and verifies aggregate semantics on readback', () => {
-    const report = aggregateMatrix(config, cases, { runId: 'fixed-run' })
+    const report = aggregateMatrix(config, cases, reportMetadata('fixed-run'))
     const first = serializeMatrixReport(report)
     const second = serializeMatrixReport(report)
 
     expect(first).toBe(second)
-    expect(parseAndVerifyReport(first)).toEqual(report)
+    expect(serializeMatrixReport(parseAndVerifyReport(first))).toBe(first)
+  })
+
+  test('closes every frozen canonical case over one complete reviewed lock manifest', () => {
+    const raw = serializeMatrixReport(reportWithFrozenReviewedLocks())
+    const verified = parseAndVerifyReport(raw)
+
+    expect(verified.environment.provenance.lockMode).toBe('frozen')
+    expect(verified.cases.every(({ reviewedLock, lockSha256, installedGraphSha256 }) => (
+      reviewedLock?.manifestCaseCount === 8
+      && reviewedLock.lockSha256 === lockSha256
+      && reviewedLock.installedGraphSha256 === installedGraphSha256
+    ))).toBe(true)
+  })
+
+  test('rejects a self-consistent case projection from a different reviewed manifest', () => {
+    const report = structuredClone(reportWithFrozenReviewedLocks())
+    const first = report.cases[0]!
+    ;(first.reviewedLock as unknown as { manifestSha256: string }).manifestSha256 = '7'.repeat(64)
+
+    expect(() => serializeMatrixReport(report))
+      .toThrow(/one reviewed lock manifest/i)
+  })
+
+  test.each([
+    ['lock hash', (entry: Record<string, any>) => {
+      entry.reviewedLock.lockSha256 = '8'.repeat(64)
+    }],
+    ['installed graph hash', (entry: Record<string, any>) => {
+      entry.reviewedLock.installedGraphSha256 = '9'.repeat(64)
+    }],
+    ['manifest identity', (entry: Record<string, any>) => {
+      entry.reviewedLock.manifestSha256 = '7'.repeat(64)
+    }],
+    ['manifest case count', (entry: Record<string, any>) => {
+      entry.reviewedLock.manifestCaseCount = 7
+    }],
+    ['missing reviewed evidence', (entry: Record<string, any>) => {
+      delete entry.reviewedLock
+    }],
+  ] as const)('rejects a frozen canonical report with tampered %s', (_label, mutate) => {
+    const canonical = JSON.parse(serializeMatrixReport(reportWithFrozenReviewedLocks())) as {
+      cases: Array<Record<string, any>>
+    }
+    mutate(canonical.cases[0]!)
+
+    expect(() => parseAndVerifyReport(JSON.stringify(canonical)))
+      .toThrow(/reviewed lock|manifest|frozen|assertion/i)
   })
 
   test('rejects a tampered exit code or eligible-candidate list', () => {
-    const report = aggregateMatrix(config, cases, { runId: 'fixed-run' })
-    const tampered = { ...report, exitCode: 0, eligibleCandidateIds: ['invented'] }
+    const report = aggregateMatrix(config, cases, reportMetadata('fixed-run'))
+    const tampered = JSON.parse(serializeMatrixReport(report)) as Record<string, unknown>
+    tampered.exitCode = 0
+    tampered.eligibleCandidateIds = ['invented']
 
     expect(() => parseAndVerifyReport(JSON.stringify(tampered))).toThrow(/aggregate mismatch/)
   })
 
+  test.each([
+    ['size', Number.NaN],
+    ['createdAtMs', Number.NaN],
+    ['size', Number.POSITIVE_INFINITY],
+    ['createdAtMs', Number.POSITIVE_INFINITY],
+    ['size', Number.MAX_SAFE_INTEGER + 1],
+    ['createdAtMs', Number.MAX_SAFE_INTEGER + 1],
+  ] as const)('serializer rejects non-canonical artifact %s=%s', (field, numericValue) => {
+    const report = structuredClone(aggregateMatrix(
+      config,
+      cases,
+      reportMetadata(`artifact-number-${field}`),
+    ))
+    ;(report.cases[0] as unknown as { artifacts: Array<Record<string, unknown>> }).artifacts = [{
+      path: 'lib/typert.host.js',
+      size: 1,
+      sha256: sha256('artifact'),
+      createdAtMs: 1_788_259_200_000,
+      [field]: numericValue,
+    }]
+
+    expect(() => serializeMatrixReport(report)).toThrow(/artifact|number|finite|safe/i)
+  })
+
+  test.each([
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])('serializer rejects non-canonical stage duration %s', (durationMs) => {
+    const report = structuredClone(aggregateMatrix(
+      config,
+      cases,
+      reportMetadata('stage-number'),
+    ))
+    ;(report.cases[0]!.stages![0] as unknown as { durationMs: number }).durationMs = durationMs
+
+    expect(() => serializeMatrixReport(report)).toThrow(/stage|duration|number|finite|safe/i)
+  })
+
+  test('every accepted numeric report projection round-trips through canonical JSON', () => {
+    for (const report of [
+      aggregateMatrix(config, cases, reportMetadata('round-trip-failure')),
+      reportWithPassingCandidate(),
+      reportWithFrozenReviewedLocks(),
+    ]) {
+      const raw = serializeMatrixReport(report)
+      expect(serializeMatrixReport(parseAndVerifyReport(raw))).toBe(raw)
+    }
+  })
+
+  test.each([
+    ['node', '99.0.0'],
+    ['npmCli', '99.0.0'],
+  ] as const)('binds environment.%s to the reviewed config runtime', (field, value) => {
+    const report = structuredClone(aggregateMatrix(config, cases, reportMetadata(`runtime-${field}`)))
+    ;(report.environment as unknown as Record<string, unknown>)[field] = value
+
+    expect(() => serializeMatrixReport(report)).toThrow(/environment|runtime|node|npm/i)
+  })
+
+  test.each([
+    ['platform', ''],
+    ['platform', 'invented-os'],
+    ['arch', ''],
+    ['arch', '../arm64'],
+    ['arch', 'unknown'],
+    ['arch', 'default'],
+    ['arch', 'fake_arch'],
+  ] as const)('rejects unsafe resolve environment %s=%s', (field, value) => {
+    const report = structuredClone(aggregateMatrix(config, cases, reportMetadata(`environment-${field}`)))
+    ;(report.environment as unknown as Record<string, unknown>)[field] = value
+
+    expect(() => serializeMatrixReport(report)).toThrow(/environment|platform|arch|local path/i)
+  })
+
   test('derives Markdown and JUnit from canonical JSON with the compatibility disclaimer', () => {
     const canonical = parseAndVerifyReport(serializeMatrixReport(
-      aggregateMatrix(config, cases, { runId: 'fixed-run' }),
+      aggregateMatrix(config, cases, reportMetadata('fixed-run')),
     ))
 
     const markdown = renderMarkdown(canonical)
@@ -196,21 +691,447 @@ describe('canonical reports', () => {
     expect(raw).not.toContain('"directGenerator":')
     expect(passing).toHaveProperty('directGeneratorSummary')
     expect(passing.assertions).toHaveLength(REQUIRED_PASS_ASSERTIONS.length)
-    expect(passing.assertions.every(({ evidenceRefs }) => evidenceRefs.length === 6)).toBe(true)
+    expect(passing.assertions.every(({ evidenceRefs }) => evidenceRefs.length > 0 && evidenceRefs.length <= 3)).toBe(true)
+    expect(passing.assertions.every(({ expected, actualSummary }) => (
+      typeof expected === 'object'
+      && expected !== null
+      && typeof actualSummary === 'object'
+      && actualSummary !== null
+    ))).toBe(true)
     expect(passing.assertions.flatMap(({ evidenceRefs }) => evidenceRefs))
       .toSatisfy((refs: string[]) => refs.every((ref) => /^[a-z-]+:sha256:[a-f0-9]{64}$/.test(ref)))
+    expect(serializeMatrixReport(parsed)).toBe(raw)
+  })
+
+  test('retains source-free direct-generator evidence and closed refs for a generation failure', () => {
+    const failed = {
+      ...cases[0]!,
+      directGenerator: {
+        discover: [{
+          package: '@knight/dsh-typert-matrix-probe',
+          root: 'packages/probe',
+          faces: ['host'],
+        }],
+        automatic: [],
+        forced: [],
+      },
+    }
+    const report = aggregateMatrix(
+      config,
+      [failed, ...cases.slice(1)],
+      reportMetadata('generation-failure'),
+    )
+    const raw = serializeMatrixReport(report)
+    const parsed = parseAndVerifyReport(raw)
+    const canonical = parsed.cases[0] as CaseEvidence & {
+      directGeneratorSummary: {
+        schemaVersion: string
+        rawSourceIncluded: boolean
+        discovery: Array<{ package: string; root: string; faces: string[] }>
+        automaticCount: number
+        forcedCount: number
+      }
+    }
+
+    expect(raw).not.toMatch(/"(?:js|dts|dtsMap)":/)
+    expect(canonical.directGeneratorSummary).toEqual({
+      schemaVersion: '1',
+      rawSourceIncluded: false,
+      discovery: [{
+        package: '@knight/dsh-typert-matrix-probe',
+        root: 'packages/probe',
+        faces: ['host'],
+      }],
+      automaticCount: 0,
+      forcedCount: 0,
+    })
+    expect(canonical.nonDecisiveDiagnostics).toEqual({
+      ordinaryBundle: { path: 'lib/index.js', decisive: false, state: 'missing' },
+    })
+    expect(canonical.assertions[0]!.evidenceRefs)
+      .toSatisfy((refs: readonly string[]) => (
+        refs.length > 0
+        && refs.every((ref) => /^[a-z-]+:sha256:[a-f0-9]{64}$/.test(ref))
+        && refs.some((ref) => ref.startsWith('direct-generator:sha256:'))
+      ))
+  })
+
+  test.each([
+    ['0/1', 0, 1, 'forced'],
+    ['1/0', 1, 0, 'automatic'],
+  ] as const)(
+    'retains the complete singleton side for a GENERATION_EMPTY %s result pair',
+    (_label, automaticCount, forcedCount, singletonSide) => {
+      const failed = structuredClone(cases[0]!) as unknown as Record<string, unknown>
+      failed.directGenerator = {
+        discover: [{
+          package: '@knight/dsh-typert-matrix-probe',
+          root: 'packages/probe',
+          faces: ['host'],
+        }],
+        automatic: automaticCount === 1 ? [directEmitEvidence()] : [],
+        forced: forcedCount === 1 ? [directEmitEvidence()] : [],
+      }
+      failed.assertions = [deriveFailureAssertion(
+        'FAIL_COMPATIBILITY',
+        { code: 'GENERATION_EMPTY', stage: 'direct-generator' },
+      )]
+      const raw = serializeMatrixReport(aggregateMatrix(
+        config,
+        [failed as unknown as CaseEvidence, ...cases.slice(1)],
+        reportMetadata(`generation-empty-${automaticCount}-${forcedCount}`),
+      ))
+      const canonical = JSON.parse(raw) as {
+        cases: Array<Record<string, unknown>>
+      }
+      const summary = canonical.cases[0]!.directGeneratorSummary as Record<string, unknown>
+      const emptySide = singletonSide === 'automatic' ? 'forced' : 'automatic'
+
+      expect(() => parseAndVerifyReport(raw)).not.toThrow()
+      expect(raw).not.toContain(generated['lib/typert.host.js'])
+      expect(summary.automaticCount).toBe(automaticCount)
+      expect(summary.forcedCount).toBe(forcedCount)
+      expect(summary[`${singletonSide}Identity`]).toEqual({
+        package: '@knight/dsh-typert-matrix-probe',
+        packageRoot: 'packages/probe',
+        face: 'host',
+        exports: ['.'],
+      })
+      expect(Object.keys(summary[`${singletonSide}ArtifactSha256`] as object).sort())
+        .toEqual([...REQUIRED_ARTIFACTS].sort())
+      expect(Object.values(summary[`${singletonSide}ArtifactBytes`] as Record<string, number>))
+        .toSatisfy((bytes: number[]) => bytes.every((length) => length > 0))
+      expect(summary).not.toHaveProperty(`${emptySide}Identity`)
+      expect(summary).not.toHaveProperty(`${emptySide}ArtifactSha256`)
+      expect(summary).not.toHaveProperty(`${emptySide}ArtifactBytes`)
+    },
+  )
+
+  test.each(['automatic', 'forced'] as const)(
+    'summarizes an incomplete singleton %s without retaining source',
+    (side) => {
+      const malformed = {
+        discover: [{
+          package: '@knight/dsh-typert-matrix-probe',
+          root: 'packages/probe',
+          faces: ['host'],
+        }],
+        automatic: side === 'automatic' ? [{ package: '@knight/dsh-typert-matrix-probe' }] : [],
+        forced: side === 'forced' ? [{ package: '@knight/dsh-typert-matrix-probe' }] : [],
+      } as unknown as NonNullable<CaseEvidence['directGenerator']>
+
+      const summary = buildDirectGeneratorSummary(malformed, false) as unknown as Record<string, unknown>
+      expect(summary[`${side}Identity`]).toEqual({
+        package: '@knight/dsh-typert-matrix-probe',
+        packageRoot: null,
+        face: null,
+        exports: null,
+      })
+      expect(Object.values(summary[`${side}ArtifactState`] as Record<string, unknown>))
+        .toSatisfy((states: unknown[]) => states.every((state) => (
+          JSON.stringify(state) === JSON.stringify({ present: false, bytes: 0, sha256: null })
+        )))
+      expect(summary).not.toHaveProperty(`${side}ArtifactSha256`)
+      expect(summary).not.toHaveProperty(`${side}ArtifactBytes`)
+      expect(JSON.stringify(summary)).not.toMatch(/"(?:js|dts|dtsMap)":/)
+    },
+  )
+
+  test.each([
+    ['0/1 missing singleton identity', 0, 1, (summary: Record<string, unknown>) => {
+      delete summary.forcedIdentity
+    }],
+    ['1/0 missing singleton byte lengths', 1, 0, (summary: Record<string, unknown>) => {
+      delete summary.automaticArtifactBytes
+    }],
+    ['0/1 with forbidden automatic details', 0, 1, (summary: Record<string, unknown>) => {
+      summary.automaticIdentity = structuredClone(summary.forcedIdentity)
+    }],
+    ['1/0 with forbidden forced details', 1, 0, (summary: Record<string, unknown>) => {
+      summary.forcedArtifactSha256 = structuredClone(summary.automaticArtifactSha256)
+    }],
+    ['0/1 missing one singleton artifact hash', 0, 1, (summary: Record<string, unknown>) => {
+      delete (summary.forcedArtifactSha256 as Record<string, unknown>)['lib/typert.host.js']
+    }],
+    ['1/0 with a zero singleton artifact byte length', 1, 0, (summary: Record<string, unknown>) => {
+      ;(summary.automaticArtifactBytes as Record<string, unknown>)['lib/typert.host.js'] = 0
+    }],
+  ] as const)(
+    'rejects tampered GENERATION_EMPTY direct evidence: %s',
+    (_label, automaticCount, forcedCount, mutate) => {
+      const failed = structuredClone(cases[0]!) as unknown as Record<string, unknown>
+      failed.directGenerator = {
+        discover: [{
+          package: '@knight/dsh-typert-matrix-probe',
+          root: 'packages/probe',
+          faces: ['host'],
+        }],
+        automatic: automaticCount === 1 ? [directEmitEvidence()] : [],
+        forced: forcedCount === 1 ? [directEmitEvidence()] : [],
+      }
+      failed.assertions = [deriveFailureAssertion(
+        'FAIL_COMPATIBILITY',
+        { code: 'GENERATION_EMPTY', stage: 'direct-generator' },
+      )]
+      const canonical = JSON.parse(serializeMatrixReport(aggregateMatrix(
+        config,
+        [failed as unknown as CaseEvidence, ...cases.slice(1)],
+        reportMetadata(`tampered-generation-empty-${automaticCount}-${forcedCount}`),
+      ))) as { cases: Array<Record<string, unknown>> }
+      mutate(canonical.cases[0]!.directGeneratorSummary as Record<string, unknown>)
+
+      expect(() => parseAndVerifyReport(JSON.stringify(canonical)))
+        .toThrow(/direct-generator|generation|evidence|artifact|byte|assertion/i)
+    },
+  )
+
+  test('rejects a GENERATION_EMPTY result pair whose discovery identity drifts', () => {
+    const failed = structuredClone(cases[0]!) as unknown as Record<string, unknown>
+    failed.directGenerator = {
+      discover: [{
+        package: '@knight/dsh-typert-matrix-probe',
+        root: 'packages/other',
+        faces: ['host'],
+      }],
+      automatic: [],
+      forced: [directEmitEvidence()],
+    }
+    failed.assertions = [deriveFailureAssertion(
+      'FAIL_COMPATIBILITY',
+      { code: 'GENERATION_EMPTY', stage: 'direct-generator' },
+    )]
+    const report = aggregateMatrix(
+      config,
+      [failed as unknown as CaseEvidence, ...cases.slice(1)],
+      reportMetadata('generation-empty-discovery-drift'),
+    )
+
+    expect(() => serializeMatrixReport(report)).toThrow(/direct|discovery|generation/i)
+  })
+
+  test.each([
+    'DISCOVERY_MISMATCH',
+    'GENERATION_EMPTY',
+    'GENERATION_IDENTITY',
+    'REMOTE_GENERATION_EMPTY',
+    'GENERATION_DISAGREEMENT',
+  ] as const)('accepts %s only with the source-free facts that trigger the real validator', (code) => {
+    const evidence = directFailureInput(code)
+    let observedCode: string | undefined
+    try {
+      validateDirectGeneration(evidence)
+    } catch (error) {
+      observedCode = (error as { code?: string }).code
+    }
+    expect(observedCode).toBe(code)
+
+    const report = aggregateMatrix(
+      config,
+      [withDirectFailure(cases[0]!, code, evidence), ...cases.slice(1)],
+      reportMetadata(`direct-failure-${code.toLowerCase()}`),
+    )
+    const raw = serializeMatrixReport(report)
+    expect(raw).not.toMatch(/"(?:js|dts|dtsMap)":/)
+    expect(() => parseAndVerifyReport(raw)).not.toThrow()
+  })
+
+  test('rejects a claimed disagreement when all visible identities and artifact states agree', () => {
+    const evidence = directFailureInput('GENERATION_DISAGREEMENT')
+    const failed = withDirectFailure(cases[0]!, 'GENERATION_DISAGREEMENT', evidence)
+    const forged = structuredClone(failed) as unknown as Record<string, unknown>
+    const summary = buildDirectGeneratorSummary(evidence, false) as unknown as Record<string, unknown>
+    summary.forcedIdentity = structuredClone(summary.automaticIdentity)
+    summary.forcedArtifactState = structuredClone(summary.automaticArtifactState)
+    summary.forcedArtifactSha256 = structuredClone(summary.automaticArtifactSha256)
+    summary.forcedArtifactBytes = structuredClone(summary.automaticArtifactBytes)
+    delete forged.directGenerator
+    forged.directGeneratorSummary = summary
+
+    const report = aggregateMatrix(
+      config,
+      [forged as unknown as CaseEvidence, ...cases.slice(1)],
+      reportMetadata('opaque-disagreement'),
+    )
+
+    expect(() => serializeMatrixReport(report)).toThrow(/direct|generation|failure/i)
+  })
+
+  test.each(['automaticNormalizedSha256', 'forcedNormalizedSha256'])(
+    'rejects removed opaque direct-generator field %s',
+    (field) => {
+      const evidence = directFailureInput('GENERATION_DISAGREEMENT')
+      const canonical = JSON.parse(serializeMatrixReport(aggregateMatrix(
+        config,
+        [withDirectFailure(cases[0]!, 'GENERATION_DISAGREEMENT', evidence), ...cases.slice(1)],
+        reportMetadata(`opaque-field-${field}`),
+      ))) as { cases: Array<Record<string, unknown>> }
+      const summary = canonical.cases[0]!.directGeneratorSummary as Record<string, unknown>
+      summary[field] = sha256('opaque-full-emit')
+
+      expect(() => parseAndVerifyReport(JSON.stringify(canonical)))
+        .toThrow(/direct-generator summary.*unknown key/i)
+    },
+  )
+
+  test.each([
+    ['DISCOVERY_MISMATCH', 'GENERATION_EMPTY'],
+    ['GENERATION_IDENTITY', 'GENERATION_DISAGREEMENT'],
+    ['REMOTE_GENERATION_EMPTY', 'GENERATION_IDENTITY'],
+    ['GENERATION_DISAGREEMENT', 'success'],
+  ] as const)('rejects claimed %s when source-free facts describe %s', (claimed, actual) => {
+    const evidence = actual === 'success'
+      ? {
+          discover: directFailureInput('GENERATION_EMPTY').discover,
+          automatic: [directEmitEvidence()],
+          forced: [directEmitEvidence()],
+        }
+      : directFailureInput(actual)
+    const report = aggregateMatrix(
+      config,
+      [withDirectFailure(cases[0]!, claimed, evidence), ...cases.slice(1)],
+      reportMetadata(`contradictory-${claimed.toLowerCase()}`),
+    )
+
+    expect(() => serializeMatrixReport(report)).toThrow(/direct|generation|failure/i)
+  })
+
+  test.each([
+    ['missing failure', (entry: Record<string, unknown>) => { delete entry.failure }],
+    ['zero assertions', (entry: Record<string, unknown>) => { entry.assertions = [] }],
+    ['a mismatched typed failure', (entry: Record<string, unknown>) => {
+      entry.failure = { code: 'REGISTRY_EVIDENCE', stage: 'registry' }
+    }],
+    ['a mismatched failure stage', (entry: Record<string, unknown>) => {
+      entry.failure = { code: 'GENERATION_EMPTY', stage: 'registry' }
+    }],
+    ['no corresponding failed assertion', (entry: Record<string, unknown>) => {
+      entry.assertions = [{
+        id: 'B03',
+        status: 'PASS',
+        expected: 1,
+        actualSummary: 'GENERATION_EMPTY',
+        evidenceRefs: [],
+      }]
+    }],
+    ['a failed assertion for another code', (entry: Record<string, unknown>) => {
+      entry.assertions = [{
+        id: 'B03',
+        status: 'FAIL',
+        expected: 1,
+        actualSummary: 'SOME_OTHER_FAILURE',
+        evidenceRefs: [],
+      }]
+    }],
+  ])('rejects a non-PASS case with %s', (_label, mutate) => {
+    const canonical = JSON.parse(serializeMatrixReport(
+      aggregateMatrix(config, cases, reportMetadata('malformed-failure')),
+    )) as { cases: Array<Record<string, unknown>> }
+    mutate(canonical.cases[0]!)
+
+    expect(() => parseAndVerifyReport(JSON.stringify(canonical)))
+      .toThrow(/failure|assertion|status|stage/i)
+  })
+
+  test.each([
+    ['case', (entry: Record<string, unknown>) => { entry.unexpected = true }],
+    ['failure', (entry: Record<string, unknown>) => {
+      (entry.failure as Record<string, unknown>).unexpected = true
+    }],
+    ['assertion', (entry: Record<string, unknown>) => {
+      ((entry.assertions as Array<Record<string, unknown>>)[0]!).unexpected = true
+    }],
+  ])('rejects an unknown key on canonical %s evidence', (_label, mutate) => {
+    const canonical = JSON.parse(serializeMatrixReport(
+      aggregateMatrix(config, cases, reportMetadata('unknown-failure-field')),
+    )) as { cases: Array<Record<string, unknown>> }
+    mutate(canonical.cases[0]!)
+
+    expect(() => parseAndVerifyReport(JSON.stringify(canonical))).toThrow(/unknown key/i)
+  })
+
+  test('rejects a non-PASS assertion reference that does not close over canonical evidence', () => {
+    const canonical = JSON.parse(serializeMatrixReport(
+      aggregateMatrix(config, cases, reportMetadata('failure-ref-tamper')),
+    )) as { cases: Array<Record<string, unknown>> }
+    const assertions = canonical.cases[0]!.assertions as Array<Record<string, unknown>>
+    assertions[0]!.evidenceRefs = [`stages:sha256:${sha256('invented')}`]
+
+    expect(() => parseAndVerifyReport(JSON.stringify(canonical)))
+      .toThrow(/evidence reference|provenance|typed canonical failure/i)
+  })
+
+  test('serializer refuses a forged non-PASS assertion summary instead of emitting invalid canonical JSON', () => {
+    const report = structuredClone(aggregateMatrix(config, cases, reportMetadata('forged-failure-summary')))
+    const failed = report.cases[0] as unknown as Record<string, unknown>
+    const assertion = (failed.assertions as Array<Record<string, unknown>>)[0]!
+    assertion.actualSummary = { failureCode: 'GENERATION_EMPTY', forged: true }
+
+    expect(() => serializeMatrixReport(report)).toThrow(/failure|assertion|canonical/i)
+  })
+
+  test.each([
+    ['embedded POSIX path', 'failed at /Users/x/a.ts'],
+    ['option-assigned POSIX path', '--cache=/Users/x/cache'],
+    ['embedded Windows path', String.raw`failed at C:\Users\x\a.ts`],
+    ['embedded file URL', 'failed at file:///Users/x/a.ts'],
+  ])('recursively rejects %s anywhere inside a canonical string', (_label, unsafe) => {
+    const report = structuredClone(aggregateMatrix(config, cases, reportMetadata('embedded-path')))
+    const failed = report.cases[0]!
+    ;(failed.registry![0] as unknown as Record<string, unknown>).repositoryUrl = unsafe
+
+    expect(() => serializeMatrixReport(report)).toThrow(/absolute|local path|canonical/i)
+
+    const canonical = JSON.parse(serializeMatrixReport(
+      aggregateMatrix(config, cases, reportMetadata('embedded-path-parse')),
+    )) as { cases: Array<Record<string, unknown>> }
+    const registry = canonical.cases[0]!.registry as Array<Record<string, unknown>>
+    registry[0]!.repositoryUrl = unsafe
+    expect(() => parseAndVerifyReport(JSON.stringify(canonical))).toThrow(/absolute|local path/i)
+  })
+
+  test.each([
+    'sha512-/SiOl7Wt5wpG1te7S0qXq6J6gnEP44+VoO7RrWjtflGu6hRHhcdsWQYUXmYC4deC5p8WNPcH27ztb23YkkB6Iw==',
+    'sha512-yE3qjCbbOD0y4c0rv7hYq2sV/kLsoJ/m8+a6d8uNlEwV+W74HtpuWS8VjfWqRJZCcDRpv7yvu+/6Arw0vYl0Xg==',
+  ])('accepts strict registry integrity without treating Base64 slash as a local path', (integrity) => {
+    const report = structuredClone(aggregateMatrix(config, cases, reportMetadata('base64-integrity')))
+    ;(report.cases[0]!.registry![0] as unknown as Record<string, unknown>).integrity = integrity
+
+    const raw = serializeMatrixReport(report)
+    expect(() => parseAndVerifyReport(raw)).not.toThrow()
+  })
+
+  test.each([
+    ['embedded local path', 'sha512-/Users/example'],
+    ['wrong digest length', `sha512-${Buffer.alloc(63).toString('base64')}`],
+    ['non-canonical padding', `sha512-${Buffer.alloc(64).toString('base64').replace(/==$/u, '')}`],
+  ])('rejects registry integrity with %s', (_label, integrity) => {
+    const report = structuredClone(aggregateMatrix(config, cases, reportMetadata('invalid-integrity')))
+    ;(report.cases[0]!.registry![0] as unknown as Record<string, unknown>).integrity = integrity
+
+    expect(() => serializeMatrixReport(report)).toThrow(/integrity/i)
+  })
+
+  test('rejects a case fixture hash that differs from its run provenance', () => {
+    const canonical = JSON.parse(serializeMatrixReport(
+      aggregateMatrix(config, cases, reportMetadata('fixture-ref-tamper')),
+    )) as { cases: Array<Record<string, unknown>> }
+    canonical.cases[0]!.fixtureSha256 = 'e'.repeat(64)
+
+    expect(() => parseAndVerifyReport(JSON.stringify(canonical)))
+      .toThrow(/fixture|evidence reference|provenance/i)
   })
 
   test('rejects a hand-written PASS made only from assertion ids and five placeholder artifacts', () => {
-    const report = reportWithPassingCandidate()
-    const input = structuredClone(report) as unknown as Record<string, unknown>
+    const input = JSON.parse(serializeMatrixReport(
+      reportWithPassingCandidate(),
+    )) as Record<string, unknown>
     const reportCases = input.cases as Array<Record<string, unknown>>
     const passing = reportCases.find(({ status }) => status === 'PASS')!
     delete passing.lockSha256
     delete passing.installedGraphSha256
     delete passing.registry
     delete passing.stages
-    delete passing.directGenerator
+    delete passing.directGeneratorSummary
     passing.artifacts = REQUIRED_ARTIFACTS.map((artifactPath) => ({
       path: artifactPath,
       size: 1,
@@ -218,7 +1139,8 @@ describe('canonical reports', () => {
       createdAtMs: 1,
     }))
 
-    expect(() => parseAndVerifyReport(JSON.stringify(input))).toThrow(/PASS.*provenance|lockSha256/i)
+    expect(() => parseAndVerifyReport(JSON.stringify(input)))
+      .toThrow(/PASS.*provenance|lockSha256|evidence reference|validation evidence/i)
   })
 
   test('rejects a PASS when an assertion hash reference does not close over case evidence', () => {
@@ -232,6 +1154,241 @@ describe('canonical reports', () => {
   })
 
   test.each([
+    ['missing registry record', (entry: Record<string, unknown>) => {
+      entry.registry = (entry.registry as unknown[]).slice(1)
+    }],
+    ['duplicate registry coordinate', (entry: Record<string, unknown>) => {
+      const registry = entry.registry as Array<Record<string, unknown>>
+      registry[1] = structuredClone(registry[0]!)
+    }],
+    ['returned registry version drift', (entry: Record<string, unknown>) => {
+      ((entry.registry as Array<Record<string, unknown>>)[2]!).returnedVersion = '9.9.9'
+    }],
+    ['missing lock hash', (entry: Record<string, unknown>) => { delete entry.lockSha256 }],
+    ['missing installed graph hash', (entry: Record<string, unknown>) => { delete entry.installedGraphSha256 }],
+    ['missing stage', (entry: Record<string, unknown>) => {
+      entry.stages = (entry.stages as unknown[]).slice(0, -1)
+    }],
+    ['fake stage argv', (entry: Record<string, unknown>) => {
+      ((entry.stages as Array<Record<string, unknown>>)[4]!).args = ['stage-4']
+    }],
+    ['reordered stages', (entry: Record<string, unknown>) => {
+      const stages = entry.stages as unknown[]
+      ;[stages[5], stages[6]] = [stages[6], stages[5]]
+    }],
+    ['truncated stage', (entry: Record<string, unknown>) => {
+      ((entry.stages as Array<Record<string, unknown>>)[2]!).stdoutTruncated = true
+    }],
+    ['missing direct summary', (entry: Record<string, unknown>) => { delete entry.directGenerator }],
+    ['a complete 1/1 generation result', (entry: Record<string, unknown>) => {
+      const direct = entry.directGenerator as Record<string, unknown>
+      direct.automatic = [directEmitEvidence()]
+      direct.forced = [directEmitEvidence()]
+    }],
+  ])('rejects GENERATION_EMPTY after %s even when references are regenerated', (_label, mutate) => {
+    const report = structuredClone(aggregateMatrix(config, cases, reportMetadata('failure-chain-tamper')))
+    const failed = report.cases[0] as unknown as Record<string, unknown>
+    mutate(failed)
+    ;(failed.assertions as Array<Record<string, unknown>>)[0]!.evidenceRefs = []
+
+    expect(() => serializeMatrixReport(report))
+      .toThrow(/registry|lock|graph|stage|direct|generation/i)
+  })
+
+  test.each([
+    ['TSDOWN_FAILED', 'tsdown'],
+    ['PACK_DRY_RUN_FAILED', 'pack-dry-run'],
+    ['DESCRIPTOR_SHAPE', 'descriptors'],
+  ] as const)('rejects %s when completed preseed validation evidence is deleted', (code, _stage) => {
+    const matrixCase = config.cases[0]!
+    const failed = laterCompatibilityFailure(matrixCase, code)
+    expect(() => serializeMatrixReport(aggregateMatrix(
+      config,
+      [failed, ...cases.slice(1)],
+      reportMetadata(`late-failure-${code.toLowerCase()}`),
+    ))).not.toThrow()
+
+    delete (failed.validationEvidence as unknown as Record<string, unknown>).preseed
+    expect(() => serializeMatrixReport(aggregateMatrix(
+      config,
+      [failed, ...cases.slice(1)],
+      reportMetadata(`late-failure-tampered-${code.toLowerCase()}`),
+    ))).toThrow(/preseed|validation evidence/i)
+  })
+
+  test.each([
+    ['missing assertion', (entry: Record<string, unknown>) => {
+      entry.assertions = (entry.assertions as unknown[]).slice(0, -1)
+    }],
+    ['duplicate assertion', (entry: Record<string, unknown>) => {
+      const assertions = entry.assertions as unknown[]
+      assertions[1] = structuredClone(assertions[0]!)
+    }],
+    ['reordered assertions', (entry: Record<string, unknown>) => {
+      const assertions = entry.assertions as unknown[]
+      ;[assertions[0], assertions[1]] = [assertions[1], assertions[0]]
+    }],
+    ['true/true placeholder', (entry: Record<string, unknown>) => {
+      const assertion = (entry.assertions as Array<Record<string, unknown>>)[0]!
+      assertion.expected = true
+      assertion.actualSummary = true
+    }],
+    ['forged actual summary', (entry: Record<string, unknown>) => {
+      ((entry.assertions as Array<Record<string, unknown>>)[10]!).actualSummary = { forged: true }
+    }],
+  ])('serializer refuses a PASS with %s rather than silently repairing it', (_label, mutate) => {
+    const report = structuredClone(reportWithPassingCandidate())
+    const passing = report.cases.find(({ status }) => status === 'PASS') as unknown as Record<string, unknown>
+    mutate(passing)
+
+    expect(() => serializeMatrixReport(report)).toThrow(/PASS.*assertion/i)
+  })
+
+  test.each([
+    ['artifact boundary', (validation: Record<string, any>) => {
+      validation.generatedArtifacts.files[0].withinProbe = false
+    }],
+    ['package exports', (validation: Record<string, any>) => {
+      validation.generatedArtifacts.packageExports['./remote'].default = './lib/invented.js'
+    }],
+    ['source map', (validation: Record<string, any>) => {
+      validation.generatedArtifacts.sourceMap.sourceCount = 0
+    }],
+    ['pack inventory', (validation: Record<string, any>) => {
+      validation.generatedArtifacts.pack.forbiddenFileCount = 1
+    }],
+    ['descriptor unknown lookup', (validation: Record<string, any>) => {
+      validation.descriptors.unknownLookup.hostMatchCount = 1
+    }],
+    ['request codec probes', (validation: Record<string, any>) => {
+      validation.descriptors.requestCodec.requiredInvalidRejectedCount = 9
+    }],
+    ['lock direct version', (validation: Record<string, any>) => {
+      validation.lock.directVersions.typescript = '9.9.9'
+    }],
+  ])('rejects self-consistent forged PASS validation evidence for %s', (_label, mutate) => {
+    const report = structuredClone(reportWithPassingCandidate())
+    const passing = report.cases.find(({ status }) => status === 'PASS')!
+    mutate(passing.validationEvidence as unknown as Record<string, any>)
+    regenerateRawPassAssertions(passing)
+
+    expect(() => serializeMatrixReport(report))
+      .toThrow(/validation|artifact|export|source map|pack|descriptor|codec|version/i)
+  })
+
+  test.each(['generatedArtifacts', 'descriptors'] as const)(
+    'refuses PASS when %s validator evidence is removed',
+    (key) => {
+      const report = structuredClone(reportWithPassingCandidate())
+      const passing = report.cases.find(({ status }) => status === 'PASS')!
+      delete (passing.validationEvidence as unknown as Record<string, unknown>)[key]
+
+      expect(() => serializeMatrixReport(report)).toThrow(/validation|assertion/i)
+    },
+  )
+
+  test.each([
+    ['fake argv', (stage: Record<string, unknown>) => { stage.args = ['stage-9'] }],
+    ['wrong program', (stage: Record<string, unknown>) => { stage.program = 'npm-cli' }],
+    ['nonzero exit', (stage: Record<string, unknown>) => { stage.exitCode = 1 }],
+    ['signal', (stage: Record<string, unknown>) => { stage.signal = 'SIGTERM' }],
+    ['timeout', (stage: Record<string, unknown>) => { stage.timedOut = true }],
+  ])('rejects PASS stage-chain tamper: %s', (_label, mutate) => {
+    const report = structuredClone(reportWithPassingCandidate())
+    const passing = report.cases.find(({ status }) => status === 'PASS')!
+    mutate((passing.stages as unknown as Array<Record<string, unknown>>)[9]!)
+
+    expect(() => serializeMatrixReport(report)).toThrow(/stage|assertion/i)
+  })
+
+  test('rejects a PASS that claims zero TypeScript diagnostics when compile output is non-empty', () => {
+    const report = structuredClone(reportWithPassingCandidate())
+    const passing = report.cases.find(({ status }) => status === 'PASS')!
+    const compile = (passing.stages as unknown as Array<Record<string, unknown>>)[8]!
+    compile.stdoutBytes = 1
+    compile.stdoutSha256 = sha256('x')
+    const b01 = passing.assertions.find(({ id }) => id === 'B01') as unknown as Record<string, unknown>
+    b01.actualSummary = {
+      ...(b01.actualSummary as Record<string, unknown>),
+      stdoutBytes: 1,
+    }
+
+    expect(() => serializeMatrixReport(report)).toThrow(/TypeScript|diagnostic|stdout/i)
+  })
+
+  test('binds the exact lock-stage argv to resolve versus frozen provenance', () => {
+    const report = structuredClone(reportWithPassingCandidate())
+    const platformKey = 'darwin-arm64-node24-npm11'
+    const frozenProvenance = {
+      ...report.environment.provenance,
+      lockMode: 'frozen' as const,
+      platformKey,
+    }
+    ;(report.environment as unknown as Record<string, unknown>).platform = 'darwin'
+    ;(report.environment as unknown as Record<string, unknown>).arch = 'arm64'
+    ;(report.environment as unknown as Record<string, unknown>).provenance = frozenProvenance
+    for (const [index, entry] of report.cases.entries()) {
+      ;(entry as unknown as Record<string, unknown>).provenance = frozenProvenance
+      const stages = entry.stages as unknown as Array<Record<string, unknown>>
+      stages[5] = exactStages(entry.case, 12, 'frozen')[5]!
+      ;(report.cases as unknown as CaseEvidence[])[index] = bindReviewedLockEvidence(entry, {
+        lockMode: 'frozen',
+        reviewedLock: {
+          schemaVersion: '1',
+          platformKey,
+          manifestSha256: sha256('reviewed-lock-manifest'),
+          manifestCaseCount: 8,
+          lockSha256: entry.lockSha256!,
+          installedGraphSha256: entry.installedGraphSha256!,
+        },
+      })
+    }
+
+    const frozenRaw = serializeMatrixReport(report)
+    expect(() => parseAndVerifyReport(frozenRaw)).not.toThrow()
+
+    const tampered = structuredClone(report)
+    const passing = tampered.cases.find(({ status }) => status === 'PASS')!
+    ;(passing.stages as unknown as Array<Record<string, unknown>>)[5] = exactStages(
+      passing.case,
+      12,
+      'resolve',
+    )[5]!
+    expect(() => parseAndVerifyReport(serializeMatrixReport(tampered)))
+      .toThrow(/stage|argv|frozen/i)
+  })
+
+  test.each([
+    ['decisive', { path: 'lib/index.js', decisive: true, state: 'missing' }],
+    ['unknown state', { path: 'lib/index.js', decisive: false, state: 'invented' }],
+    ['regular file without hash', { path: 'lib/index.js', decisive: false, state: 'regular-file', size: 10 }],
+  ])('rejects a PASS with a tampered B07 ordinary bundle diagnostic: %s', (_label, ordinaryBundle) => {
+    const report = structuredClone(reportWithPassingCandidate())
+    const passing = report.cases.find(({ status }) => status === 'PASS')!
+    ;(passing as unknown as { nonDecisiveDiagnostics: { ordinaryBundle: unknown } })
+      .nonDecisiveDiagnostics.ordinaryBundle = ordinaryBundle
+    const b07 = passing.assertions.find(({ id }) => id === 'B07') as unknown as Record<string, unknown>
+    b07.actualSummary = structuredClone(ordinaryBundle)
+
+    expect(() => serializeMatrixReport(report)).toThrow(/ordinary bundle|diagnostic|decisive/i)
+  })
+
+  test.each(['stdoutTruncated', 'stderrTruncated'] as const)(
+    'rejects a PASS whose stage has %s evidence',
+    (field) => {
+      const report = structuredClone(reportWithPassingCandidate())
+      const passing = report.cases.find(({ status }) => status === 'PASS')!
+      const stages = (passing as unknown as {
+        stages: Array<Record<typeof field, boolean>>
+      }).stages
+      stages[0]![field] = true
+
+      expect(() => parseAndVerifyReport(serializeMatrixReport(report)))
+        .toThrow(/stage.*provenance|truncat/i)
+    },
+  )
+
+  test.each([
     ['sensitive field', 'apiToken', 'safe-looking-value'],
     ['GitHub token value', 'diagnostic', fakeGitHubToken],
     ['bearer token value', 'diagnostic', fakeBearerToken],
@@ -240,17 +1397,25 @@ describe('canonical reports', () => {
     ['secret assignment value', 'diagnostic', 'API_KEY=super-secret-value'],
     ['generated source value', 'diagnostic', 'export const leakedGeneratedSource = true'],
   ])('recursively rejects %s while writing and verifying canonical JSON', (_label, key, value) => {
-    const report = aggregateMatrix(config, cases, { runId: 'unsafe-run' })
+    const report = aggregateMatrix(config, cases, reportMetadata('unsafe-run'))
     const unsafeCase = report.cases[0] as CaseEvidence & { nonDecisiveDiagnostics: Record<string, unknown> }
     const unsafeReport = {
       ...report,
       cases: [
-        { ...unsafeCase, nonDecisiveDiagnostics: { ordinaryBundleIsDecisive: false, [key]: value } },
+        {
+          ...unsafeCase,
+          nonDecisiveDiagnostics: {
+            ordinaryBundle: { path: 'lib/index.js', decisive: false, state: 'missing' },
+            [key]: value,
+          },
+        },
         ...report.cases.slice(1),
       ],
     }
 
-    expect(() => serializeMatrixReport(unsafeReport)).toThrow(/sensitive|token|absolute|unknown/i)
+    expect(() => serializeMatrixReport(
+      unsafeReport as unknown as ReturnType<typeof aggregateMatrix>,
+    )).toThrow(/sensitive|token|absolute|unknown/i)
     expect(() => parseAndVerifyReport(JSON.stringify(unsafeReport))).toThrow(/sensitive|token|absolute|unknown/i)
   })
 

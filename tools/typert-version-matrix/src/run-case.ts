@@ -1,17 +1,22 @@
 import { createRequire } from 'node:module'
+import { createHash } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
-import { copyFile, readFile, realpath, rm, mkdir } from 'node:fs/promises'
+import { copyFile, readFile, realpath, rm, mkdir, lstat } from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { CasePaths } from './boundaries.js'
 import {
   buildCaseCommandPlan,
   timeoutMsForStage,
-  type LockMode,
   type PlannedCommand,
 } from './command-plan.js'
 import { buildChildEnvironment } from './environment.js'
-import { validateInstalledGraph, validatePackageLock, LockEvidenceError } from './lockfile.js'
+import {
+  validateInstalledGraph,
+  validatePackageLock,
+  validateRegistryLockAgreement,
+  LockEvidenceError,
+} from './lockfile.js'
 import {
   approveNodeScript,
   runProcess,
@@ -30,18 +35,32 @@ import {
   validateDirectGeneration,
   type DirectGeneratorEvidence,
 } from './assertions/generation.js'
+import {
+  buildDirectGeneratorSummary,
+  deriveFailureAssertion,
+  derivePassAssertions,
+} from './assertion-results.js'
 import type {
   AssertionResult,
+  CaseValidationEvidence,
   CaseEvidence,
   CaseStatus,
   MatrixCase,
   MatrixConfig,
+  OrdinaryBundleEvidence,
   RegistryEvidence,
+  ReviewedLockEvidence,
 } from './types.js'
-import { materializeCaseWorkspace, verifyWorkspaceLink } from './workspace.js'
-import { REQUIRED_PASS_ASSERTIONS } from './aggregate.js'
+import {
+  assertFixtureMatchesRunPreflight,
+  materializeCaseWorkspace,
+  verifyWorkspaceLink,
+} from './workspace.js'
 
-export function classifyCaseFailure(error: unknown): { status: CaseStatus; code: string } {
+export function classifyCaseFailure(error: unknown): {
+  status: Exclude<CaseStatus, 'PASS'>
+  code: string
+} {
   if (error instanceof RegistryEvidenceError) {
     return { status: 'INCONCLUSIVE_REGISTRY', code: 'REGISTRY_EVIDENCE' }
   }
@@ -125,7 +144,37 @@ function packFileInventory(value: unknown): string[] {
   })
 }
 
-export interface RunCaseRequest {
+export async function inspectOrdinaryBundleDiagnostic(
+  probeRoot: string,
+): Promise<OrdinaryBundleEvidence> {
+  const relative = 'lib/index.js' as const
+  const target = path.join(probeRoot, relative)
+  let info
+  try {
+    info = await lstat(target)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { path: relative, decisive: false, state: 'missing' }
+    }
+    throw error
+  }
+  if (info.isSymbolicLink()) {
+    return { path: relative, decisive: false, state: 'symlink' }
+  }
+  if (!info.isFile()) {
+    return { path: relative, decisive: false, state: 'other' }
+  }
+  const content = await readFile(target)
+  return {
+    path: relative,
+    decisive: false,
+    state: 'regular-file',
+    size: content.byteLength,
+    sha256: createHash('sha256').update(content).digest('hex'),
+  }
+}
+
+interface RunCaseRequestBase {
   readonly repositoryRoot: string
   readonly toolRoot: string
   readonly fixtureRoot: string
@@ -133,9 +182,21 @@ export interface RunCaseRequest {
   readonly config: MatrixConfig
   readonly matrixCase: MatrixCase
   readonly paths: CasePaths
-  readonly lockMode: LockMode
-  readonly platformKey?: string
+  readonly expectedFixtureSha256: string
 }
+
+export type RunCaseRequest = RunCaseRequestBase & (
+  | {
+    readonly lockMode: 'resolve'
+    readonly platformKey?: never
+    readonly reviewedLock?: never
+  }
+  | {
+    readonly lockMode: 'frozen'
+    readonly platformKey: string
+    readonly reviewedLock: ReviewedLockEvidence
+  }
+)
 
 export function buildProcessRequest(
   command: PlannedCommand,
@@ -152,14 +213,79 @@ export function buildProcessRequest(
   }
 }
 
+type ExecutePlannedCommand = (
+  command: PlannedCommand,
+  program: ApprovedProgram,
+  ordinal: number,
+) => Promise<ProcessEvidence>
+
+export async function executeFrozenLockPreflight(
+  command: PlannedCommand,
+  npm: ApprovedProgram,
+  execute: ExecutePlannedCommand,
+): Promise<void> {
+  if (
+    command.stage !== 'resolve-lock'
+    || command.program !== 'npm-cli'
+    || npm.kind !== 'npm-cli'
+    || command.args[0] !== 'ci'
+    || !command.args.includes('--dry-run')
+    || command.shell !== false
+    || command.timeoutMs !== timeoutMsForStage('resolve-lock')
+  ) {
+    throw new Error('frozen lock preflight must be the reviewed npm ci --dry-run command')
+  }
+  const preflight = await execute(command, npm, 5)
+  ensureProcessSuccess(preflight, 'lock', 'FROZEN_LOCK_PREFLIGHT_FAILED')
+}
+
+export function assertReviewedCaseHash(
+  kind: 'lock' | 'installed graph',
+  observedSha256: string,
+  reviewedSha256: string,
+): void {
+  if (observedSha256 !== reviewedSha256) {
+    throw new LockEvidenceError(`frozen ${kind} SHA-256 differs from reviewed manifest`)
+  }
+}
+
+function assertReviewedLockInput(request: RunCaseRequest): void {
+  if (request.lockMode === 'resolve') return
+  const reviewed = request.reviewedLock
+  if (
+    reviewed.schemaVersion !== '1'
+    || reviewed.platformKey !== request.platformKey
+    || !/^[a-f0-9]{64}$/u.test(reviewed.manifestSha256)
+    || !Number.isSafeInteger(reviewed.manifestCaseCount)
+    || reviewed.manifestCaseCount < 1
+    || !/^[a-f0-9]{64}$/u.test(reviewed.lockSha256)
+    || !/^[a-f0-9]{64}$/u.test(reviewed.installedGraphSha256)
+  ) throw new Error('frozen run case has invalid reviewed lock evidence')
+}
+
+export function bindReviewedLockEvidence(
+  evidence: CaseEvidence,
+  binding:
+    | { readonly lockMode: 'resolve' }
+    | { readonly lockMode: 'frozen'; readonly reviewedLock: ReviewedLockEvidence },
+): CaseEvidence {
+  return binding.lockMode === 'frozen'
+    ? { ...evidence, reviewedLock: binding.reviewedLock }
+    : evidence
+}
+
 export async function runCase(request: RunCaseRequest): Promise<CaseEvidence> {
+  assertReviewedLockInput(request)
   let stage = 'preflight'
   const stages: ProcessEvidence[] = []
   const registry: RegistryEvidence[] = []
   let lockSha256: string | undefined
   let installedGraphSha256: string | undefined
   let directGenerator: DirectGeneratorEvidence | undefined
+  let ordinaryBundle: OrdinaryBundleEvidence | undefined
   let artifacts: CaseEvidence['artifacts'] = []
+  let validationEvidence: CaseValidationEvidence = {}
+  let fixtureSha256 = request.expectedFixtureSha256
   const execute = async (
     command: PlannedCommand,
     program: ApprovedProgram,
@@ -181,12 +307,15 @@ export async function runCase(request: RunCaseRequest): Promise<CaseEvidence> {
 
   try {
     stage = 'workspace'
-    await materializeCaseWorkspace(
+    const materialized = await materializeCaseWorkspace(
       request.fixtureRoot,
       request.paths,
       request.config,
       request.matrixCase,
     )
+    fixtureSha256 = materialized.fixtureSha256
+    validationEvidence = { ...validationEvidence, fixtureCopy: materialized.validation }
+    assertFixtureMatchesRunPreflight(fixtureSha256, request.expectedFixtureSha256)
     const plan = buildCaseCommandPlan(
       request.config,
       request.matrixCase,
@@ -218,7 +347,16 @@ export async function runCase(request: RunCaseRequest): Promise<CaseEvidence> {
       const resolved = await execute(lockCommand, npm, 5)
       ensureProcessSuccess(resolved, 'lock', 'LOCK_RESOLUTION_FAILED')
       const rawLock = await readFile(workspaceLock, 'utf8')
-      lockSha256 = validatePackageLock(rawLock, request.matrixCase, request.config.toolchain).lockSha256
+      const validatedLock = validatePackageLock(rawLock, request.matrixCase, request.config.toolchain)
+      validateRegistryLockAgreement(registry, validatedLock.directPackages)
+      lockSha256 = validatedLock.lockSha256
+      validationEvidence = {
+        ...validationEvidence,
+        lock: {
+          lockfileVersion: validatedLock.lockfileVersion,
+          directVersions: validatedLock.directVersions,
+        },
+      }
       await copyFile(
         workspaceLock,
         path.join(request.paths.proposedLock, `${request.matrixCase.id}.package-lock.json`),
@@ -236,11 +374,22 @@ export async function runCase(request: RunCaseRequest): Promise<CaseEvidence> {
       } catch (error) {
         throw new LockEvidenceError(`frozen lock is unavailable: ${String(error)}`)
       }
-      lockSha256 = validatePackageLock(
+      const validatedLock = validatePackageLock(
         await readFile(workspaceLock, 'utf8'),
         request.matrixCase,
         request.config.toolchain,
-      ).lockSha256
+      )
+      validateRegistryLockAgreement(registry, validatedLock.directPackages)
+      lockSha256 = validatedLock.lockSha256
+      assertReviewedCaseHash('lock', lockSha256, request.reviewedLock.lockSha256)
+      validationEvidence = {
+        ...validationEvidence,
+        lock: {
+          lockfileVersion: validatedLock.lockfileVersion,
+          directVersions: validatedLock.directVersions,
+        },
+      }
+      await executeFrozenLockPreflight(lockCommand, npm, execute)
     }
 
     stage = 'install'
@@ -252,17 +401,35 @@ export async function runCase(request: RunCaseRequest): Promise<CaseEvidence> {
       path.join(request.paths.logs, `${stageLogName(plan[7]!, 7)}.stdout.log`),
       'utf8',
     ))
-    installedGraphSha256 = validateInstalledGraph(
+    const installedGraph = validateInstalledGraph(
       treeJson,
       request.matrixCase,
       request.config.toolchain,
-    ).installedGraphSha256
-    await verifyWorkspaceLink(request.paths.workspace)
+    )
+    installedGraphSha256 = installedGraph.installedGraphSha256
+    if (request.lockMode === 'frozen') {
+      assertReviewedCaseHash(
+        'installed graph',
+        installedGraphSha256,
+        request.reviewedLock.installedGraphSha256,
+      )
+    }
+    validationEvidence = {
+      ...validationEvidence,
+      installedGraph: {
+        problemCount: installedGraph.problemCount,
+        directVersions: installedGraph.directVersions,
+      },
+      workspaceLink: await verifyWorkspaceLink(request.paths.workspace),
+    }
 
     const probeRoot = path.join(request.paths.workspace, 'packages/probe')
     await rm(path.join(probeRoot, 'lib'), { recursive: true, force: true })
     await mkdir(path.join(probeRoot, 'lib'), { recursive: true })
-    await assertArtifactsAbsent(probeRoot)
+    validationEvidence = {
+      ...validationEvidence,
+      preseed: await assertArtifactsAbsent(probeRoot),
+    }
     const generationStartedAtMs = Date.now()
 
     stage = 'compile'
@@ -294,6 +461,7 @@ export async function runCase(request: RunCaseRequest): Promise<CaseEvidence> {
     const tsdown = await packageBin(request.paths.workspace, 'tsdown', 'tsdown', 'tsdown')
     const tsdownProcess = await execute(plan[10]!, tsdown, 10)
     ensureProcessSuccess(tsdownProcess, 'compatibility', 'TSDOWN_FAILED')
+    ordinaryBundle = await inspectOrdinaryBundleDiagnostic(probeRoot)
     if (directFailure !== undefined) {
       stage = 'direct-generator'
       throw directFailure
@@ -308,30 +476,62 @@ export async function runCase(request: RunCaseRequest): Promise<CaseEvidence> {
       'utf8',
     ))
     const manifest = JSON.parse(await readFile(path.join(probeRoot, 'package.json'), 'utf8'))
-    artifacts = await inspectGeneratedArtifacts({
+    const inspectedArtifacts = await inspectGeneratedArtifacts({
       probeRoot,
       expected,
       startedAtMs: generationStartedAtMs,
       manifest,
       packFiles: packFileInventory(packJson),
     })
+    artifacts = inspectedArtifacts.artifacts
+    validationEvidence = {
+      ...validationEvidence,
+      generatedArtifacts: inspectedArtifacts.validation,
+    }
 
     stage = 'descriptors'
     const nonce = encodeURIComponent(`${request.matrixCase.id}-${Date.now()}`)
     const host = await import(`${pathToFileURL(path.join(probeRoot, 'lib/typert.host.js')).href}?matrix=${nonce}`)
     const remote = await import(`${pathToFileURL(path.join(probeRoot, 'lib/typert.remote-client.js')).href}?matrix=${nonce}`)
-    validateStrictDescriptors(host, remote)
+    validationEvidence = {
+      ...validationEvidence,
+      descriptors: validateStrictDescriptors(host, remote),
+    }
 
-    const assertions: AssertionResult[] = REQUIRED_PASS_ASSERTIONS.map((id) => ({
-      id,
-      status: 'PASS',
-      expected: true,
-      actualSummary: true,
-      evidenceRefs: [],
-    }))
-    return {
+    if (lockSha256 === undefined || installedGraphSha256 === undefined) {
+      throw new Error('PASS evidence is missing lock or installed graph provenance')
+    }
+    const directGeneratorSummary = buildDirectGeneratorSummary(directGenerator, true)
+    if (directGeneratorSummary === undefined) {
+      throw new Error('PASS evidence is missing direct-generator provenance')
+    }
+    const completeValidation = validationEvidence as Required<CaseValidationEvidence>
+    if (
+      completeValidation.fixtureCopy === undefined
+      || completeValidation.lock === undefined
+      || completeValidation.installedGraph === undefined
+      || completeValidation.workspaceLink === undefined
+      || completeValidation.preseed === undefined
+      || completeValidation.generatedArtifacts === undefined
+      || completeValidation.descriptors === undefined
+    ) throw new Error('PASS evidence is missing validator output')
+    const assertions: AssertionResult[] = derivePassAssertions({
+      config: request.config,
+      matrixCase: request.matrixCase,
+      fixtureSha256,
+      lockSha256,
+      installedGraphSha256,
+      registry,
+      stages,
+      artifacts,
+      directGeneratorSummary,
+      nonDecisiveDiagnostics: { ordinaryBundle },
+      validationEvidence: completeValidation,
+    })
+    return bindReviewedLockEvidence({
       schemaVersion: '1',
       case: request.matrixCase,
+      fixtureSha256,
       status: 'PASS',
       assertions,
       artifacts,
@@ -340,29 +540,35 @@ export async function runCase(request: RunCaseRequest): Promise<CaseEvidence> {
       registry,
       stages,
       directGenerator,
-      nonDecisiveDiagnostics: { ordinaryBundleIsDecisive: false },
-    }
+      validationEvidence: completeValidation,
+      nonDecisiveDiagnostics: { ordinaryBundle },
+    }, request.lockMode === 'frozen'
+      ? { lockMode: 'frozen', reviewedLock: request.reviewedLock }
+      : { lockMode: 'resolve' })
   } catch (error) {
     const failure = classifyCaseFailure(error)
-    return {
+    return bindReviewedLockEvidence({
       schemaVersion: '1',
       case: request.matrixCase,
+      fixtureSha256,
       status: failure.status,
-      assertions: [{
-        id: stage === 'direct-generator' ? 'B03' : 'EVIDENCE',
-        status: 'FAIL',
-        expected: 'reviewed stage evidence',
-        actualSummary: failure.code,
-        evidenceRefs: [],
-      }],
+      assertions: [deriveFailureAssertion(
+        failure.status,
+        { code: failure.code, stage },
+      )],
       artifacts,
       ...(lockSha256 === undefined ? {} : { lockSha256 }),
       ...(installedGraphSha256 === undefined ? {} : { installedGraphSha256 }),
       ...(registry.length === 0 ? {} : { registry }),
       stages,
       ...(directGenerator === undefined ? {} : { directGenerator }),
+      ...(Object.keys(validationEvidence).length === 0 ? {} : { validationEvidence }),
       failure: { code: failure.code, stage },
-      nonDecisiveDiagnostics: { ordinaryBundleIsDecisive: false },
-    }
+      ...(ordinaryBundle === undefined ? {} : {
+        nonDecisiveDiagnostics: { ordinaryBundle },
+      }),
+    }, request.lockMode === 'frozen'
+      ? { lockMode: 'frozen', reviewedLock: request.reviewedLock }
+      : { lockMode: 'resolve' })
   }
 }

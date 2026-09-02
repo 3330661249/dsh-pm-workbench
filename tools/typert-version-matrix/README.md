@@ -36,6 +36,18 @@ node tools/typert-version-matrix/dist/cli.js validate \
 
 `validate` checks the closed config and the committed fixture hashes without registry access.
 
+Verify the exact reviewed Darwin lock inventory without installing any case graph:
+
+```bash
+node tools/typert-version-matrix/dist/cli.js verify-locks \
+  --platform-key darwin-arm64-node24-npm11
+```
+
+This validates every selection and experimental case against its config and the
+platform README's embedded manifest, including exact file inventory, lock bytes,
+root declarations, direct and DSH cohort versions, public-registry origins,
+SHA-512 integrities, and the preserved installed-graph evidence hash.
+
 ## Network matrix run
 
 Resolve mode creates new case-local locks under the ignored run directory. It does not update reviewed locks:
@@ -58,6 +70,11 @@ node tools/typert-version-matrix/dist/cli.js run \
 ```
 
 The tool requires Node `24.14.0` and its local npm CLI `11.9.0`. Every subprocess uses an approved Node script plus argv and `shell: false`; child environments are allowlisted and case caches/npmrc files are isolated.
+
+Network execution is currently restricted to POSIX platforms (macOS and Linux), where
+the runner starts each command in a separate process group and terminates the whole group
+on timeout. Windows execution fails closed until an equivalent bounded process-tree
+termination implementation is reviewed.
 
 ### Cold-cache timeout budget
 
@@ -90,12 +107,18 @@ node tools/typert-version-matrix/dist/cli.js verify-report \
 
 ## Current implementation boundary
 
-The runner and its offline negative tests are implemented. The initial cold-cache network
-attempt ended during control lock resolution, so it produced no complete matrix, candidate
-result, or version recommendation. Platform-specific reviewed locks remain absent until a
-complete resolve run is reviewed. Publication of sanitized dated result snapshots follows
-only after `verify-report` and manual review; raw workspaces, caches, logs, npmrc files, and
-direct-generator source are never publication artifacts.
+The runner and its offline negative tests are implemented. An initial cold-cache attempt
+ended during control lock resolution. Subsequent isolated resolve-mode observations covered
+the closed selection and experimental case inventories and were used only to generate and
+review the committed Darwin locks and preserved installed-graph hashes. Their reports
+predate the hardened provenance and report schema, have been isolated from canonical dated
+results, and are not admissible evidence for a candidate decision.
+
+The final hardened frozen selection and experimental runs against those reviewed locks are
+still pending. Until their canonical JSON passes `verify-report`, its derived Markdown and
+JUnit match byte-for-byte, and the result receives manual review, this repository has no
+eligible candidate conclusion or version recommendation. Raw workspaces, caches, logs,
+npmrc files, and direct-generator source are never publication artifacts.
 
 `verify-report` recomputes the aggregate decision and validates the closed PASS evidence
 graph, including lock, installed graph, registry, stage, direct-generator summary, and

@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto'
-import type { MatrixCase, MatrixConfig } from './types.js'
+import {
+  INSTALLED_PACKAGE_NAMES,
+  type InstalledPackageName,
+  type MatrixCase,
+  type MatrixConfig,
+  type RegistryEvidence,
+} from './types.js'
 
 export class LockEvidenceError extends Error {
   readonly status = 'INCONCLUSIVE_LOCK' as const
@@ -44,7 +50,15 @@ export function validatePackageLock(
   rawText: string,
   matrixCase: MatrixCase,
   toolchain: MatrixConfig['toolchain'],
-): { readonly lockSha256: string; readonly directVersions: Readonly<Record<string, string>> } {
+): {
+  readonly lockfileVersion: 3
+  readonly lockSha256: string
+  readonly directVersions: Readonly<Record<string, string>>
+  readonly directPackages: Readonly<Record<InstalledPackageName, {
+    readonly version: string
+    readonly integrity: `sha512-${string}`
+  }>>
+} {
   let parsed: unknown
   try {
     parsed = JSON.parse(rawText)
@@ -91,7 +105,34 @@ export function validatePackageLock(
       throw new LockEvidenceError(`mixed DSH cohort at ${location}`)
     }
   }
-  return { lockSha256: sha256(rawText), directVersions: expected }
+  const directPackages = Object.fromEntries(INSTALLED_PACKAGE_NAMES.map((name) => {
+    const entry = object(packages[`node_modules/${name}`], `installed lock entry ${name}`)
+    return [name, { version: String(entry.version), integrity: String(entry.integrity) }]
+  })) as Record<InstalledPackageName, { version: string; integrity: `sha512-${string}` }>
+  return { lockfileVersion: 3, lockSha256: sha256(rawText), directVersions: expected, directPackages }
+}
+
+export function validateRegistryLockAgreement(
+  registry: readonly RegistryEvidence[],
+  directPackages: Readonly<Record<InstalledPackageName, {
+    readonly version: string
+    readonly integrity: `sha512-${string}`
+  }>>,
+): void {
+  for (const name of INSTALLED_PACKAGE_NAMES) {
+    const matching = registry.filter((entry) => entry.name === name)
+    if (matching.length !== 1) {
+      throw new LockEvidenceError(`registry-lock evidence is missing or duplicated for ${name}`)
+    }
+    const observed = matching[0]!
+    const locked = directPackages[name]
+    if (observed.requestedVersion !== locked.version || observed.returnedVersion !== locked.version) {
+      throw new LockEvidenceError(`registry-lock version mismatch for ${name}`)
+    }
+    if (observed.integrity !== locked.integrity) {
+      throw new LockEvidenceError(`registry-lock integrity mismatch for ${name}`)
+    }
+  }
 }
 
 function findProblems(value: unknown, at = 'root'): string[] {
@@ -121,15 +162,20 @@ export function validateInstalledGraph(
   raw: unknown,
   matrixCase: MatrixCase,
   toolchain: MatrixConfig['toolchain'],
-): { readonly installedGraphSha256: string } {
+): {
+  readonly installedGraphSha256: string
+  readonly problemCount: 0
+  readonly directVersions: Readonly<Record<string, string>>
+} {
   const graph = object(raw, 'npm ls graph')
   const problems = findProblems(graph)
   if (problems.length > 0) throw new LockEvidenceError(`npm ls problems: ${problems.join(', ')}`)
   const dependencies = object(graph.dependencies, 'npm ls dependencies')
-  for (const [name, version] of Object.entries(expectedDirect(matrixCase, toolchain))) {
+  const directVersions = expectedDirect(matrixCase, toolchain)
+  for (const [name, version] of Object.entries(directVersions)) {
     if (graphVersion(dependencies[name]) !== version) {
       throw new LockEvidenceError(`npm ls direct version mismatch for ${name}`)
     }
   }
-  return { installedGraphSha256: sha256(stable(graph)) }
+  return { installedGraphSha256: sha256(stable(graph)), problemCount: 0, directVersions }
 }

@@ -58,5 +58,5 @@ Strict Remote evidence:
 | Field | Value |
 | --- | --- |
 | State | Not run; blocked by Gate A No-Go |
-| Result | No repository, release, publication, remote Git action, installable Alpha, or public license grant was created. |
-| Decision | Do not publish. The current bundle remains private and `UNLICENSED`. |
+| Result | A private, unofficial GitHub research repository and its `origin` remote have been created to hold governance, the plugin skeleton, research, and matrix work. This private research setup is not a public Alpha. No public repository, public release, package publication, installable Alpha, deployment, public license grant, or merge to `main` has been completed. |
+| Decision | Do not publish or deploy. Keep the research repository private, keep the workbench `UNLICENSED`, and do not treat a private branch or Pull Request as Gate E approval. |

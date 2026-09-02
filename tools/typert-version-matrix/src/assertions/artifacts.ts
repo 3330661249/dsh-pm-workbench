@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto'
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
-import type { ArtifactEvidence } from '../types.js'
+import type {
+  ArtifactEvidence,
+  GeneratedArtifactsValidationEvidence,
+  PreseedValidationEvidence,
+} from '../types.js'
 import type { ExpectedArtifactContents } from './generation.js'
 import { CompatibilityEvidenceError } from './errors.js'
 
@@ -26,7 +30,7 @@ function equal(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
-export async function assertArtifactsAbsent(probeRoot: string): Promise<void> {
+export async function assertArtifactsAbsent(probeRoot: string): Promise<PreseedValidationEvidence> {
   for (const relative of REQUIRED_ARTIFACTS) {
     try {
       await lstat(path.join(probeRoot, relative))
@@ -38,6 +42,7 @@ export async function assertArtifactsAbsent(probeRoot: string): Promise<void> {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
   }
+  return { checkedPaths: [...REQUIRED_ARTIFACTS], presentPaths: [] }
 }
 
 export interface ArtifactInspectionRequest {
@@ -50,7 +55,10 @@ export interface ArtifactInspectionRequest {
 
 export async function inspectGeneratedArtifacts(
   request: ArtifactInspectionRequest,
-): Promise<readonly ArtifactEvidence[]> {
+): Promise<{
+  readonly artifacts: readonly ArtifactEvidence[]
+  readonly validation: GeneratedArtifactsValidationEvidence
+}> {
   const probeReal = await realpath(request.probeRoot)
   const evidence: ArtifactEvidence[] = []
   for (const relative of REQUIRED_ARTIFACTS) {
@@ -103,7 +111,11 @@ export async function inspectGeneratedArtifacts(
   } catch {
     throw new CompatibilityEvidenceError('SOURCE_MAP_INVALID', 'Remote declaration source map is invalid JSON')
   }
-  if (sourceMap.file !== 'typert.remote-client.d.ts' || !Array.isArray(sourceMap.sources)) {
+  if (
+    sourceMap.file !== 'typert.remote-client.d.ts'
+    || !Array.isArray(sourceMap.sources)
+    || sourceMap.sources.length === 0
+  ) {
     throw new CompatibilityEvidenceError('SOURCE_MAP_INVALID', 'Remote declaration source map is invalid')
   }
   for (const source of sourceMap.sources) {
@@ -117,17 +129,21 @@ export async function inspectGeneratedArtifacts(
     }
   }
 
+  const packageExports = {
+    './typert': {
+      types: './lib/typert.host.d.ts',
+      default: './lib/typert.host.js',
+    },
+    './remote': {
+      types: './lib/typert.remote-client.d.ts',
+      default: './lib/typert.remote-client.js',
+    },
+  } as const
   const exportsValue = request.manifest.exports as Record<string, unknown> | undefined
   if (
     exportsValue === undefined
-    || !equal(exportsValue['./typert'], {
-      types: './lib/typert.host.d.ts',
-      default: './lib/typert.host.js',
-    })
-    || !equal(exportsValue['./remote'], {
-      types: './lib/typert.remote-client.d.ts',
-      default: './lib/typert.remote-client.js',
-    })
+    || !equal(exportsValue['./typert'], packageExports['./typert'])
+    || !equal(exportsValue['./remote'], packageExports['./remote'])
   ) throw new CompatibilityEvidenceError('PACKAGE_EXPORTS', 'package exports do not map Typert artifacts exactly')
 
   const manifestFiles = request.manifest.files
@@ -141,11 +157,41 @@ export async function inspectGeneratedArtifacts(
       throw new CompatibilityEvidenceError('PACK_ARTIFACT_MISSING', `pack is missing artifact ${relative}`)
     }
   }
-  const forbidden = normalizedPack.find((entry) =>
+  const forbiddenFiles = normalizedPack.filter((entry) =>
     /(^|\/)(node_modules|npm-cache|tests|\.tmp|logs)(\/|$)|(^|\/)npmrc$|\.env(?:\.|$)/.test(entry),
   )
-  if (forbidden !== undefined || normalizedPack.some((entry) => path.isAbsolute(entry))) {
-    throw new CompatibilityEvidenceError('PACK_FORBIDDEN_FILE', `pack contains forbidden file ${forbidden ?? ''}`)
+  const absolutePaths = normalizedPack.filter((entry) => path.isAbsolute(entry))
+  if (forbiddenFiles.length > 0 || absolutePaths.length > 0) {
+    throw new CompatibilityEvidenceError('PACK_FORBIDDEN_FILE', `pack contains forbidden file ${forbiddenFiles[0] ?? ''}`)
   }
-  return evidence
+  return {
+    artifacts: evidence,
+    validation: {
+      files: evidence.map((entry) => ({
+        ...entry,
+        fileType: 'regular',
+        symlink: false,
+        withinProbe: true,
+        fresh: true,
+      })),
+      packageExports,
+      generatedHeaders: {
+        checkedArtifactCount: REQUIRED_ARTIFACTS.filter((entry) => !entry.endsWith('.map')).length,
+        matchingHeaderCount: REQUIRED_ARTIFACTS.filter((entry) => !entry.endsWith('.map')).length,
+      },
+      sourceMap: {
+        file: sourceMap.file as string,
+        sourceCount: sourceMap.sources.length,
+        absoluteSourceCount: 0,
+      },
+      pack: {
+        inventorySha256: sha256(JSON.stringify([...normalizedPack].sort())),
+        totalFileCount: normalizedPack.length,
+        includedRequiredArtifacts: [...REQUIRED_ARTIFACTS],
+        forbiddenFileCount: 0,
+        absolutePathCount: 0,
+        manifestRequiredArtifactCount: REQUIRED_ARTIFACTS.filter((entry) => manifestFiles.includes(entry)).length,
+      },
+    },
+  }
 }

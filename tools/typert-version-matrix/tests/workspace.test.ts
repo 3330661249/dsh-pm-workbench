@@ -5,15 +5,22 @@ import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, test } from 'vitest'
 import { allocateCasePaths } from '../src/boundaries.js'
 import { parseMatrixConfig } from '../src/config.js'
-import { materializeCaseWorkspace, verifyWorkspaceLink } from '../src/workspace.js'
+import { verifyFixture } from '../src/fixture.js'
+import {
+  assertFixtureMatchesRunPreflight,
+  materializeCaseWorkspace,
+  verifyWorkspaceLink,
+} from '../src/workspace.js'
 import type { MatrixConfig } from '../src/types.js'
 
 const fixtureRoot = fileURLToPath(new URL('../fixtures/strict-remote-v1/', import.meta.url))
 let config: MatrixConfig
+let fixtureSha256: string
 
 beforeAll(async () => {
   const file = fileURLToPath(new URL('../config/matrix.official.json', import.meta.url))
   config = parseMatrixConfig(JSON.parse(await readFile(file, 'utf8')))
+  fixtureSha256 = (await verifyFixture(fixtureRoot)).aggregateSha256
 })
 
 describe('case workspace materialization', () => {
@@ -24,7 +31,17 @@ describe('case workspace materialization', () => {
     const rootManifest = JSON.parse(await readFile(path.join(paths.workspace, 'package.json'), 'utf8'))
     const probeManifest = JSON.parse(await readFile(path.join(paths.workspace, 'packages/probe/package.json'), 'utf8'))
 
-    expect(evidence.fixtureSha256).toMatch(/^[a-f0-9]{64}$/)
+    expect(evidence).toEqual({
+      fixtureSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      validation: {
+        fixture: 'strict-remote-v1',
+        fileCount: expect.any(Number),
+        sourceSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        copiedSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    })
+    expect(evidence.validation.fileCount).toBeGreaterThan(0)
+    expect(evidence.validation.sourceSha256).toBe(evidence.validation.copiedSha256)
     expect(rootManifest.scripts).toBeUndefined()
     expect(rootManifest.devDependencies['@deepseek-ai/dsh']).toBeUndefined()
     expect(rootManifest.devDependencies['@deepseek-ai/dsh-typert-generator']).toBe('0.1.0-rc.7')
@@ -48,6 +65,14 @@ describe('case workspace materialization', () => {
       'dir',
     )
 
-    await expect(verifyWorkspaceLink(paths.workspace)).resolves.toBe(await realpath(path.join(paths.workspace, 'packages/probe')))
+    await expect(verifyWorkspaceLink(paths.workspace)).resolves.toEqual({
+      entryKind: 'symlink',
+      resolvesTo: 'packages/probe',
+    })
+  })
+
+  test('rejects a case when its observed fixture differs from run preflight', () => {
+    expect(() => assertFixtureMatchesRunPreflight(fixtureSha256, 'a'.repeat(64)))
+      .toThrow(/fixture.*preflight/i)
   })
 })

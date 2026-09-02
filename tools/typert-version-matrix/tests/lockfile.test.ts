@@ -2,8 +2,12 @@ import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, test } from 'vitest'
 import { parseMatrixConfig } from '../src/config.js'
-import { validateInstalledGraph, validatePackageLock } from '../src/lockfile.js'
-import type { MatrixCase, MatrixConfig } from '../src/types.js'
+import {
+  validateInstalledGraph,
+  validatePackageLock,
+  validateRegistryLockAgreement,
+} from '../src/lockfile.js'
+import type { MatrixCase, MatrixConfig, RegistryEvidence } from '../src/types.js'
 
 let config: MatrixConfig
 let matrixCase: MatrixCase
@@ -48,7 +52,17 @@ const lock = (): { name: string; version: string; lockfileVersion: number; requi
 describe('lock and installed graph validation', () => {
   test('accepts an exact lock with the real workspace link and records a hash', () => {
     expect(validatePackageLock(JSON.stringify(lock()), matrixCase, config.toolchain))
-      .toMatchObject({ lockSha256: expect.stringMatching(/^[a-f0-9]{64}$/) })
+      .toMatchObject({
+        lockfileVersion: 3,
+        lockSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        directVersions: direct(),
+        directPackages: {
+          '@deepseek-ai/dsh-typert-generator': {
+            version: '0.1.0-rc.7',
+            integrity: 'sha512-YWJjMTIz',
+          },
+        },
+      })
   })
 
   test('rejects a missing workspace link or direct version drift', () => {
@@ -85,7 +99,34 @@ describe('lock and installed graph validation', () => {
     const result = validateInstalledGraph(clean, matrixCase, config.toolchain)
     const broken = { ...clean, problems: ['missing: dependency@1.0.0'] }
 
-    expect(result.installedGraphSha256).toMatch(/^[a-f0-9]{64}$/)
+    expect(result).toEqual({
+      installedGraphSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      problemCount: 0,
+      directVersions: direct(),
+    })
     expect(() => validateInstalledGraph(broken, matrixCase, config.toolchain)).toThrow(/npm ls problems/)
+  })
+
+  test('closes registry version and integrity evidence over every locked direct package', () => {
+    const validated = validatePackageLock(JSON.stringify(lock()), matrixCase, config.toolchain)
+    const registry = Object.entries(validated.directPackages).map(([name, entry]) => ({
+      name,
+      requestedVersion: entry.version,
+      returnedVersion: entry.version,
+      integrity: entry.integrity,
+      tarballOrigin: 'https://registry.npmjs.org',
+      observedAt: '2026-09-02T00:00:00.000Z',
+    })) as RegistryEvidence[]
+
+    expect(() => validateRegistryLockAgreement(registry, validated.directPackages)).not.toThrow()
+
+    const mismatched = registry.map((entry, index) => index === 0
+      ? { ...entry, integrity: 'sha512-ZGlmZmVyZW50' as const }
+      : entry)
+    expect(() => validateRegistryLockAgreement(mismatched, validated.directPackages))
+      .toThrow(/registry-lock.*integrity/i)
+
+    expect(() => validateRegistryLockAgreement(registry.slice(1), validated.directPackages))
+      .toThrow(/registry-lock.*missing/i)
   })
 })

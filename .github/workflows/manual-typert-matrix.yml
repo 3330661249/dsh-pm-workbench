@@ -22,7 +22,7 @@ jobs:
   resolve-matrix:
     name: Resolve ${{ inputs.matrix_set }} evidence
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 360
     steps:
       - name: Check out repository without persisted credentials
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -101,22 +101,56 @@ jobs:
           echo "exit_code=${matrix_exit_code}" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Upload allowlisted raw evidence
-        if: ${{ always() && steps.select.outcome == 'success' }}
+      - name: Verify canonical evidence and captured exit
+        id: verify_evidence
+        if: ${{ always() && steps.matrix.outcome == 'success' }}
+        shell: bash
+        env:
+          MATRIX_EXIT_CODE: ${{ steps.matrix.outputs.exit_code }}
+          MATRIX_OUTPUT: ${{ steps.select.outputs.output }}
+        run: |
+          set -euo pipefail
+          for required in run.json run.final.json matrix.json matrix.md junit.xml; do
+            test -f "$MATRIX_OUTPUT/$required" || {
+              echo "Missing required evidence file: $required" >&2
+              exit 1
+            }
+          done
+          node tools/typert-version-matrix/dist/cli.js \
+            verify-report --input "$MATRIX_OUTPUT/matrix.json"
+          node --input-type=module -e '
+            import { readFile } from "node:fs/promises"
+            import path from "node:path"
+            import { parseAndVerifyReport } from "./tools/typert-version-matrix/dist/report-json.js"
+            import { renderMarkdown } from "./tools/typert-version-matrix/dist/report-markdown.js"
+            import { renderJUnit } from "./tools/typert-version-matrix/dist/report-junit.js"
+            const output = process.env.MATRIX_OUTPUT
+            const expected = Number(process.env.MATRIX_EXIT_CODE)
+            if (!output || !Number.isInteger(expected)) throw new Error("captured matrix exit is invalid")
+            const runId = path.basename(output)
+            const running = JSON.parse(await readFile(path.join(output, "run.json"), "utf8"))
+            const final = JSON.parse(await readFile(path.join(output, "run.final.json"), "utf8"))
+            const reportJson = await readFile(path.join(output, "matrix.json"), "utf8")
+            const verified = parseAndVerifyReport(reportJson)
+            if (running.runId !== runId || running.state !== "RUNNING") throw new Error("run marker mismatch")
+            if (final.runId !== runId || final.state !== "FINAL" || final.exitCode !== expected) throw new Error("final marker mismatch")
+            if (verified.runId !== runId || verified.exitCode !== expected) throw new Error("canonical report exit mismatch")
+            if (await readFile(path.join(output, "matrix.md"), "utf8") !== renderMarkdown(verified)) throw new Error("Markdown view mismatch")
+            if (await readFile(path.join(output, "junit.xml"), "utf8") !== renderJUnit(verified)) throw new Error("JUnit view mismatch")
+          '
+
+      - name: Upload allowlisted evidence
+        if: ${{ always() && steps.verify_evidence.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: typert-matrix-raw-${{ inputs.matrix_set }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: typert-matrix-evidence-${{ inputs.matrix_set }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ steps.select.outputs.output }}/run.json
             ${{ steps.select.outputs.output }}/run.final.json
             ${{ steps.select.outputs.output }}/matrix.json
             ${{ steps.select.outputs.output }}/matrix.md
             ${{ steps.select.outputs.output }}/junit.xml
-            ${{ steps.select.outputs.output }}/cases/*/evidence.json
-            ${{ steps.select.outputs.output }}/cases/*/report.md
-            ${{ steps.select.outputs.output }}/cases/*/logs/**
             ${{ steps.select.outputs.output }}/cases/*/proposed-lock/**
-            ${{ steps.select.outputs.output }}/cases/*/workspace/packages/probe/lib/typert.*
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 7
@@ -124,7 +158,7 @@ jobs:
           overwrite: false
 
       - name: Enforce conclusive exit semantics without recommending a version
-        if: ${{ always() && steps.matrix.outcome == 'success' }}
+        if: ${{ always() && steps.matrix.outcome == 'success' && steps.verify_evidence.outcome == 'success' }}
         shell: bash
         env:
           MATRIX_EXIT_CODE: ${{ steps.matrix.outputs.exit_code }}

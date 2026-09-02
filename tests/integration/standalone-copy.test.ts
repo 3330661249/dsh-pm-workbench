@@ -10,6 +10,7 @@ const execFileAsync = promisify(execFile)
 const repositoryRoot = path.resolve(import.meta.dirname, '../..')
 const sensitiveEnvironmentName = /(?:token|secret|password|credential|api[_-]?key)|^(?:dsh|harness|deepseek|openai|anthropic|gemini|google|azure|aws|github|gh)_/i
 const sourceCandidates = [
+  '.github/workflows',
   'package.json',
   'package-lock.json',
   'tsconfig.json',

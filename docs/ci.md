@@ -13,12 +13,21 @@ It performs only:
   verification, and package dry run;
 - the matrix runner's type-check, offline tests, and build;
 - offline validation of the closed selection and experimental configurations and
-  the frozen synthetic fixture.
+  the frozen synthetic fixture;
+- offline verification of the exact reviewed Darwin lock inventory and every
+  committed canonical matrix report.
 
 The two locked dependency-install steps may fetch packages or restore GitHub's npm
 cache. After installation, `npm_config_offline=true` is applied to all checks and
 matrix `validate` calls. This workflow never invokes the matrix `run` command, so a
 pull request or push cannot query DSH release metadata or resolve a version cohort.
+The lock check binds all eight case locks to their closed configs and the embedded
+platform README manifest. The report enumerator explicitly succeeds when no dated
+report set is committed; otherwise it rejects abnormal names or incomplete
+JSON/Markdown/JUnit triples and invokes the current runner's `verify-report` command
+for every canonical JSON report. It then imports that same built runner's Markdown
+and JUnit renderers, regenerates both views from the verified JSON, and requires
+byte-for-byte equality with the committed companions.
 
 `actions/setup-node` fixes Node at `24.14.0`, but the workbench does not claim that
 the npm bundled with that Node distribution has a particular patch version. That
@@ -43,20 +52,37 @@ The workflow validates the selected config offline before invoking `run` with
 only exit code `1` for `experimental`. Exit code `2`, a missing exit code, or any
 other combination fails closed.
 
+Before the decision step, CI requires every canonical output and both run markers,
+runs `verify-report`, and compares the report and final-marker exit values with the
+captured process exit. It regenerates the Markdown and JUnit views from the verified
+JSON in memory and requires byte-for-byte equality. A partial artifact glob is
+therefore not treated as evidence that a matrix completed.
+
+The job has a six-hour outer limit. This is deliberately larger than the five-case
+selection matrix's roughly five-hour theoretical sum of per-stage runner bounds,
+leaving time for setup, report generation, and `if: always()` evidence upload. Each
+individual subprocess remains governed by the runner's shorter stage-specific
+deadline; the workflow limit does not turn an unbounded process into a valid result.
+
 The runner's exit code never triggers a commit, Pull Request comment, label,
 approval, merge, release, deployment, profile edit, or version change. Every
 reported result still requires a person to inspect the evidence and decide whether
 to perform a later isolated mount probe.
 
-## Raw evidence artifact
+## Evidence artifact
 
 The manual workflow uploads a seven-day private artifact containing an allowlist of
-the run markers, canonical JSON/Markdown/JUnit reports, per-case evidence and logs,
-proposed locks, and generated `typert.*` probe files. It excludes case npm caches,
-`node_modules`, and the rest of each generated workspace. The runner uses the
-synthetic `strict-remote-v1` fixture and an allowlisted child environment; no real
-interview, profile, credential, provider response, or model output belongs in this
-artifact.
+the run markers, canonical JSON/Markdown/JUnit reports, and any proposed portable
+locks. It excludes per-case raw evidence, raw logs, generated source, npm caches,
+`node_modules`, and generated workspaces. Those raw files remain only in the
+ephemeral runner workspace and may contain runner-local paths. The committed and
+uploaded evidence must stay within the repository's no-local-path rule. Upload runs
+only after canonical verification, marker/exit comparison, and derived-view
+comparison succeed; a failed or partial run is not uploaded as admissible evidence.
+The runner
+uses the synthetic `strict-remote-v1` fixture and an allowlisted child environment;
+no real interview, profile, credential, provider response, or model output belongs
+in this artifact.
 
 ## Token and action policy
 

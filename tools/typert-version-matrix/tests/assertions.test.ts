@@ -85,6 +85,14 @@ async function artifactFixture() {
 }
 
 describe('generated artifact assertions', () => {
+  test('records the exact empty preseed inventory before generation', async () => {
+    const probeRoot = await mkdtemp(path.join(os.tmpdir(), 'typert-preseed-'))
+    await expect(assertArtifactsAbsent(probeRoot)).resolves.toEqual({
+      checkedPaths: [...REQUIRED_ARTIFACTS],
+      presentPaths: [],
+    })
+  })
+
   test('rejects pre-seeded generated output before any generator runs', async () => {
     const fixture = await artifactFixture()
 
@@ -99,8 +107,31 @@ describe('generated artifact assertions', () => {
       packFiles: [...REQUIRED_ARTIFACTS],
     })
 
-    expect(evidence).toHaveLength(5)
-    expect(evidence.every((entry) => /^[a-f0-9]{64}$/.test(entry.sha256))).toBe(true)
+    expect(evidence.artifacts).toHaveLength(5)
+    expect(evidence.artifacts.every((entry) => /^[a-f0-9]{64}$/.test(entry.sha256))).toBe(true)
+    expect(evidence.validation).toMatchObject({
+      files: expect.arrayContaining(REQUIRED_ARTIFACTS.map((artifactPath) => expect.objectContaining({
+        path: artifactPath,
+        fileType: 'regular',
+        symlink: false,
+        withinProbe: true,
+        fresh: true,
+      }))),
+      packageExports: {
+        './typert': { types: './lib/typert.host.d.ts', default: './lib/typert.host.js' },
+        './remote': { types: './lib/typert.remote-client.d.ts', default: './lib/typert.remote-client.js' },
+      },
+      generatedHeaders: { checkedArtifactCount: 4, matchingHeaderCount: 4 },
+      sourceMap: { file: 'typert.remote-client.d.ts', sourceCount: 1, absoluteSourceCount: 0 },
+      pack: {
+        inventorySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        totalFileCount: 5,
+        includedRequiredArtifacts: [...REQUIRED_ARTIFACTS],
+        forbiddenFileCount: 0,
+        absolutePathCount: 0,
+        manifestRequiredArtifactCount: 5,
+      },
+    })
   })
 
   test('rejects a symlinked artifact and a source map with an absolute local path', async () => {
@@ -127,6 +158,33 @@ describe('generated artifact assertions', () => {
     )
     await expect(inspectGeneratedArtifacts({ ...badMap, packFiles: [...REQUIRED_ARTIFACTS] }))
       .rejects.toThrow(/absolute/)
+  })
+
+  test.each([
+    [
+      'an empty source inventory',
+      { version: 3, file: 'typert.remote-client.d.ts', sources: [] },
+    ],
+    [
+      'the wrong remote declaration name',
+      { version: 3, file: 'typert.host.d.ts', sources: ['../src/index.ts'] },
+    ],
+  ])('rejects a source map with %s', async (_label, sourceMap) => {
+    const fixture = await artifactFixture()
+    const sourceMapPath = path.join(
+      fixture.probeRoot,
+      'lib/typert.remote-client.d.ts.map',
+    )
+    await writeFile(sourceMapPath, JSON.stringify(sourceMap))
+    fixture.expected['lib/typert.remote-client.d.ts.map'] = await readFile(
+      sourceMapPath,
+      'utf8',
+    )
+
+    await expect(inspectGeneratedArtifacts({
+      ...fixture,
+      packFiles: [...REQUIRED_ARTIFACTS],
+    })).rejects.toThrow(/source map/i)
   })
 
   test('rejects a missing pack file even when every build process exited zero', async () => {
@@ -184,11 +242,38 @@ describe('strict descriptor assertions', () => {
   test('accepts only the exact method inventory and strict request/result codecs', () => {
     const value = modules()
 
-    expect(validateStrictDescriptors(value.host, value.remote)).toEqual({
-      methodIds: ['matrixProbe/health'],
-      requestTypeSymbol: 'probe#MatrixHealthRequest',
-      resultTypeSymbol: 'probe#MatrixHealthResult',
+    expect(validateStrictDescriptors(value.host, value.remote)).toMatchObject({
+      host: {
+        exportName: 'TYPERT', package: '@knight/dsh-typert-matrix-probe', face: 'host',
+        methodIds: ['matrixProbe/health'], invocationCount: 1,
+      },
+      remote: {
+        exportName: 'TYPERT_REMOTE', package: '@knight/dsh-typert-matrix-probe',
+        defaultIdentity: true, methodIds: ['matrixProbe/health'], descriptorCount: 1,
+      },
+      method: {
+        id: 'matrixProbe/health', service: 'matrixProbe', namespace: 'matrixProbe',
+        method: 'health', hostParameterCount: 1, remoteParameterCount: 1,
+        fieldsAgree: true,
+      },
+      requestCodec: {
+        hostMode: 'strict', remoteMode: 'strict', hostHasSafeParse: true,
+        remoteHasSafeParse: true, symbolsAgree: true, validAcceptedCount: 2,
+        requiredInvalidRejectedCount: 10, extraKeyRejectedCount: 2,
+        typeSymbolBytes: expect.any(Number), typeSymbolSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+      resultCodec: {
+        hostMode: 'strict', remoteMode: 'strict', hostHasSafeParse: true,
+        remoteHasSafeParse: true, symbolsAgree: true, validAcceptedCount: 2,
+        requiredInvalidRejectedCount: 12, extraKeyRejectedCount: 2,
+        typeSymbolBytes: expect.any(Number), typeSymbolSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+      unknownLookup: {
+        id: 'matrixProbe/unknown', hostMatchCount: 0, remoteMatchCount: 0,
+      },
     })
+    expect(JSON.stringify(validateStrictDescriptors(value.host, value.remote)))
+      .not.toContain('probe#MatrixHealth')
   })
 
   test('rejects unexpected methods and permissive schemas', () => {

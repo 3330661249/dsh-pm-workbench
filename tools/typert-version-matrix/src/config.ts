@@ -25,38 +25,81 @@ const TOP_LEVEL_KEYS = [
 const CASE_KEYS = ['id', 'role', 'release', 'packages'] as const
 const CASE_ID = /^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/
 
-const REVIEWED_RELEASES: Readonly<Record<MatrixPurpose, ReadonlySet<string>>> = {
-  selection: new Set([
-    '0.1.0-rc.6',
-    '0.1.0-rc.7',
-    '0.1.0-rc.8',
-    '0.1.1-rc.1',
-    '0.1.1-rc.2',
-  ]),
-  experimental: new Set(['0.1.2-alpha.2', '0.1.2-alpha.3', '0.1.2-alpha.4']),
-  diagnostic: new Set(['0.0.1-rc.5', '0.1.0-rc.2', '0.1.0-rc.3']),
+interface ReviewedCase {
+  readonly id: string
+  readonly role: MatrixRole
+  readonly release: string
+  readonly packages: Readonly<Record<InstalledPackageName, string>>
 }
 
-function expectedCordisVersion(release: string): string {
-  if (release === '0.0.1-rc.5') return '4.0.1-rc.4'
-  if (release.startsWith('0.1.2-alpha.')) return '4.0.2'
-  return '4.0.1'
+function reviewedCase(
+  id: string,
+  role: MatrixRole,
+  release: string,
+  cordis: string,
+): ReviewedCase {
+  return {
+    id,
+    role,
+    release,
+    packages: {
+      '@deepseek-ai/dsh-typert-generator': release,
+      '@deepseek-ai/dsh-typert-protocol': release,
+      '@deepseek-ai/dsh-invariants': release,
+      '@deepseek-ai/cordis': cordis,
+    },
+  }
+}
+
+const OFFICIAL_CASE_INVENTORY: Readonly<Record<MatrixPurpose, readonly ReviewedCase[]>> = {
+  selection: [
+    reviewedCase('typert-0.1.0-rc.6-control', 'control', '0.1.0-rc.6', '4.0.1'),
+    reviewedCase('typert-0.1.0-rc.7', 'candidate', '0.1.0-rc.7', '4.0.1'),
+    reviewedCase('typert-0.1.0-rc.8', 'candidate', '0.1.0-rc.8', '4.0.1'),
+    reviewedCase('typert-0.1.1-rc.1', 'candidate', '0.1.1-rc.1', '4.0.1'),
+    reviewedCase('typert-0.1.1-rc.2', 'candidate', '0.1.1-rc.2', '4.0.1'),
+  ],
+  experimental: [
+    reviewedCase('typert-0.1.2-alpha.2', 'experimental', '0.1.2-alpha.2', '4.0.2'),
+    reviewedCase('typert-0.1.2-alpha.3', 'experimental', '0.1.2-alpha.3', '4.0.2'),
+    reviewedCase('typert-0.1.2-alpha.4', 'experimental', '0.1.2-alpha.4', '4.0.2'),
+  ],
+  diagnostic: [
+    reviewedCase('typert-0.0.1-rc.5-legacy', 'diagnostic', '0.0.1-rc.5', '4.0.1-rc.4'),
+    reviewedCase('typert-0.1.0-rc.2-legacy', 'diagnostic', '0.1.0-rc.2', '4.0.1'),
+    reviewedCase('typert-0.1.0-rc.3-legacy', 'diagnostic', '0.1.0-rc.3', '4.0.1'),
+  ],
 }
 
 function assertReviewedCases(purpose: MatrixPurpose, cases: readonly MatrixCase[]): void {
+  const expectedCases = OFFICIAL_CASE_INVENTORY[purpose]
+  if (cases.length !== expectedCases.length) {
+    throw new Error(
+      `official case inventory for ${purpose} must contain exactly ${expectedCases.length} cases`,
+    )
+  }
+  const expectedById = new Map(expectedCases.map((item) => [item.id, item]))
   for (const item of cases) {
-    const release = item.release['@deepseek-ai/dsh']
-    if (!REVIEWED_RELEASES[purpose].has(release)) {
-      throw new Error(`case ${item.id} release is outside the reviewed cohort for ${purpose}`)
+    const expected = expectedById.get(item.id)
+    if (expected === undefined) {
+      throw new Error(`official case inventory for ${purpose} has unexpected case ${item.id}`)
     }
-    const expectedCordis = expectedCordisVersion(release)
-    if (item.packages['@deepseek-ai/cordis'] !== expectedCordis) {
-      throw new Error(`case ${item.id} Cordis version must equal reviewed boundary ${expectedCordis}`)
+    if (item.role !== expected.role) {
+      throw new Error(
+        `official case inventory case ${item.id} role must equal ${expected.role}`,
+      )
     }
-    if (purpose === 'selection') {
-      const expectedRole = release === '0.1.0-rc.6' ? 'control' : 'candidate'
-      if (item.role !== expectedRole) {
-        throw new Error(`case ${item.id} role must be ${expectedRole} for reviewed release ${release}`)
+    if (item.release['@deepseek-ai/dsh'] !== expected.release) {
+      throw new Error(
+        `official case inventory case ${item.id} release is outside the reviewed cohort ${expected.release}`,
+      )
+    }
+    for (const packageName of INSTALLED_PACKAGE_NAMES) {
+      if (item.packages[packageName] !== expected.packages[packageName]) {
+        const boundaryName = packageName === '@deepseek-ai/cordis' ? 'Cordis' : packageName
+        throw new Error(
+          `official case inventory case ${item.id} reviewed boundary for ${boundaryName} must equal ${expected.packages[packageName]}`,
+        )
       }
     }
   }

@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
+import { readFile as readFileAsync } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'vitest'
 import { parseMatrixConfig } from '../src/config.js'
@@ -10,34 +11,14 @@ const dshPackages = (version: string, cordis = '4.0.1') => ({
   '@deepseek-ai/cordis': cordis,
 })
 
-const matrix = () => ({
-  schemaVersion: '1',
-  decisionMode: 'selection',
-  purpose: 'selection',
-  runtime: { node: '24.14.0', npmCli: '11.9.0' },
-  toolchain: { typescript: '6.0.3', tsdown: '0.22.2', zod: '4.4.3' },
-  registry: 'https://registry.npmjs.org/',
-  generatorAdapter: 'workspace-v1',
-  fixture: 'strict-remote-v1',
-  policy: {
-    requireAllCasesConclusive: true,
-    requireAtLeastOneCandidatePass: true,
-  },
-  cases: [
-    {
-      id: 'typert-0.1.0-rc.6-control',
-      role: 'control',
-      release: { '@deepseek-ai/dsh': '0.1.0-rc.6' },
-      packages: dshPackages('0.1.0-rc.6'),
-    },
-    {
-      id: 'typert-0.1.1-rc.2',
-      role: 'candidate',
-      release: { '@deepseek-ai/dsh': '0.1.1-rc.2' },
-      packages: dshPackages('0.1.1-rc.2'),
-    },
-  ],
-})
+function rawMatrix(name: string): ReturnType<typeof JSON.parse> {
+  return JSON.parse(readFileSync(
+    fileURLToPath(new URL(`../config/${name}`, import.meta.url)),
+    'utf8',
+  ))
+}
+
+const matrix = () => structuredClone(rawMatrix('matrix.official.json'))
 
 describe('parseMatrixConfig', () => {
   test.each([
@@ -46,19 +27,26 @@ describe('parseMatrixConfig', () => {
     ['matrix.legacy-diagnostic.json', 'diagnostic', 3],
   ] as const)('validates the shipped %s cohort inventory', async (file, purpose, count) => {
     const configPath = fileURLToPath(new URL(`../config/${file}`, import.meta.url))
-    const parsed = parseMatrixConfig(JSON.parse(await readFile(configPath, 'utf8')))
+    const parsed = parseMatrixConfig(JSON.parse(await readFileAsync(configPath, 'utf8')))
 
     expect(parsed.purpose).toBe(purpose)
     expect(parsed.cases).toHaveLength(count)
   })
 
   test('accepts the closed official selection shape', () => {
-    expect(parseMatrixConfig(matrix())).toMatchObject({
+    const parsed = parseMatrixConfig(matrix())
+    expect(parsed).toMatchObject({
       schemaVersion: '1',
       decisionMode: 'selection',
       purpose: 'selection',
-      cases: [{ role: 'control' }, { role: 'candidate' }],
     })
+    expect(parsed.cases.map(({ role }) => role)).toEqual([
+      'control',
+      'candidate',
+      'candidate',
+      'candidate',
+      'candidate',
+    ])
   })
 
   test('rejects unknown top-level and per-case fields', () => {
@@ -77,6 +65,18 @@ describe('parseMatrixConfig', () => {
 
     expect(() => parseMatrixConfig(top)).toThrow(/unknown key.*timeoutMs/i)
     expect(() => parseMatrixConfig(nested)).toThrow(/unknown key.*timeoutMs/i)
+  })
+
+  test('does not let matrix or case JSON provide runner provenance', () => {
+    const top = { ...matrix(), provenance: { configSha256: '0'.repeat(64) } }
+    const nested = matrix()
+    nested.cases[0] = {
+      ...nested.cases[0],
+      provenance: { runnerGit: { commit: '0'.repeat(40), worktreeClean: true } },
+    }
+
+    expect(() => parseMatrixConfig(top)).toThrow(/unknown key.*provenance/i)
+    expect(() => parseMatrixConfig(nested)).toThrow(/unknown key.*provenance/i)
   })
 
   test('rejects unapproved registry, adapter, fixture, and policy relaxation', () => {
@@ -104,9 +104,9 @@ describe('parseMatrixConfig', () => {
 
   test('rejects missing selection roles', () => {
     const noControl = matrix()
-    noControl.cases = noControl.cases.filter((entry) => entry.role !== 'control')
+    noControl.cases = noControl.cases.filter((entry: { role: string }) => entry.role !== 'control')
     const noCandidate = matrix()
-    noCandidate.cases = noCandidate.cases.filter((entry) => entry.role !== 'candidate')
+    noCandidate.cases = noCandidate.cases.filter((entry: { role: string }) => entry.role !== 'candidate')
 
     expect(() => parseMatrixConfig(noControl)).toThrow(/control/)
     expect(() => parseMatrixConfig(noCandidate)).toThrow(/candidate/)
@@ -144,34 +144,74 @@ describe('parseMatrixConfig', () => {
     expect(() => parseMatrixConfig(wrongCordis)).toThrow(/Cordis/)
   })
 
+  test.each([
+    ['missing case', (input: ReturnType<typeof matrix>) => { input.cases.pop() }],
+    ['extra case', (input: ReturnType<typeof matrix>) => {
+      input.cases.push({
+        id: 'typert-0.1.0-rc.5-extra',
+        role: 'candidate',
+        release: { '@deepseek-ai/dsh': '0.1.0-rc.5' },
+        packages: dshPackages('0.1.0-rc.5'),
+      })
+    }],
+    ['tampered id', (input: ReturnType<typeof matrix>) => {
+      input.cases[1].id = 'typert-0.1.0-rc.7-renamed'
+    }],
+    ['tampered role', (input: ReturnType<typeof matrix>) => {
+      input.cases[1].role = 'control'
+    }],
+    ['tampered package', (input: ReturnType<typeof matrix>) => {
+      input.cases[1].packages['@deepseek-ai/cordis'] = '4.0.2'
+    }],
+  ])('rejects an official selection inventory with a %s', (_label, mutate) => {
+    const input = matrix()
+    mutate(input)
+
+    expect(() => parseMatrixConfig(input)).toThrow(/official case inventory|reviewed boundary/i)
+  })
+
+  test.each([
+    '@deepseek-ai/dsh-typert-generator',
+    '@deepseek-ai/dsh-typert-protocol',
+    '@deepseek-ai/dsh-invariants',
+    '@deepseek-ai/cordis',
+  ])('rejects a tampered exact %s package version', (packageName) => {
+    const input = matrix()
+    input.cases[1].packages[packageName] = packageName === '@deepseek-ai/cordis'
+      ? '4.0.2'
+      : '0.1.0-rc.8'
+
+    expect(() => parseMatrixConfig(input)).toThrow(/aligned DSH cohort|official case inventory/i)
+  })
+
   test('supports isolated exploratory and legacy diagnostics without making them candidates', () => {
-    const experimental = {
-      ...matrix(),
-      decisionMode: 'exploratory',
-      purpose: 'experimental',
-      policy: { requireAllCasesConclusive: true, requireAtLeastOneCandidatePass: false },
-      cases: [{
-        id: 'typert-0.1.2-alpha.4',
-        role: 'experimental',
-        release: { '@deepseek-ai/dsh': '0.1.2-alpha.4' },
-        packages: dshPackages('0.1.2-alpha.4', '4.0.2'),
-      }],
-    }
-    const legacy = {
-      ...matrix(),
-      decisionMode: 'exploratory',
-      purpose: 'diagnostic',
-      policy: { requireAllCasesConclusive: true, requireAtLeastOneCandidatePass: false },
-      cases: [{
-        id: 'typert-0.1.0-rc.3-legacy',
-        role: 'diagnostic',
-        release: { '@deepseek-ai/dsh': '0.1.0-rc.3' },
-        packages: dshPackages('0.1.0-rc.3'),
-      }],
-    }
+    const experimental = rawMatrix('matrix.official-experimental.json')
+    const legacy = rawMatrix('matrix.legacy-diagnostic.json')
 
     expect(parseMatrixConfig(experimental)).toMatchObject({ purpose: 'experimental' })
     expect(parseMatrixConfig(legacy)).toMatchObject({ purpose: 'diagnostic' })
+  })
+
+  test.each([
+    ['missing alpha', (input: ReturnType<typeof matrix>) => { input.cases.pop() }],
+    ['renamed alpha', (input: ReturnType<typeof matrix>) => {
+      input.cases[0].id = 'typert-0.1.2-alpha.2-renamed'
+    }],
+    ['promoted alpha', (input: ReturnType<typeof matrix>) => {
+      input.cases[0].role = 'candidate'
+    }],
+  ])('rejects an exploratory inventory with a %s', (_label, mutate) => {
+    const input = rawMatrix('matrix.official-experimental.json')
+    mutate(input)
+
+    expect(() => parseMatrixConfig(input)).toThrow(/official case inventory|experimental.*role/i)
+  })
+
+  test('requires the complete frozen legacy diagnostic inventory', () => {
+    const input = rawMatrix('matrix.legacy-diagnostic.json')
+    input.cases.shift()
+
+    expect(() => parseMatrixConfig(input)).toThrow(/official case inventory.*diagnostic/i)
   })
 
   test('rejects role/purpose combinations that could promote exploratory evidence', () => {

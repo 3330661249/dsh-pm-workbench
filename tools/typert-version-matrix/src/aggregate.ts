@@ -1,15 +1,17 @@
 import { REQUIRED_ARTIFACTS } from './assertions/artifacts.js'
-import { CONCLUSIVE_STATUSES, type CaseEvidence, type MatrixConfig } from './types.js'
+import {
+  assertExactPassAssertionInventory,
+  REQUIRED_PASS_ASSERTIONS,
+} from './assertion-results.js'
+import { assertRunProvenance, expectedFrozenPlatformKey } from './provenance.js'
+import {
+  CONCLUSIVE_STATUSES,
+  type CaseEvidence,
+  type MatrixConfig,
+  type RunProvenance,
+} from './types.js'
 
-const assertionRange = (prefix: string, count: number): string[] =>
-  Array.from({ length: count }, (_, index) => `${prefix}${String(index + 1).padStart(2, '0')}`)
-
-export const REQUIRED_PASS_ASSERTIONS = [
-  ...assertionRange('A', 9),
-  ...assertionRange('B', 6),
-  ...assertionRange('C', 10),
-  ...assertionRange('D', 10),
-] as const
+export { REQUIRED_PASS_ASSERTIONS } from './assertion-results.js'
 
 export type MatrixDecision =
   | 'ELIGIBLE_FOR_NEXT_ISOLATED_MOUNT_PROBE'
@@ -26,6 +28,7 @@ export interface MatrixReport {
     readonly arch: string
     readonly node: string
     readonly npmCli: string
+    readonly provenance: RunProvenance
   }
   readonly cases: readonly CaseEvidence[]
   readonly eligibleCandidateIds: readonly string[]
@@ -42,8 +45,9 @@ export class ReportValidationError extends Error {
 }
 
 function validatePass(caseEvidence: CaseEvidence): void {
-  const assertions = new Map(caseEvidence.assertions.map((entry) => [entry.id, entry.status]))
-  if (REQUIRED_PASS_ASSERTIONS.some((id) => assertions.get(id) !== 'PASS')) {
+  try {
+    assertExactPassAssertionInventory(caseEvidence.assertions)
+  } catch {
     throw new ReportValidationError(`PASS case ${caseEvidence.case.id} is missing required A-D assertions`)
   }
   const paths = new Set(caseEvidence.artifacts.map(({ path }) => path))
@@ -54,10 +58,86 @@ function validatePass(caseEvidence: CaseEvidence): void {
 
 export interface AggregateMetadata {
   readonly runId: string
-  readonly platform?: string
-  readonly arch?: string
-  readonly node?: string
-  readonly npmCli?: string
+  readonly platform: string
+  readonly arch: string
+  readonly node: string
+  readonly npmCli: string
+}
+
+type RuntimeMetadata = Pick<AggregateMetadata, 'platform' | 'arch' | 'node' | 'npmCli'>
+
+export function assertSupportedRuntimeMetadata(
+  config: MatrixConfig,
+  metadata: RuntimeMetadata,
+): void {
+  if (!['darwin', 'linux'].includes(metadata.platform)) {
+    throw new ReportValidationError('runtime platform is unsupported')
+  }
+  if (!['arm64', 'x64'].includes(metadata.arch)) {
+    throw new ReportValidationError('runtime architecture is unsupported')
+  }
+  if (metadata.node !== config.runtime.node || metadata.npmCli !== config.runtime.npmCli) {
+    throw new ReportValidationError('runtime versions differ from matrix config')
+  }
+}
+
+function provenanceIdentity(value: RunProvenance): string {
+  return JSON.stringify([
+    value.schemaVersion,
+    value.configSha256,
+    value.configFileSha256,
+    value.fixtureSha256,
+    value.runnerGit.sourceGitCommit,
+    value.runnerGit.worktreeClean,
+    value.runnerArtifacts.sourceTreeSha256,
+    value.runnerArtifacts.distJsSha256,
+    value.runnerArtifacts.toolPackageLockSha256,
+    value.lockMode,
+    value.platformKey,
+    value.runStartedAt,
+    value.runCompletedAt,
+    value.ci === null
+      ? null
+      : [
+        value.ci.provider,
+        value.ci.repository,
+        value.ci.workflow,
+        value.ci.runId,
+        value.ci.runAttempt,
+        value.ci.commit,
+      ],
+  ])
+}
+
+function sharedProvenance(
+  config: MatrixConfig,
+  cases: readonly CaseEvidence[],
+): RunProvenance {
+  for (const item of cases) {
+    try {
+      assertRunProvenance(item.provenance, config)
+    } catch (error) {
+      throw new ReportValidationError(
+        `case ${item.case.id} provenance is invalid: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+    if (
+      !/^[a-f0-9]{64}$/.test(item.fixtureSha256)
+      || item.fixtureSha256 !== item.provenance!.fixtureSha256
+    ) {
+      throw new ReportValidationError(
+        `case ${item.case.id} fixture SHA differs from run provenance`,
+      )
+    }
+  }
+  const first = cases[0]!.provenance!
+  const identity = provenanceIdentity(first)
+  for (const item of cases.slice(1)) {
+    if (provenanceIdentity(item.provenance!) !== identity) {
+      throw new ReportValidationError(`case ${item.case.id} provenance differs across cases`)
+    }
+  }
+  return first
 }
 
 export function aggregateMatrix(
@@ -68,8 +148,23 @@ export function aggregateMatrix(
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(metadata.runId)) {
     throw new ReportValidationError('runId is invalid')
   }
+  assertSupportedRuntimeMetadata(config, metadata)
   if (cases.length !== config.cases.length) {
     throw new ReportValidationError('case evidence inventory differs from config')
+  }
+  if (cases.length === 0) throw new ReportValidationError('case evidence inventory is empty')
+  const provenance = sharedProvenance(config, cases)
+  if (provenance.lockMode === 'frozen') {
+    const expectedPlatformKey = expectedFrozenPlatformKey(
+      metadata.platform,
+      metadata.arch,
+      config,
+    )
+    if (provenance.platformKey !== expectedPlatformKey) {
+      throw new ReportValidationError(
+        `frozen platformKey must equal reported runtime key ${expectedPlatformKey}`,
+      )
+    }
   }
   const byId = new Map(cases.map((entry) => [entry.case.id, entry]))
   if (byId.size !== cases.length) throw new ReportValidationError('case evidence ids are duplicated')
@@ -123,10 +218,11 @@ export function aggregateMatrix(
     runId: metadata.runId,
     config,
     environment: {
-      platform: metadata.platform ?? 'unknown',
-      arch: metadata.arch ?? 'unknown',
-      node: metadata.node ?? config.runtime.node,
-      npmCli: metadata.npmCli ?? config.runtime.npmCli,
+      platform: metadata.platform,
+      arch: metadata.arch,
+      node: metadata.node,
+      npmCli: metadata.npmCli,
+      provenance,
     },
     cases: ordered,
     eligibleCandidateIds,

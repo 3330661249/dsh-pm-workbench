@@ -3,14 +3,31 @@ import path from 'node:path'
 import type { CasePaths } from './boundaries.js'
 import { renderNpmrc } from './environment.js'
 import { verifyFixture } from './fixture.js'
-import type { MatrixCase, MatrixConfig } from './types.js'
+import type {
+  FixtureCopyValidationEvidence,
+  MatrixCase,
+  MatrixConfig,
+  WorkspaceLinkValidationEvidence,
+} from './types.js'
+
+export function assertFixtureMatchesRunPreflight(
+  observedFixtureSha256: string,
+  expectedFixtureSha256: string,
+): void {
+  if (observedFixtureSha256 !== expectedFixtureSha256) {
+    throw new Error('case fixture SHA differs from run preflight')
+  }
+}
 
 export async function materializeCaseWorkspace(
   fixtureRoot: string,
   paths: CasePaths,
   config: MatrixConfig,
   matrixCase: MatrixCase,
-): Promise<{ readonly fixtureSha256: string }> {
+): Promise<{
+  readonly fixtureSha256: string
+  readonly validation: FixtureCopyValidationEvidence
+}> {
   const fixture = await verifyFixture(fixtureRoot)
   await mkdir(paths.root, { recursive: true })
   await Promise.all([
@@ -72,10 +89,20 @@ export async function materializeCaseWorkspace(
     rm(templatePath),
     rm(path.join(paths.workspace, 'fixture.manifest.json')),
   ])
-  return { fixtureSha256: fixture.aggregateSha256 }
+  return {
+    fixtureSha256: fixture.aggregateSha256,
+    validation: {
+      fixture: 'strict-remote-v1',
+      fileCount: fixture.files.length,
+      sourceSha256: fixture.aggregateSha256,
+      copiedSha256: copied.aggregateSha256,
+    },
+  }
 }
 
-export async function verifyWorkspaceLink(workspaceRoot: string): Promise<string> {
+export async function verifyWorkspaceLink(
+  workspaceRoot: string,
+): Promise<WorkspaceLinkValidationEvidence> {
   const linkPath = path.join(
     workspaceRoot,
     'node_modules/@knight/dsh-typert-matrix-probe',
@@ -85,5 +112,5 @@ export async function verifyWorkspaceLink(workspaceRoot: string): Promise<string
   const linkReal = await realpath(linkPath)
   const expected = await realpath(path.join(workspaceRoot, 'packages/probe'))
   if (linkReal !== expected) throw new Error('workspace link resolves outside packages/probe')
-  return linkReal
+  return { entryKind: 'symlink', resolvesTo: 'packages/probe' }
 }

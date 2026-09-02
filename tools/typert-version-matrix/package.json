@@ -11,7 +11,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test && npm run build"
+    "check": "npm run typecheck && npm test && npm run build",
+    "verify:locks": "node dist/cli.js verify-locks --platform-key darwin-arm64-node24-npm11"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

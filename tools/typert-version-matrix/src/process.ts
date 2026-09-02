@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdir, realpath, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -77,6 +77,8 @@ export interface ProcessEvidence {
   readonly timedOut: boolean
   readonly stdoutSha256: string
   readonly stderrSha256: string
+  readonly stdoutBytes: number
+  readonly stderrBytes: number
   readonly stdoutTruncated: boolean
   readonly stderrTruncated: boolean
 }
@@ -103,7 +105,26 @@ function digest(value: Buffer): string {
   return createHash('sha256').update(value).digest('hex')
 }
 
+export function assertProcessTreeTerminationSupported(platform: string): void {
+  if (platform === 'win32') {
+    throw new Error('bounded process-group termination requires a POSIX platform')
+  }
+}
+
+function signalProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (process.platform !== 'win32' && child.pid !== undefined) {
+    try {
+      process.kill(-child.pid, signal)
+      return
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return
+    }
+  }
+  child.kill(signal)
+}
+
 export async function runProcess(request: ProcessRequest): Promise<ProcessEvidence> {
+  assertProcessTreeTerminationSupported(process.platform)
   if (!approvedPrograms.has(request.program)) throw new Error('program is not approved')
   if (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs < 1) {
     throw new Error('timeoutMs must be a positive integer')
@@ -130,6 +151,7 @@ export async function runProcess(request: ProcessRequest): Promise<ProcessEviden
         [...request.program.prefixArgs, ...request.args],
         {
           shell: false,
+          detached: process.platform !== 'win32',
           cwd: request.cwd,
           env: { ...request.env },
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -138,15 +160,17 @@ export async function runProcess(request: ProcessRequest): Promise<ProcessEviden
       child.stdout.on('data', (chunk: Buffer) => append(stdout, chunk, maxLogBytes))
       child.stderr.on('data', (chunk: Buffer) => append(stderr, chunk, maxLogBytes))
       child.once('error', reject)
+      let force: NodeJS.Timeout | undefined
       const timeout = setTimeout(() => {
         timedOut = true
-        child.kill('SIGTERM')
-        const force = setTimeout(() => child.kill('SIGKILL'), 5_000)
+        signalProcessTree(child, 'SIGTERM')
+        force = setTimeout(() => signalProcessTree(child, 'SIGKILL'), 5_000)
         force.unref()
       }, request.timeoutMs)
       timeout.unref()
       child.once('close', (code, signal) => {
         clearTimeout(timeout)
+        if (force !== undefined) clearTimeout(force)
         resolve({ code, signal })
       })
     },
@@ -169,6 +193,8 @@ export async function runProcess(request: ProcessRequest): Promise<ProcessEviden
     timedOut,
     stdoutSha256: digest(stdoutBuffer),
     stderrSha256: digest(stderrBuffer),
+    stdoutBytes: stdoutBuffer.byteLength,
+    stderrBytes: stderrBuffer.byteLength,
     stdoutTruncated: stdout.truncated,
     stderrTruncated: stderr.truncated,
   }
