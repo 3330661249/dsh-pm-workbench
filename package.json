@@ -1,0 +1,29 @@
+{
+  "name": "dsh-pm-workbench-dev",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "workspaces": ["packages/workbench"],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.tests.json --noEmit && tsc -p tsconfig.host.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "node --experimental-strip-types packages/workbench/build.mjs",
+    "check": "npm run typecheck && npm test",
+    "pack:dry": "node --experimental-strip-types scripts/pack-dry.mjs",
+    "verify:package": "node --experimental-strip-types scripts/verify-package.mjs",
+    "verify:profile": "node --experimental-strip-types packages/workbench/build.mjs --verify-profile",
+    "test:e2e": "node --experimental-strip-types packages/workbench/build.mjs --test-e2e"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "~18.3.1",
+    "typescript": "6.0.3",
+    "vitest": "3.2.7",
+    "esbuild": "0.25.12",
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-invariants": "0.1.0-rc.6",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  }
+}
