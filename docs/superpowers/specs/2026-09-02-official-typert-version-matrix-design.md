@@ -1,12 +1,19 @@
 # DSH PM Workbench — official Typert version-matrix runner design
 
+> **Historical completed investigation.** Its committed results remain the
+> canonical evidence for the generated-Typert question, but generated Typert is
+> no longer the current v0.1 transport design. The owner-selected replacement
+> design is documented in
+> [`2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md`](./2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md), whose Gate A′ has not run.
+
 **Status:** implementation design only. This document does not authorize changing the
 running Harness profile, starting a server, or treating a generator-only result as full
 Harness compatibility.
 
 **Decision under test:** whether an official, exact DeepSeek Harness Typert package
-cohort can generate the strict Host and Client Remote artifacts required by the approved
-PM Workbench architecture when consumed by a normal out-of-tree npm workspace.
+cohort can generate the strict Host and Client Remote artifacts required by the
+PM Workbench architecture under test at that time when consumed by a normal
+out-of-tree npm workspace.
 
 **Known control:** `0.1.0-rc.6` must reproduce the existing failure in which package
 discovery succeeds but automatic and forced generation return no artifacts. A successful

@@ -11,17 +11,25 @@ extension.
 The long-term workflow is a product direction, not a statement of implemented
 functionality.
 
-## Current status: Gate A No-Go
+## Current status: historical Typert No-Go; Gate A′ not run
 
-The current architecture requires generated, strict Typert Host/Client Remote
+The historical architecture required generated, strict Typert Host/Client Remote
 artifacts. The initial isolated `0.1.0-rc.6` probe discovered the workspace
 package but emitted no Remote artifacts. A later hardened frozen matrix repeated
 the same synthetic probe across eight exact official cohorts from
 `0.1.0-rc.6` through `0.1.2-alpha.4`. All eight completed as
 `FAIL_COMPATIBILITY / GENERATION_EMPTY`: automatic and forced generation each
 returned zero outputs, so none produced the five required files. The selection
-decision is `NO_ELIGIBLE_CANDIDATE`; Gate A remains **NO-GO** and all downstream
-work remains stopped.
+decision is `NO_ELIGIBLE_CANDIDATE`; that generated-Typert Gate A remains a
+historical **NO-GO**.
+
+On 2026-09-02, the owner selected a revised architecture for specification:
+public Connection RPC, a shared strict Zod endpoint registry, Host-owned state,
+and a `WorkbenchTransport` abstraction that preserves a later Typert migration
+path. The canonical design draft is
+[`docs/superpowers/specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md`](docs/superpowers/specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md).
+Its replacement integration gate, Gate A′, has **not run**. Selecting the design
+does not establish that Connection RPC works from this third-party tarball.
 
 The source-free canonical result set is retained in
 [`docs/matrix-results/2026-09-02-darwin-arm64/`](docs/matrix-results/2026-09-02-darwin-arm64/).
@@ -39,9 +47,10 @@ technical evidence only. It has **not** established that the package:
 
 No handwritten descriptor, copied generated file, private HTTP fallback,
 dynamic Cordis fallback, protocol vendoring, or generator patch is accepted as
-proof that Gate A passed.
+proof that the historical Gate A passed. The newly selected Connection RPC seam
+must instead pass its own isolated Gate A′.
 
-## Completed bounded investigation and next decision
+## Completed investigation and current decision
 
 The approved official-version matrix is complete. It reused one fixed synthetic
 Remote probe, exact reviewed locks, a clean committed runner, and source-free
@@ -49,13 +58,15 @@ canonical evidence for every tested version. Independent adversarial review
 found no remaining P0 or P1 issue in the evidence path; its residual P2 findings
 are recorded alongside the results.
 
-No tested candidate is eligible for an isolated mount probe under the current
-strict generated-Remote architecture. The next step is therefore a human
-architecture decision: stop this approach, seek an upstream generator change,
-or explicitly approve and gate a different extension boundary. No alternative
-has been selected or authorized here. Matrix completion does not authorize UI
-development, persistence, a real model, real interviews, installation into the
-user's active Harness profile, or public distribution.
+No tested candidate is eligible for an isolated mount probe under the old
+strict generated-Remote architecture. The owner has selected Connection RPC as
+the next boundary to specify, not as a proved compatibility result. The next
+technical step, after design and implementation-plan review, is a new bounded
+Gate A′ using only `health`, a synthetic persisted counter, an additive launcher
+and overlay, and a real tarball in an isolated profile. This design decision
+does not authorize full UI development, a real model, real interviews,
+installation into the user's active Harness profile, merge, or public
+distribution.
 
 ## Data boundary
 

@@ -47,7 +47,7 @@ reproduced the same result.
 The independent review traced the failure to rc.6 protocol-symbol provenance:
 the generator does not accept the resolved declarations from a normal
 npm-installed `@deepseek-ai/dsh-typert-protocol@0.1.0-rc.6` package. This is a
-narrow result for the currently approved third-party-plugin architecture, not
+narrow result for the then-approved generated-Typert architecture, not
 a claim that the PM Workbench product is impossible.
 
 ## Official Typert version matrix
@@ -77,9 +77,29 @@ assertion. The canonical JSON, Markdown, JUnit and exact hashes are in
 
 This is not a general compatibility claim. No tested cohort was loaded into
 Harness, mounted in a profile, exercised in the browser, or tested with storage.
-The result only rejects the currently specified strict generated-Remote path for
+The result only rejects the historically specified strict generated-Remote path for
 this fixed fixture. Gate A remains **NO-GO**.
 
-No handwritten descriptor, copied generated file, HTTP fallback, dynamic
+No handwritten descriptor, copied generated file, bare/private webServer HTTP fallback, dynamic
 Cordis fallback, protocol vendoring, or generator patch was used. Any such
 change requires a new architecture decision and a fresh compatibility gate.
+
+## Current architecture decision: Connection RPC design
+
+On 2026-09-02, the owner selected a different boundary for specification:
+
+```text
+public Connection RPC
++ shared strict Zod endpoint schemas
++ Host-owned state
++ WorkbenchTransport migration seam
+```
+
+This decision does not change any matrix observation above and does not turn
+the historical generated-Typert Gate A into a pass. The proposed Connection RPC
+combination has not yet been loaded from this third-party tarball, called from
+its Client, connected to `storageDomain`, restarted, removed, or exercised in a
+browser. Its replacement Gate A′ is **Not run**.
+
+The current design and its exact evidence boundary are recorded in
+[`superpowers/specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md`](superpowers/specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md).

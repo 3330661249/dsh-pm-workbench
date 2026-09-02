@@ -1,5 +1,12 @@
 # Official Typert Version Matrix and GitHub Repository Implementation Plan
 
+> **Historical executed plan.** The committed matrix results and adversarial
+> review remain evidence for the generated-Typert decision only. Do not use this
+> plan to implement the current product architecture. The owner-selected
+> Connection RPC design is
+> [`../specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md`](../specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md);
+> its implementation plan has not been written or approved.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Create a private, independently cloneable GitHub repository for DSH PM Workbench and use one frozen synthetic Remote fixture to determine whether any exact official DeepSeek Harness Typert cohort after `0.1.0-rc.6` is eligible for a later isolated Host/Client mount probe.
