@@ -1,0 +1,110 @@
+name: Static workbench verification
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: static-verification-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workbench-static:
+    name: Workbench static checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository without persisted credentials
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up exact Node runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.14.0
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Verify exact Node runtime
+        run: node --input-type=module -e "if (process.versions.node !== '24.14.0') throw new Error('unexpected Node runtime')"
+
+      - name: Install locked workbench dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Type-check workbench
+        env:
+          npm_config_offline: "true"
+        run: npm run typecheck
+
+      - name: Test workbench
+        env:
+          npm_config_offline: "true"
+        run: npm test
+
+      - name: Build workbench package
+        env:
+          npm_config_offline: "true"
+        run: npm run build
+
+      - name: Verify package boundary
+        env:
+          npm_config_offline: "true"
+        run: npm run verify:package
+
+      - name: Dry-run package contents
+        env:
+          npm_config_offline: "true"
+        run: npm run pack:dry
+
+  matrix-offline:
+    name: Matrix runner offline checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository without persisted credentials
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up exact Node runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.14.0
+          cache: npm
+          cache-dependency-path: tools/typert-version-matrix/package-lock.json
+
+      - name: Verify exact Node runtime
+        run: node --input-type=module -e "if (process.versions.node !== '24.14.0') throw new Error('unexpected Node runtime')"
+
+      - name: Install locked matrix-runner dependencies
+        working-directory: tools/typert-version-matrix
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify locked matrix npm CLI
+        run: >-
+          node tools/typert-version-matrix/node_modules/npm/bin/npm-cli.js
+          --version | grep -Fx "11.9.0"
+
+      - name: Type-check, test, and build matrix runner offline
+        working-directory: tools/typert-version-matrix
+        env:
+          npm_config_offline: "true"
+        run: node node_modules/npm/bin/npm-cli.js run check
+
+      - name: Validate closed selection matrix and fixture offline
+        env:
+          npm_config_offline: "true"
+        run: >-
+          node tools/typert-version-matrix/dist/cli.js validate
+          --matrix tools/typert-version-matrix/config/matrix.official.json
+
+      - name: Validate closed experimental matrix and fixture offline
+        env:
+          npm_config_offline: "true"
+        run: >-
+          node tools/typert-version-matrix/dist/cli.js validate
+          --matrix tools/typert-version-matrix/config/matrix.official-experimental.json
