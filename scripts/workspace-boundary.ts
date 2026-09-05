@@ -48,3 +48,13 @@ export function assertWorkbenchWritePath(candidate: string): void {
     `Workbench writes are restricted to ${allowedWriteRoots.join(' or ')}; received ${resolvedCandidate}`,
   )
 }
+
+/** Demo output must be a strict physical descendant of its dedicated subtree. */
+export function assertWorkbenchDemoWritePath(candidate: string): void {
+  const demoRoot = path.join(workbenchTempRoot, 'dsh-pm-workbench')
+  const resolvedCandidate = resolveForWrite(candidate)
+  assert.ok(
+    resolvedCandidate !== demoRoot && isWithin(resolvedCandidate, demoRoot),
+    `Demo writes are restricted to strict descendants of ${demoRoot}; received ${resolvedCandidate}`,
+  )
+}

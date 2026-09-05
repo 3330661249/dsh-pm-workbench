@@ -9,6 +9,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "build": "node --experimental-strip-types packages/workbench/build.mjs",
+    "demo:build": "node --experimental-strip-types packages/workbench/build.mjs --demo",
+    "demo:serve": "node scripts/serve-demo.mjs",
     "check": "npm run typecheck && npm test",
     "pack:dry": "node --experimental-strip-types scripts/pack-dry.mjs",
     "verify:package": "node --experimental-strip-types scripts/verify-package.mjs",
