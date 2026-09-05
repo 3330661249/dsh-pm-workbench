@@ -42,3 +42,25 @@ Installed artifact evidence inspected on 2026-09-05:
 
 The declaration files remain in the installed development dependency; none were
 copied into project source or added to the distributable Harness package.
+
+## rc.6 declaration acceptance inputs
+
+The following five npm packages are retained only as the frozen development and
+type-verification input described by the accepted
+[`package.json`](tools/harness-rc6-declarations/package.json) and its recorded
+transitive closure in
+[`research/2026-09-05-rc6-declaration-closure.json`](research/2026-09-05-rc6-declaration-closure.json).
+They are not imported into the Workbench, included in its package contents, or
+executed as a Harness runtime.
+
+| Package | Accepted version | Published license claim | Retained purpose | Source |
+| --- | --- | --- | --- | --- |
+| `@deepseek-ai/dsh-client-connection` | `0.1.0-rc.6` | MIT, from the accepted public npm package manifest | Host/Client declaration verification input | [public npm package](https://www.npmjs.com/package/@deepseek-ai/dsh-client-connection) |
+| `@deepseek-ai/dsh-client-runtime` | `0.1.0-rc.6` | MIT, from the accepted public npm package manifest | Client declaration verification input | [public npm package](https://www.npmjs.com/package/@deepseek-ai/dsh-client-runtime) |
+| `@deepseek-ai/dsh-client-ui-layout` | `0.1.0-rc.6` | MIT, from the accepted public npm package manifest | Client declaration verification input | [public npm package](https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-layout) |
+| `@deepseek-ai/dsh-client-ui-sidebar` | `0.1.0-rc.6` | MIT, from the accepted public npm package manifest | Client declaration verification input | [public npm package](https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-sidebar) |
+| `@deepseek-ai/dsh-client-ui-slots` | `0.1.0-rc.6` | MIT, from the accepted public npm package manifest | Client declaration verification input | [public npm package](https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-slots) |
+
+The accepted versions and integrity values are historical frozen-lock facts.
+They do not establish a fresh resolver result, package-runtime compatibility,
+or any Harness behavior.

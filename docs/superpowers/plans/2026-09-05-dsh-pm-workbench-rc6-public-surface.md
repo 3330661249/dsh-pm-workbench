@@ -6,7 +6,9 @@
 
 **Architecture:** Create the Host and Client declaration contracts before their packages are installed, record the expected missing-module RED result and exact contract hashes, then accept one frozen declaration dependency input and rerun the same bytes for GREEN. The Host contract uses the official Cordis Host Context augmentation; the Client RPC contract uses direct values of the public `ConnectionHandle`/`ClientConnectionRpc` types because rc.6 provides no official Client Context Connection augmentation; the Client slot contract uses `ClientContext` plus official layout/sidebar `/client` augmentations. Derive and review the complete lock-resolved DeepSeek closure while keeping every workbench production manifest, peer, injection list, source file, bundle, and tgz unchanged. Storage is deferred to A′-P1b.
 
-**Tech Stack:** TypeScript 6.0.3, Node.js 24.14.0, Vitest 3.2.7, Cordis 4.0.1, DeepSeek Harness public declaration packages `0.1.0-rc.6`.
+**Tech Stack:** TypeScript 6.0.3, Node.js 24.14.0, `@types/node` 24.13.3,
+`undici-types` 7.18.2, Vitest 3.2.7, Cordis 4.0.1, DeepSeek Harness public
+declaration packages `0.1.0-rc.6`.
 
 **Spec:** `docs/superpowers/specs/2026-09-05-dsh-pm-workbench-minimal-harness-integration-design.md`
 
@@ -19,8 +21,17 @@
 - The Host contract obtains Connection from the official Cordis Host `Context` augmentation. Client RPC uses the exported public `ConnectionHandle`/`ClientConnectionRpc` types directly; only Client slots use the real public `ClientContext`.
 - The Client contract must not import the Connection Host root entrypoint, access `ctx.connection`, or claim that rc.6 officially augments Cordis Client Context with Connection.
 - Never create a local Harness module augmentation or structural stand-in. Contract files may not contain explicit or implicit `any`, a double cast through `unknown`, `@ts-ignore`, `@ts-nocheck`, or copied declarations.
-- Both surface tsconfigs must set `strict: true`, `noImplicitAny: true`, `skipLibCheck: false`, and `noEmit: true`, and must not define `paths` or `typeRoots`.
-- The reviewed TypeScript/test toolchain must resolve from this repository's root `node_modules`; every Harness declaration used by GREEN must resolve within one accepted disposable declaration dependency root below this worktree's controlled temporary area. Parent, global, active-checkout, source-checkout, and copied-declaration fallback fail the plan.
+- Both surface tsconfigs must set `strict: true`, `noImplicitAny: true`, `skipLibCheck: false`, `noEmit: true`, and the frozen `types: []`, and must not define `paths` or `typeRoots`.
+- Every Host and Client RED and GREEN compiler command must use the same final
+  argument `--types node`. The reviewed compiler-toolchain input is the existing
+  root-lock identity of TypeScript `6.0.3`, `@types/node` `24.13.3`, and its
+  `undici-types` `7.18.2` dependency. It supplies Node ambient declarations
+  only; it is not a Harness declaration or part of the accepted Harness
+  closure. The reviewed TypeScript/test toolchain resolves from this
+  repository's root `node_modules`; every Harness declaration used by GREEN
+  must resolve within one accepted disposable declaration dependency root below
+  this worktree's controlled temporary area. Parent, global, active-checkout,
+  source-checkout, and copied-declaration fallback fail the plan.
 - Do not modify `packages/workbench/package.json`, its production peers, `dsh.client.inject`, Host or Client source, build scripts, built files, `cordis.patch.yml`, or the existing dry-run package.
 - The selected roots, imports, compiler inputs, and executable steps exclude `@deepseek-ai/dsh-storage` and `@deepseek-ai/dsh-storage-domain`. Either package may remain only as an unselected, unimported, unexecuted transitive member of the frozen lock/cache cohort; that presence is not storage verification or permission. Storage declarations belong to A′-P1b after A′-P2.
 - Do not read `~/.dsh`, port `3080`, user sessions, credentials, browser profiles, real interview data, model configuration, or provider environment variables.
@@ -47,7 +58,9 @@ A′-P1a may report only:
 
 **Interfaces:**
 
-- Consumes: baseline Cordis, TypeScript, and the selected public package names; the exact Harness packages are intentionally absent for RED.
+- Consumes: baseline Cordis, the reviewed path-free TypeScript/Node ambient
+  toolchain input, and the selected public package names; the exact Harness
+  packages are intentionally absent for RED.
 - Produces: two immutable compile-only contracts, two strict compiler configurations, one anti-bypass guard, and one named evidence ledger used unchanged by Tasks 2-4.
 
 - [ ] **Step 1: Write the Host declaration contract**
@@ -192,8 +205,8 @@ Run:
 
 ```bash
 npm test -- tests/contract/rc6-declaration-contract-guard.test.ts
-./node_modules/.bin/tsc -p tsconfig.surface.host.json --noEmit
-./node_modules/.bin/tsc -p tsconfig.surface.client.json --noEmit
+./node_modules/.bin/tsc -p tsconfig.surface.host.json --noEmit --types node
+./node_modules/.bin/tsc -p tsconfig.surface.client.json --noEmit --types node
 ```
 
 Expected:
@@ -308,7 +321,7 @@ The committed input is development evidence only. It is not the A′-P2 executab
 
 Create the empty fixed root `.tmp/dsh-pm-workbench/rc6-declarations/accepted/`, copy the accepted manifest and lock into it, and run npm through `accept-rc6-declaration-input.mjs` with lifecycle scripts disabled, offline mode, and the accepted read-only cache. The script rejects a pre-existing nonempty root; it, not an ambient npm setting, supplies the cache and prefix.
 
-Copy the two Task 1 surface files and tsconfigs into the same relative paths below that disposable root. Require their SHA-256 values to equal the RED ledger before compilation. The repository's reviewed TypeScript executable may drive the compile, but all Harness declarations must resolve from this disposable root's `node_modules`.
+Copy the two Task 1 surface files and tsconfigs into the same relative paths below that disposable root. Require their SHA-256 values to equal the RED ledger before compilation. The repository's reviewed TypeScript executable and its locked Node ambient input may drive the compile only with `--types node`, but all Harness declarations must resolve from this disposable root's `node_modules`. The Task 2 accepted root does not copy the Node ambient packages and does not count them as Harness closure records.
 
 - [ ] **Step 5: Derive the complete accepted DeepSeek closure**
 
@@ -360,7 +373,7 @@ Do not modify the workbench package's bundled third-party document because none 
 
 - [ ] **Step 8: Verify GREEN using the same contract bytes**
 
-Run the anti-bypass and input tests from the repository, then compile the byte-identical copied contracts from the disposable dependency root using the reviewed repository TypeScript executable. The acceptance script prints the exact generated paths; do not reconstruct them through ambient module paths.
+Run the anti-bypass and input tests from the repository, then compile the byte-identical copied contracts from the disposable dependency root using the reviewed repository TypeScript executable with `--types node`. The acceptance script prints the exact generated paths; do not reconstruct them through ambient module paths.
 
 Expected when the matching accepted cache/root are local: PASS with unchanged contract/config hashes, an accepted lock/input manifest, no unexpected cohort, and no Harness declaration outside the disposable root. The Client RPC contract must pass through direct public Connection types, while the Client slot contract passes through `ClientContext`; `ctx.connection` must remain absent from the Client contract.
 
@@ -407,9 +420,15 @@ The minimal replay root includes:
 - `tools/harness-rc6-declarations/package.json` copied to the replay root as `package.json`;
 - `tools/harness-rc6-declarations/package-lock.json` copied to the replay root as `package-lock.json`;
 - `tools/harness-rc6-declarations/input-manifest.json`;
-- the exact repository TypeScript executable identity used to drive the compile.
+- the exact path-free repository compiler-toolchain identities: TypeScript
+  `6.0.3`, `@types/node` `24.13.3`, and `undici-types` `7.18.2`.
 
-Do not copy the source worktree's `node_modules`, any Harness checkout, root application manifest, absolute-path declaration, user profile, or global executable.
+Task 3 must materialize only those exact Node ambient packages as a separately
+verified compiler-toolchain input, with their root-lock integrity identities;
+they remain outside the Harness closure. Do not copy the source worktree's
+`node_modules` wholesale, any Harness checkout, root application manifest,
+absolute-path declaration, user profile, or global executable. `paths` and
+`typeRoots` remain forbidden.
 
 - [ ] **Step 2: Gate, install, and compile in the copy**
 
@@ -421,7 +440,7 @@ Create the minimal replay root under a new arbitrary temporary parent that has n
 node scripts/accept-rc6-declaration-input.mjs --replay-arbitrary-path
 ```
 
-The helper invokes the accepted npm CLI identity directly with `ci`, `--ignore-scripts`, `--offline`, `--audit=false`, `--fund=false`, `--update-notifier=false`, an explicit read-only selected cache, an explicit replay-root prefix, and separate writable log and temporary directories; it then invokes the reviewed repository TypeScript executable and full realpath verifier. The test hashes the read-only cache before and after the run. Every Harness declaration and package manifest realpath must be below the replay root's `node_modules`; the TypeScript and npm CLI identities must equal their accepted path-free version/hash records.
+The helper invokes the accepted npm CLI identity directly with `ci`, `--ignore-scripts`, `--offline`, `--audit=false`, `--fund=false`, `--update-notifier=false`, an explicit read-only selected cache, an explicit replay-root prefix, and separate writable log and temporary directories; it then invokes the reviewed repository TypeScript executable with `--types node` and the full realpath verifier. The test hashes the read-only cache before and after the run. Every Harness declaration and package manifest realpath must be below the replay root's `node_modules`; the separately materialized compiler-toolchain packages, TypeScript, and npm CLI identities must equal their locked path-free version/integrity records.
 
 - [ ] **Step 3: Preserve the evidence boundary**
 
@@ -440,6 +459,27 @@ npm test -- tests/integration/standalone-copy.test.ts tests/integration/rc6-decl
 ```
 
 Expected: static metadata PASS plus an observed replay PASS, `INCONCLUSIVE_CACHE_MISS`, or `INCONCLUSIVE_LOCAL_REPLAY_NOT_RUN`. A parent/global fallback, ambient-cache use, changed contract hash, closure mismatch, unexpected cohort, or a skipped replay reported as PASS is FAIL.
+
+#### Task 3 implementation-status correction
+
+The current `standalone-copy.test.ts` is an auxiliary current-platform
+relocation regression only. It copies an explicit source-file manifest and the
+already installed root `node_modules` tree into another absolute path, then
+runs the copied project's checks with a minimal child environment and npm
+offline settings. It neither materializes only the accepted compiler-toolchain
+packages nor invokes the accepted npm CLI with `ci` against the selected cache.
+
+Consequently, this auxiliary regression does **not** implement Task 3 Steps
+1-3, does not satisfy the dependency-materialization rule above, and must not
+produce or inherit the Task 3 PASS label. All Task 3 checkboxes remain open.
+Its only permitted statement is:
+
+> The explicit source manifest and the current platform's preinstalled
+> dependency tree completed an arbitrary-absolute-path relocation regression.
+
+This statement is not clean-clone evidence, an accepted frozen-input offline
+replay, a dependency installation result, cross-platform portability evidence,
+or Harness compatibility evidence.
 
 ---
 
