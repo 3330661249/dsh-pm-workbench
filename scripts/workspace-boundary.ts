@@ -21,7 +21,9 @@ function resolveForWrite(candidate: string): string {
   const unresolvedSuffix: string[] = []
   let cursor = path.resolve(candidate)
 
-  while (!fs.existsSync(cursor)) {
+  // lstat sees a dangling symlink as an existing component. realpath below then
+  // rejects it instead of rebuilding a lexical path that writeFile could follow.
+  while (!fs.lstatSync(cursor, { throwIfNoEntry: false })) {
     const parent = path.dirname(cursor)
     assert.notEqual(parent, cursor, `Unable to find an existing ancestor for ${candidate}`)
     unresolvedSuffix.unshift(path.basename(cursor))

@@ -5,6 +5,9 @@ import { pathToFileURL } from 'node:url'
 import { buildDemo } from '../packages/workbench/build.mjs'
 
 export async function startDemoServer({ port = 4173 } = {}) {
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new TypeError('port must be an integer number from 0 to 65535')
+  }
   const outdir = await buildDemo()
   const routes = new Map([
     ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -33,7 +36,7 @@ export async function startDemoServer({ port = 4173 } = {}) {
   })
   await new Promise((resolve, reject) => {
     server.once('error', reject)
-    server.listen(port, '127.0.0.1', () => {
+    server.listen({ port, host: '127.0.0.1' }, () => {
       server.off('error', reject)
       resolve()
     })

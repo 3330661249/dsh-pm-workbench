@@ -57,3 +57,22 @@ test('rejects a Demo child symlink pointing elsewhere inside the wider temporary
     fs.rmSync(outside, { recursive: true, force: true })
   }
 })
+
+test('rejects dangling symlinks at final and ancestor components while accepting ordinary missing suffixes', async () => {
+  const { assertWorkbenchDemoWritePath } = await import('../../scripts/workspace-boundary.ts')
+  fs.mkdirSync(demoRoot, { recursive: true })
+  const fixture = fs.mkdtempSync(path.join(demoRoot, 'test-dangling-'))
+  const outside = fs.mkdtempSync(path.join(workbenchTempRoot, 'demo-dangling-'))
+  try {
+    const dangling = path.join(fixture, 'dangling')
+    fs.symlinkSync(path.join(outside, 'absent'), dangling)
+    for (const guard of [assertWorkbenchDemoWritePath, assertWorkbenchWritePath]) {
+      expect(() => guard(path.join(fixture, 'ordinary', 'missing', 'demo.js'))).not.toThrow()
+      expect(() => guard(dangling)).toThrow()
+      expect(() => guard(path.join(dangling, 'nested', 'demo.js'))).toThrow()
+    }
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})

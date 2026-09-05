@@ -86,3 +86,28 @@ test('rechecks the mandatory guard after an injected hook replaces the output wi
     await rm(outside, { recursive: true, force: true })
   }
 })
+
+test('rejects a dangling symlink inserted by the hook at the final JavaScript write', async () => {
+  const parent = await fixture()
+  const outdir = path.join(parent, 'demo')
+  const outside = await mkdtemp(path.join(tempRoot, 'demo-dangling-escape-'))
+  const outsideFile = path.join(outside, 'must-not-exist.js')
+  const jsTarget = path.join(outdir, 'assets/demo.js')
+  const fs = await import('node:fs')
+  let reachedFinalWrite = false
+  try {
+    await expect(access(outsideFile)).rejects.toThrow()
+    await expect(buildDemo({ outdir, guard(target: string) {
+      if (target === jsTarget) {
+        reachedFinalWrite = true
+        fs.symlinkSync(outsideFile, jsTarget)
+      }
+    } })).rejects.toThrow()
+    expect(reachedFinalWrite).toBe(true)
+    await expect(access(outsideFile)).rejects.toThrow()
+    expect(await readdir(outside)).toEqual([])
+  } finally {
+    await rm(parent, { recursive: true, force: true })
+    await rm(outside, { recursive: true, force: true })
+  }
+})

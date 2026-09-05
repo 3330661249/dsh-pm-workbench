@@ -1,5 +1,6 @@
 import type { Server } from 'node:http'
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
+import * as buildModule from '../../packages/workbench/build.mjs'
 
 function close(server: Server): Promise<void> {
   return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
@@ -38,4 +39,29 @@ test('builds and serves the fixed Demo routes on an actual loopback port and clo
     await close(server)
   }
   expect(server.listening).toBe(false)
+})
+
+test.each([
+  { label: 'listen options object', port: { port: 0, host: '0.0.0.0' } },
+  { label: 'socket path string', port: '/private/tmp/demo-invalid-port.sock' },
+  { label: 'numeric string', port: '4173' },
+  { label: 'NaN', port: Number.NaN },
+  { label: 'fractional', port: 4173.5 },
+  { label: 'negative', port: -1 },
+  { label: 'too large', port: 65536 },
+  { label: 'infinity', port: Number.POSITIVE_INFINITY },
+  { label: 'null', port: null },
+  { label: 'boolean', port: true },
+  { label: 'boxed number', port: new Number(0) },
+])('rejects $label before any build or socket work', async ({ port }) => {
+  const { startDemoServer } = await import('../../scripts/serve-demo.mjs')
+  // Building replaces output and listening with object/path values could select
+  // an unsafe Node overload. Stop at that first side effect during RED as well.
+  const build = vi.spyOn(buildModule, 'buildDemo').mockRejectedValue(new Error('unexpected build before port validation'))
+  try {
+    await expect(startDemoServer({ port: port as number })).rejects.toThrow('port must be an integer number from 0 to 65535')
+    expect(build).not.toHaveBeenCalled()
+  } finally {
+    build.mockRestore()
+  }
 })
