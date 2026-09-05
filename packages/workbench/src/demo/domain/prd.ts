@@ -4,7 +4,7 @@ import type { CitedRequirement, DomainResult, Material, RequirementCard } from '
 export interface PrdArtifact {
   readonly filename: string
   readonly markdown: string
-  readonly bytes: Uint8Array
+  readonly bytes: Uint8Array<ArrayBuffer>
 }
 
 function trimSeparators(value: string): string {
@@ -25,7 +25,7 @@ export function safePrdBaseName(projectTitle: string): string {
   return trimSeparators(bounded) || 'pm-workbench'
 }
 
-export function utf8NoBom(markdown: string): Uint8Array {
+export function utf8NoBom(markdown: string): Uint8Array<ArrayBuffer> {
   return new TextEncoder().encode(markdown)
 }
 
