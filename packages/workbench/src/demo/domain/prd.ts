@@ -29,13 +29,24 @@ export function utf8NoBom(markdown: string): Uint8Array {
   return new TextEncoder().encode(markdown)
 }
 
-function escapeMarkdown(value: string): string {
+function escapeMarkdownLine(value: string): string {
   return value
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/[\\`*_{}[\]()#+!|\-]/g, '\\$&')
+}
+
+function escapeMarkdown(value: string): string {
+  return escapeMarkdownLine(value)
     .replace(/[\r\n]+/g, ' ')
+}
+
+function renderQuote(text: string): string {
+  return text
+    .split(/(\r\n|\r|\n)/)
+    .map((part, index) => index % 2 === 0 ? `> ${escapeMarkdownLine(part)}` : part)
+    .join('')
 }
 
 function compareRequirements(left: CitedRequirement, right: CitedRequirement): number {
@@ -50,7 +61,7 @@ function compareRequirements(left: CitedRequirement, right: CitedRequirement): n
 
 function renderRequirement(card: CitedRequirement): string {
   const citations = card.citations.flatMap((citation) => [
-    `> ${escapeMarkdown(citation.text)}`,
+    renderQuote(citation.text),
     `> 位置：[${citation.start}, ${citation.end})`,
   ])
   return [

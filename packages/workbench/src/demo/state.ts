@@ -62,10 +62,42 @@ function cardChanged(before: RequirementCard, after: RequirementCard): boolean {
     before.humanReason !== after.humanReason
 }
 
+function sameMaterial(left: Material | undefined, right: Material): boolean {
+  return left !== undefined &&
+    left.text === right.text &&
+    left.displayName === right.displayName &&
+    left.format === right.format
+}
+
+function sameCards(left: readonly RequirementCard[], right: readonly RequirementCard[]): boolean {
+  return left.length === right.length && left.every((card, index) => {
+    const other = right[index]
+    return card.kind === other.kind &&
+      card.id === other.id &&
+      card.fixtureLabel === other.fixtureLabel &&
+      card.title === other.title &&
+      card.painPoint === other.painPoint &&
+      card.description === other.description &&
+      card.demoReason === other.demoReason &&
+      card.suggestedPriority === other.suggestedPriority &&
+      card.priority === other.priority &&
+      card.decision === other.decision &&
+      card.humanReason === other.humanReason &&
+      card.manuallyEdited === other.manuallyEdited &&
+      card.citations.length === other.citations.length &&
+      card.citations.every((citation, citationIndex) => {
+        const compared = other.citations[citationIndex]
+        return citation.start === compared.start &&
+          citation.end === compared.end &&
+          citation.text === compared.text
+      })
+  })
+}
+
 export function demoReducer(state: DemoState, action: DemoAction): DemoState {
   switch (action.type) {
     case 'projectTitleChanged':
-      if (action.value === state.projectTitle) return state
+      if (action.value === state.projectTitle) return { ...state, error: undefined }
       return {
         ...state,
         projectTitle: action.value,
@@ -75,6 +107,9 @@ export function demoReducer(state: DemoState, action: DemoAction): DemoState {
       }
 
     case 'materialAccepted':
+      if (sameMaterial(state.material, action.material)) {
+        return { ...state, notice: '材料已确认，无需重新分析。', error: undefined }
+      }
       return {
         ...state,
         step: 'material',
@@ -90,6 +125,9 @@ export function demoReducer(state: DemoState, action: DemoAction): DemoState {
       for (const card of action.cards) {
         const integrity = assertCardIntegrity(state.material, card)
         if (!integrity.ok) return failed(state, integrity.error.message)
+      }
+      if (sameCards(state.cards, action.cards)) {
+        return { ...state, notice: '需求分析结果已确认。', error: undefined }
       }
       return {
         ...state,
@@ -112,7 +150,7 @@ export function demoReducer(state: DemoState, action: DemoAction): DemoState {
           : result.error.message
         return failed(state, error)
       }
-      if (!cardChanged(state.cards[index], result.value)) return state
+      if (!cardChanged(state.cards[index], result.value)) return { ...state, error: undefined }
       const cards = state.cards.map((card, cardIndex) => cardIndex === index ? result.value : card)
       return {
         ...state,

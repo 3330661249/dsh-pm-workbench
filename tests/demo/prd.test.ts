@@ -70,12 +70,35 @@ describe('deterministic Demo PRD artifacts', () => {
   })
 
   it('revalidates every card against the material before filtering included cards', () => {
-    const { material, includedCited } = fixture()
+    const { material, includedCited, deferredCited } = fixture()
     const staleQuote = { ...includedCited, citations: [{ ...includedCited.citations[0], text: '不存在的原话' }] } as unknown as CitedRequirement
     const staleInterval = { ...includedCited, citations: [{ ...includedCited.citations[0], end: includedCited.citations[0].end - 1 }] } as CitedRequirement
+    const invalidExcluded = (decision: 'defer' | 'reject') => ({
+      ...deferredCited,
+      decision,
+      citations: [{ ...deferredCited.citations[0], text: '已失效的引用' }],
+    }) as unknown as CitedRequirement
 
     expect(renderDemoPrd({ projectTitle: '访谈', material, cards: [staleQuote] })).toMatchObject({ ok: false, error: { code: 'invalid-citation' } })
     expect(renderDemoPrd({ projectTitle: '访谈', material, cards: [staleInterval] })).toMatchObject({ ok: false, error: { code: 'invalid-citation' } })
+    expect(renderDemoPrd({ projectTitle: '访谈', material, cards: [includedCited, invalidExcluded('defer')] })).toMatchObject({ ok: false, error: { code: 'invalid-citation' } })
+    expect(renderDemoPrd({ projectTitle: '访谈', material, cards: [includedCited, invalidExcluded('reject')] })).toMatchObject({ ok: false, error: { code: 'invalid-citation' } })
+  })
+
+  it('preserves LF and CRLF source lines in blockquotes, including empty lines', () => {
+    const { includedCited } = fixture()
+    const quote = '第一行\r\n\r\n第二行\n第三行'
+    const material = { text: quote, displayName: '多行访谈.txt', format: 'text/plain' as const }
+    const multiline = {
+      ...includedCited,
+      citations: [{ start: 0, end: quote.length, text: quote }],
+    } as CitedRequirement
+
+    const artifact = renderDemoPrd({ projectTitle: '访谈', material, cards: [multiline] })
+    expect(artifact.ok).toBe(true)
+    if (!artifact.ok) return
+    expect(artifact.value.markdown).toContain('> 第一行\r\n> \r\n> 第二行\n> 第三行')
+    expect(artifact.value.markdown).toContain(`[0, ${quote.length})`)
   })
 
   it('sorts included cards by citation coordinates and then direct id comparison', () => {

@@ -4,6 +4,7 @@ import { createDemoCards, SYNTHETIC_INTERVIEW_TEXT } from '../../packages/workbe
 import { validatePastedText } from '../../packages/workbench/src/demo/domain/material.js'
 import { renderDemoPrd } from '../../packages/workbench/src/demo/domain/prd.js'
 import { canEnterStep, demoReducer, initialDemoState } from '../../packages/workbench/src/demo/state.js'
+import type { CitedRequirement, RequirementCard } from '../../packages/workbench/src/demo/domain/types.js'
 
 function fixture() {
   const materialResult = validatePastedText(SYNTHETIC_INTERVIEW_TEXT)
@@ -24,6 +25,17 @@ function analysedState() {
 function includedState() {
   const state = analysedState()
   return demoReducer(state, { type: 'requirementEdited', id: 'demo-cited-1', edit: { decision: 'include', humanReason: '有明确原文。' } })
+}
+
+function cloneCards(cards: readonly RequirementCard[]): readonly RequirementCard[] {
+  return cards.map((card): RequirementCard => {
+    if (card.kind === 'inference') return { ...card, citations: [] }
+    const citations: CitedRequirement['citations'] = [
+      { ...card.citations[0] },
+      ...card.citations.slice(1).map((citation) => ({ ...citation })),
+    ]
+    return { ...card, citations }
+  })
 }
 
 describe('closed Demo state machine', () => {
@@ -67,7 +79,7 @@ describe('closed Demo state machine', () => {
     expect(edited.prd).toBeUndefined()
   })
 
-  it('keeps a stale preview for an identical card edit because no card value changed', () => {
+  it('preserves the current preview after an identical card edit', () => {
     const { material } = fixture()
     const included = includedState()
     const artifact = renderDemoPrd({ projectTitle: included.projectTitle, material, cards: included.cards })
@@ -78,6 +90,42 @@ describe('closed Demo state machine', () => {
       type: 'requirementEdited', id: 'demo-cited-1', edit: { decision: 'include', humanReason: '有明确原文。' },
     })
     expect(unchanged.prd).toEqual(artifact.value)
+  })
+
+  it('clears a stale error after identical title and card edits while preserving the current preview', () => {
+    const { material } = fixture()
+    const included = includedState()
+    const artifact = renderDemoPrd({ projectTitle: included.projectTitle, material, cards: included.cards })
+    if (!artifact.ok) throw new Error(artifact.error.message)
+    const withPreview = demoReducer(included, { type: 'prdGenerated', artifact: artifact.value })
+    const titleFailed = demoReducer(withPreview, { type: 'operationFailed', message: '标题校验失败。' })
+    const titleNoOp = demoReducer(titleFailed, { type: 'projectTitleChanged', value: titleFailed.projectTitle })
+    expect(titleNoOp).toMatchObject({ prd: artifact.value, error: undefined, cards: withPreview.cards })
+
+    const cardFailed = demoReducer(withPreview, { type: 'operationFailed', message: '需求校验失败。' })
+    const cardNoOp = demoReducer(cardFailed, {
+      type: 'requirementEdited', id: 'demo-cited-1', edit: { decision: 'include', humanReason: '有明确原文。' },
+    })
+    expect(cardNoOp).toMatchObject({ prd: artifact.value, error: undefined, cards: withPreview.cards })
+  })
+
+  it('preserves cards and the current preview for same and equal accepted material or analysis', () => {
+    const { material } = fixture()
+    const included = includedState()
+    const artifact = renderDemoPrd({ projectTitle: included.projectTitle, material, cards: included.cards })
+    if (!artifact.ok) throw new Error(artifact.error.message)
+    const withPreview = demoReducer(included, { type: 'prdGenerated', artifact: artifact.value })
+
+    for (const acceptedMaterial of [withPreview.material!, { ...withPreview.material! }]) {
+      const failed = demoReducer(withPreview, { type: 'operationFailed', message: '材料失败。' })
+      const accepted = demoReducer(failed, { type: 'materialAccepted', material: acceptedMaterial })
+      expect(accepted).toMatchObject({ cards: withPreview.cards, prd: artifact.value, error: undefined })
+    }
+    for (const acceptedCards of [withPreview.cards, cloneCards(withPreview.cards)]) {
+      const failed = demoReducer(withPreview, { type: 'operationFailed', message: '分析失败。' })
+      const accepted = demoReducer(failed, { type: 'analysisAccepted', cards: acceptedCards })
+      expect(accepted).toMatchObject({ cards: withPreview.cards, prd: artifact.value, error: undefined })
+    }
   })
 
   it('clears stale PRD for effective project-title and material changes but not an identical title', () => {

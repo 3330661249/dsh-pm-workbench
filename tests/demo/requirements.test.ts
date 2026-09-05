@@ -57,6 +57,15 @@ describe('human requirement decisions', () => {
     expect(rejected).toMatchObject({ ok: true, value: { decision: 'reject', manuallyEdited: true } })
   })
 
+  it('allows cited cards to be deferred or rejected by the product manager', () => {
+    const { material, citedCard } = fixture()
+    const deferred = applyManualEdit(material, citedCard, { decision: 'defer' })
+    const rejected = applyManualEdit(material, citedCard, { decision: 'reject' })
+
+    expect(deferred).toMatchObject({ ok: true, value: { decision: 'defer', manuallyEdited: true } })
+    expect(rejected).toMatchObject({ ok: true, value: { decision: 'reject', manuallyEdited: true } })
+  })
+
   it('does not permit protected card fields to be patched', () => {
     const { material, citedCard } = fixture()
     const protectedEdit = {
