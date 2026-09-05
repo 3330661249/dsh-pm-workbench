@@ -1,4 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from 'react'
+import { createDemoCards, SYNTHETIC_INTERVIEW_TEXT } from './domain/fixture-provider.js'
+import type { Material } from './domain/types.js'
 import { demoReducer, initialDemoState, type DemoAction } from './state.js'
 import { DemoNotice } from './components/DemoNotice.js'
 import { MaterialStep } from './components/MaterialStep.js'
@@ -16,6 +18,18 @@ export function DemoApp() {
   const previousStep = useRef(state.step)
   const send = (action: DemoAction) => { setAnnouncement(''); dispatch(action) }
 
+  function analyzeMaterial(material: Material) {
+    send({ type: 'materialAccepted', material })
+    try {
+      const cards = createDemoCards(material)
+      if (!cards.ok) { send({ type: 'operationFailed', message: cards.error.message }); return }
+      send({ type: 'analysisAccepted', cards: cards.value })
+      setAnnouncement(`已用本地演示规则生成 ${cards.value.length} 张卡片；没有调用模型。`)
+    } catch (error) {
+      send({ type: 'operationFailed', message: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
   useEffect(() => { if (state.error) errorRef.current?.focus() }, [state.error])
   useEffect(() => {
     if (previousStep.current !== state.step) {
@@ -32,7 +46,7 @@ export function DemoApp() {
     <p className="sr-only" aria-live="polite" aria-atomic="true">{announcement || state.notice}</p>
     {state.error && <div className="error-alert" role="alert" tabIndex={-1} ref={errorRef}><strong>操作未完成</strong><p>{state.error}</p><button type="button" onClick={() => send({ type: 'errorCleared' })}>关闭提示</button></div>}
     <main id="main-content" tabIndex={-1} ref={mainRef}>
-      {state.step === 'material' && <MaterialStep state={state} onTitleChange={(value) => send({ type: 'projectTitleChanged', value })} onAccept={(material) => send({ type: 'materialAccepted', material })} onAnalyze={(cards) => send({ type: 'analysisAccepted', cards })} onFailure={(message) => send({ type: 'operationFailed', message })} onAnnounce={setAnnouncement} />}
+      {state.step === 'material' && <MaterialStep state={state} syntheticInterviewText={SYNTHETIC_INTERVIEW_TEXT} onTitleChange={(value) => send({ type: 'projectTitleChanged', value })} onAccept={(material) => send({ type: 'materialAccepted', material })} onAnalyze={analyzeMaterial} onFailure={(message) => send({ type: 'operationFailed', message })} />}
       {state.step === 'requirements' && <RequirementsStep state={state} onEdit={(id, edit) => send({ type: 'requirementEdited', id, edit })} onContinue={() => send({ type: 'stepRequested', step: 'priority' })} />}
       {state.step === 'priority' && <PriorityStep state={state} onEdit={(id, edit) => send({ type: 'requirementEdited', id, edit })} onContinue={() => send({ type: 'stepRequested', step: 'prd' })} />}
       {state.step === 'prd' && <PrdStep state={state} onGenerated={(artifact) => send({ type: 'prdGenerated', artifact })} onFailure={(message) => send({ type: 'operationFailed', message })} onAnnounce={setAnnouncement} onReturn={() => send({ type: 'stepRequested', step: 'priority' })} />}

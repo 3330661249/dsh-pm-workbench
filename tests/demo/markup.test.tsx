@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { DemoApp } from '../../packages/workbench/src/demo/DemoApp.js'
@@ -16,6 +17,15 @@ const state: DemoState = { ...initialDemoState, material, cards: generated.value
 const noop = () => {}
 
 describe('standalone Demo markup', () => {
+  it('keeps fixture provider orchestration in DemoApp and out of MaterialStep', async () => {
+    const [materialSource, appSource] = await Promise.all([
+      readFile(new URL('../../packages/workbench/src/demo/components/MaterialStep.tsx', import.meta.url), 'utf8'),
+      readFile(new URL('../../packages/workbench/src/demo/DemoApp.tsx', import.meta.url), 'utf8'),
+    ])
+    expect.soft(materialSource).not.toMatch(/fixture-provider|createDemoCards/)
+    expect(appSource).toMatch(/createDemoCards\(material\)/)
+  })
+
   it('shows permanent boundaries and an accessible material entry on first load', () => {
     const html = renderToStaticMarkup(<DemoApp />)
     expect(html).toContain('演示数据，未连接 DeepSeek Harness，未调用真实模型。')

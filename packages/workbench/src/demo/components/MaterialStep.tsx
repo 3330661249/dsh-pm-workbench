@@ -1,26 +1,24 @@
 import { useState } from 'react'
-import { createDemoCards, SYNTHETIC_INTERVIEW_TEXT } from '../domain/fixture-provider.js'
 import { decodeUploadedText, validatePastedText } from '../domain/material.js'
-import type { DomainResult, Material, RequirementCard } from '../domain/types.js'
+import type { DomainResult, Material } from '../domain/types.js'
 import type { DemoState } from '../state.js'
 
-export function MaterialStep({ state, onTitleChange, onAccept, onAnalyze, onFailure, onAnnounce }: {
+export function MaterialStep({ state, syntheticInterviewText, onTitleChange, onAccept, onAnalyze, onFailure }: {
   state: DemoState
+  syntheticInterviewText: string
   onTitleChange: (title: string) => void
   onAccept: (material: Material) => void
-  onAnalyze: (cards: readonly RequirementCard[]) => void
+  onAnalyze: (material: Material) => void
   onFailure: (message: string) => void
-  onAnnounce: (message: string) => void
 }) {
   const [text, setText] = useState(state.material?.text ?? '')
   const [reading, setReading] = useState(false)
 
-  function accept(result: DomainResult<Material>): Material | undefined {
+  function accept(result: DomainResult<Material>, onAccepted = onAccept) {
     if (!result.ok) { onFailure(result.error.message); return }
     if (state.cards.length > 0 && !window.confirm('替换材料会清空当前页面中的需求、优先级和 PRD 预览。是否继续？')) return
-    onAccept(result.value)
+    onAccepted(result.value)
     setText(result.value.text)
-    return result.value
   }
 
   async function upload(file: File) {
@@ -37,12 +35,7 @@ export function MaterialStep({ state, onTitleChange, onAccept, onAnalyze, onFail
     try {
       const validated = validatePastedText(text)
       if (!validated.ok) { onFailure(validated.error.message); return }
-      const material = accept({ ok: true, value: state.material?.text === text ? state.material : validated.value })
-      if (!material) return
-      const cards = createDemoCards(material)
-      if (!cards.ok) { onFailure(cards.error.message); return }
-      onAnalyze(cards.value)
-      onAnnounce(`已用本地演示规则生成 ${cards.value.length} 张卡片；没有调用模型。`)
+      accept({ ok: true, value: state.material?.text === text ? state.material : validated.value }, onAnalyze)
     } catch (error) {
       onFailure(error instanceof Error ? error.message : String(error))
     }
@@ -66,7 +59,7 @@ export function MaterialStep({ state, onTitleChange, onAccept, onAnalyze, onFail
       <aside className="material-aside">
         <div className="panel"><p className="eyebrow">快速体验</p><h3>先走一遍完整流程</h3>
           <p className="muted">载入一份合成访谈，查看原文引用、调整需求取舍，再导出 PRD 草稿。</p>
-          <button type="button" className="secondary" disabled={reading} onClick={() => accept(validatePastedText(SYNTHETIC_INTERVIEW_TEXT))}>载入演示访谈</button>
+          <button type="button" className="secondary" disabled={reading} onClick={() => accept(validatePastedText(syntheticInterviewText))}>载入演示访谈</button>
         </div>
         <div className="panel upload-panel"><label htmlFor="material-file">导入文本文件</label>
           <p className="muted">已有访谈记录？选择 .txt 或 .md 文件。</p>
