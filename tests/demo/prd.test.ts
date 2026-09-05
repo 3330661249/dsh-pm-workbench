@@ -117,6 +117,33 @@ describe('deterministic Demo PRD artifacts', () => {
     expect(new TextDecoder().decode(first.value.bytes)).toBe(first.value.markdown)
   })
 
+  it('escapes CommonMark ordered-list markers through three leading spaces and at end of line', () => {
+    const { includedCited } = fixture()
+    const cases = [
+      { quote: '01. 原话', expected: '> 01\\. 原话' },
+      { quote: ' 01. 原话', expected: '>  01\\. 原话' },
+      { quote: '  01. 原话', expected: '>   01\\. 原话' },
+      { quote: '   01. 原话', expected: '>    01\\. 原话' },
+      { quote: '01.', expected: '> 01\\.' },
+      { quote: '说明 01. 原话', expected: '> 说明 01. 原话' },
+      { quote: '    01. 原话', expected: '>     01. 原话' },
+    ]
+
+    for (const { quote, expected } of cases) {
+      const material = { text: quote, displayName: '编号边界访谈.txt', format: 'text/plain' as const }
+      const numbered = { ...includedCited, citations: [{ start: 0, end: quote.length, text: quote }] } as CitedRequirement
+      const first = renderDemoPrd({ projectTitle: '访谈', material, cards: [numbered] })
+      const second = renderDemoPrd({ projectTitle: '访谈', material, cards: [numbered] })
+
+      expect(first.ok).toBe(true)
+      if (!first.ok || !second.ok) continue
+      expect(first).toEqual(second)
+      expect(first.value.markdown).toContain(expected)
+      expect(first.value.markdown).toContain(`[0, ${quote.length})`)
+      expect(first.value.bytes).toEqual(new TextEncoder().encode(first.value.markdown))
+    }
+  })
+
   it('sorts included cards by citation coordinates and then direct id comparison', () => {
     const { material, includedCited } = fixture()
     const later = { ...includedCited, id: 'z-card', title: '后面的卡', citations: [{ ...includedCited.citations[0], start: 34, end: 56, text: '我希望能先看到需求对应的原文，再决定是否纳入' }] } as CitedRequirement
