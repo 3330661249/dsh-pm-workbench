@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { decodeUploadedText, validatePastedText } from '../domain/material.js'
-import type { DomainResult, Material } from '../domain/types.js'
+import { MAX_UPLOAD_BYTES, type DomainResult, type Material } from '../domain/types.js'
 import type { DemoState } from '../state.js'
 
 export function MaterialStep({ state, syntheticInterviewText, onTitleChange, onAccept, onAnalyze, onFailure }: {
@@ -22,6 +22,7 @@ export function MaterialStep({ state, syntheticInterviewText, onTitleChange, onA
   }
 
   async function upload(file: File) {
+    if (file.size > MAX_UPLOAD_BYTES) { onFailure('上传文件不能超过 256 KB。'); return }
     setReading(true)
     try {
       const bytes = new Uint8Array(await file.arrayBuffer())
