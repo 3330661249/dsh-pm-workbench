@@ -14,6 +14,7 @@
 
 - Start from baseline `bd0ae743e0c490b5aa770eccae3dd77d325e9a48` in the isolated worktree `/private/tmp/dsh-pm-workbench-gate-a-prime`.
 - This plan implements A′-P1a Declaration surface only. Do not start Harness, accept or execute a Harness CLI, create a profile, install a workbench tgz, open a browser, bind port `3186`, check storage, or claim Gate A′ PASS.
+- The owner was told that the next reversible step was an offline rc.6 declaration check and replied “继续”. That authorizes acceptance of the equivalent exact declaration-root set in this plan only; it does not authorize network access, a Harness runtime, a profile, a browser, plugin installation, or model/data access.
 - Use only package-root and documented `/client` public exports from selected exact `0.1.0-rc.6` packages.
 - The Host contract obtains Connection from the official Cordis Host `Context` augmentation. Client RPC uses the exported public `ConnectionHandle`/`ClientConnectionRpc` types directly; only Client slots use the real public `ClientContext`.
 - The Client contract must not import the Connection Host root entrypoint, access `ctx.connection`, or claim that rc.6 officially augments Cordis Client Context with Connection.
@@ -21,7 +22,7 @@
 - Both surface tsconfigs must set `strict: true`, `noImplicitAny: true`, `skipLibCheck: false`, and `noEmit: true`, and must not define `paths` or `typeRoots`.
 - The reviewed TypeScript/test toolchain must resolve from this repository's root `node_modules`; every Harness declaration used by GREEN must resolve within one accepted disposable declaration dependency root below this worktree's controlled temporary area. Parent, global, active-checkout, source-checkout, and copied-declaration fallback fail the plan.
 - Do not modify `packages/workbench/package.json`, its production peers, `dsh.client.inject`, Host or Client source, build scripts, built files, `cordis.patch.yml`, or the existing dry-run package.
-- Do not add `@deepseek-ai/dsh-storage-domain` or a storage backend in this plan. Storage declarations belong to A′-P1b after A′-P2.
+- The selected roots, imports, compiler inputs, and executable steps exclude `@deepseek-ai/dsh-storage` and `@deepseek-ai/dsh-storage-domain`. Either package may remain only as an unselected, unimported, unexecuted transitive member of the frozen lock/cache cohort; that presence is not storage verification or permission. Storage declarations belong to A′-P1b after A′-P2.
 - Do not read `~/.dsh`, port `3080`, user sessions, credentials, browser profiles, real interview data, model configuration, or provider environment variables.
 - A missing-package RED is setup evidence only. It is not RPC, slot, lifecycle, loader, browser, or compatibility evidence.
 
@@ -214,7 +215,7 @@ Run SHA-256 over the two surface files and two surface tsconfigs. In `docs/revie
 - the missing package names;
 - `RED_SETUP_ONLY`;
 - `OFFICIAL_CLIENT_CONTEXT_CONNECTION_AUGMENTATION_ABSENT`, based on the reviewed rc.6 public `/client` and Host declaration entries;
-- the statement that no Harness process, profile, browser, port, tgz, production manifest, or storage package was used.
+- the statement that no Harness process, profile, browser, port, tgz, production manifest, or storage package was selected, imported, typechecked, configured, or executed; unselected transitive storage lock/cache records are not storage evidence.
 
 Do not commit the failing state. Task 2 must either make these exact contract bytes pass from an accepted input or record an explicit stop result.
 
@@ -246,8 +247,8 @@ Do not commit the failing state. Task 2 must either make these exact contract by
 
 **Interfaces:**
 
-- Consumes: Task 1 contract hashes plus one candidate manifest/lock/cache set placed at `.tmp/dsh-pm-workbench/declaration-input-candidate/` by the owner-approved input step.
-- Produces: either an accepted frozen declaration cohort and GREEN-capable disposable dependency root, or the explicit stop result `FAIL_FRESH_RESOLUTION`, `MIXED_COHORT`, `INCONCLUSIVE_INPUT_NOT_ACCEPTED`, or `INCONCLUSIVE_CACHE_MISS`.
+- Consumes: Task 1 contract hashes plus one owner-authorized, path-free candidate manifest/lock/selected-cache set made available read-only to the acceptance helper. No committed artifact may contain its absolute source path.
+- Produces: either accepted frozen declaration metadata and, when the matching selected cache is locally available, a GREEN-capable disposable dependency root; or the explicit result `FAIL_FRESH_RESOLUTION`, `MIXED_COHORT`, `INCONCLUSIVE_INPUT_NOT_ACCEPTED`, `INCONCLUSIVE_CACHE_MISS`, or `INCONCLUSIVE_LOCAL_REPLAY_NOT_RUN`.
 
 - [ ] **Step 1: Record the fresh-resolution result separately**
 
@@ -259,25 +260,36 @@ Label it `FAIL_FRESH_RESOLUTION_RC8_ERESOLVE`. Do not alter the root manifest, a
 
 - [ ] **Step 2: Accept the historical frozen-cohort candidate or stop**
 
-The candidate label is `local-2026-08-14-rc6-lock-v3`. The current observation is that its lockfileVersion 3 input replayed in a temporary root with:
+The pruned historical candidate has the path-free label `local-2026-09-05-rc6-declaration-lock-v1`. Do not write its absolute source directory into this plan, the accepted metadata, the ledger, tests, logs, closure JSON, or commit message. Its package-lock v3 records exactly:
 
-```bash
-npm ci --ignore-scripts --offline
-```
+- 169 registry packages;
+- 59 `@deepseek-ai/*` packages;
+- 54 `@deepseek-ai/dsh-*` packages, all at `0.1.0-rc.6`;
+- one nested `commander`, whose exact lock path, parent, and version must be preserved and recorded;
+- these exact manifest roots: `@deepseek-ai/cordis@4.0.1`, `@deepseek-ai/dsh-invariants@0.1.0-rc.6`, `@deepseek-ai/dsh-client-connection@0.1.0-rc.6`, `@deepseek-ai/dsh-client-runtime@0.1.0-rc.6`, `@deepseek-ai/dsh-client-ui-layout@0.1.0-rc.6`, `@deepseek-ai/dsh-client-ui-sidebar@0.1.0-rc.6`, `@deepseek-ai/dsh-client-ui-slots@0.1.0-rc.6`, and `react@18.3.1`.
 
-That observation installed 531 packages, including 186 `@deepseek-ai/dsh-*` packages, all at `0.1.0-rc.6`. These counts are candidate evidence only.
+The selected historical cache observation covers all 169 registry entries in both index and content, with matching integrity hashes. The selected tarball content is exactly 9,590,214 bytes. The source cache is about 183 MB and must never be copied wholesale; only the 169 integrity-selected content blobs and their selected index records may enter the task-scoped accepted cache.
 
-`scripts/accept-rc6-declaration-input.mjs` reads the fixed candidate directory and requires:
+`scripts/accept-rc6-declaration-input.mjs` reads an explicitly supplied, read-only candidate root and cache, without serializing either absolute path, and requires:
 
 - a matching regular `package.json` and lockfileVersion 3 `package-lock.json`;
-- an exact root dependency on `@deepseek-ai/dsh@0.1.0-rc.6` or an equivalent exact rc.6 root set declared by that matching manifest;
+- exactly the eight manifest roots and versions listed above, with no storage root;
+- the exact 169/59/54 counts, all 54 `@deepseek-ai/dsh-*` versions at rc.6, and exactly the recorded nested `commander` placement;
 - integrity for every registry package in the lock;
-- a declared read-only npm cache containing every integrity-bound artifact required for offline replay;
+- 169/169 matching selected cache index/content records and an exact 9,590,214-byte selected-content total;
 - no lifecycle execution, link escape, absolute path in the accepted manifest, mutable source checkout, parent dependency, or global executable;
-- exact hashes for the source manifest, lock, cache index, Node binary identity, and npm identity;
+- exact hashes for the source manifest and lock, the selected canonical cache index, the selected content aggregate, the Node binary identity, and the npm CLI identity;
 - a path-free provenance label rather than the source machine path.
 
-If the candidate directory or any required artifact is absent, record `INCONCLUSIVE_INPUT_NOT_ACCEPTED` or `INCONCLUSIVE_CACHE_MISS` and stop before GREEN. A successful historical replay by itself is not acceptance.
+The equivalent exact root set is within the owner's “继续” authorization because the owner was told that this was an offline rc.6 declaration check. This acceptance remains a reversible local step. It does not expand the authorization to runtime, network, profile, browser, plugin, model, or data access.
+
+For the selected canonical cache index, sort records by lock package path and encode canonical UTF-8 JSON with LF endings and stable keys. Each record contains only path-free lock/package identity, name, version, integrity, selected cache key, selected content digest, and byte length. Compute `selectedCacheIndexSha256` from those canonical bytes. Compute `selectedContentAggregateSha256` from the ordered content digest/byte-length records, rather than from cache directory paths or mtimes. Acceptance recomputes both values and every package integrity before and after copying.
+
+Record Node and npm as path-free identities: version, executable or CLI-entry basename, and SHA-256 of the resolved executable/CLI entry. The helper may use absolute realpaths during the live check, but it must not serialize them. It must invoke that exact npm CLI, not whichever `npm` later appears on `PATH`.
+
+The source candidate and source cache remain read-only. Copy only the selected 169 index/content records to `.tmp/dsh-pm-workbench/declaration-input-cache/`; never copy or scan-fallback to the full 183 MB cache. Direct npm logs to `.tmp/dsh-pm-workbench/declaration-input-logs/` and `TMPDIR`/npm temporary writes to `.tmp/dsh-pm-workbench/declaration-input-tmp/`, both separate from the read-only cache. Use explicit offline, cache, prefix, logs, and temp settings plus `--ignore-scripts --offline --audit=false --fund=false --update-notifier=false`, and verify that source and accepted selected-cache identities did not mutate.
+
+If the candidate manifest, lock, or selected identity material is absent or mismatched, record `INCONCLUSIVE_INPUT_NOT_ACCEPTED` or `INCONCLUSIVE_CACHE_MISS` and stop before GREEN. A successful historical replay by itself is not acceptance.
 
 - [ ] **Step 3: Publish only the accepted manifest and lock inputs**
 
@@ -286,9 +298,9 @@ After acceptance, copy the byte-identical matching manifest and lock to:
 - `tools/harness-rc6-declarations/package.json`;
 - `tools/harness-rc6-declarations/package-lock.json`.
 
-Write `tools/harness-rc6-declarations/input-manifest.json` with the path-free label, source hashes, accepted Node/npm identities, cache-index hash, lockfile version, expected package counts, acceptance command, and acceptance result. Do not commit cache contents, `node_modules`, an absolute source path, token, registry credential, or authorization URL.
+Write `tools/harness-rc6-declarations/input-manifest.json` with the path-free label, source manifest/lock hashes, path-free Node/npm CLI identities, selected-cache-index hash, selected-content-aggregate hash, selected byte total, lockfile version, exact roots, expected 169/59/54 package counts, expected nested `commander` record, acceptance command, and acceptance result. Do not commit cache contents, `node_modules`, any absolute source/cache/tool path, token, registry credential, or authorization URL.
 
-The acceptance script copies only integrity-verified cache objects required by the accepted lock into `.tmp/dsh-pm-workbench/declaration-input-cache/`, verifies the copied cache index, and makes that temporary cache read-only before replay. The cache path is fixed by the script but is not written into committed provenance; absence or mutation on a later run yields `INCONCLUSIVE_CACHE_MISS` rather than ambient-cache fallback.
+The acceptance script copies only the integrity-verified selected objects and index records required by the accepted lock into `.tmp/dsh-pm-workbench/declaration-input-cache/`, verifies both canonical aggregate hashes, and makes that temporary cache read-only before replay. The selected tarball content total is 9,590,214 bytes; the 183 MB source cache is neither copied nor accepted. The task-scoped cache path is fixed by the script but is not written into committed provenance; absence or mutation on a later run yields `INCONCLUSIVE_CACHE_MISS` rather than ambient-cache fallback.
 
 The committed input is development evidence only. It is not the A′-P2 executable runtime acceptance record.
 
@@ -319,11 +331,15 @@ Each record contains:
 
 The file also records the five direct declaration roots, accepted lock SHA-256, input-manifest SHA-256, Node/npm identities, total installed package count, total `@deepseek-ai/dsh-*` count, and generation command. Paths are relative to the disposable dependency root.
 
-The verifier deep-compares the committed JSON with a recomputation, realpaths every manifest below the disposable root, and rejects symlink escape, parent fallback, missing integrity, undeclared installed package, duplicate logical package/version ambiguity, or lock/manifest mismatch. Every reachable `@deepseek-ai/dsh-*` package must be `0.1.0-rc.6`; Cordis and Schemastery must match their separately recorded exact versions. Any unexpected version yields `MIXED_COHORT` and stops the plan.
+The verifier deep-compares the committed JSON with a recomputation, realpaths every manifest below the disposable root, and rejects symlink escape, parent fallback, missing integrity, undeclared installed package, an unrecorded nested placement or duplicate logical package/version, or lock/manifest mismatch. The one recorded nested `commander` is permitted only at its exact lock path, parent, and version. Every reachable `@deepseek-ai/dsh-*` package must be `0.1.0-rc.6`; Cordis and Schemastery must match their separately recorded exact versions. Any unexpected version yields `MIXED_COHORT` and stops the plan.
 
 - [ ] **Step 6: Add executable acceptance and boundary tests**
 
-`tests/integration/rc6-declaration-input.test.ts` validates the committed accepted-input files and recomputes the input-manifest hashes without requiring the uncommitted source path. `tests/integration/rc6-declaration-dependency-boundary.test.ts` invokes the verifier in check mode and asserts:
+`tests/integration/rc6-declaration-input.test.ts` is a clean-clone static test. Without requiring any local cache, candidate path, or installed declaration root, it validates the committed accepted-input files and recomputes the manifest/lock hashes, path-free identity schema, exact roots, 169/59/54 counts, one nested `commander` record, canonical selected-cache metadata, selected byte total, and absence of absolute source paths.
+
+`tests/integration/rc6-declaration-dependency-boundary.test.ts` always runs the verifier's lock/metadata-only mode. Its full realpath mode runs only when both the accepted selected cache and accepted disposable root exist locally and match `input-manifest.json`. If either is absent, the realpath test calls the framework's explicit skip API with `SKIP_ACCEPTED_CACHE_OR_ROOT_ABSENT`, and the ledger records `INCONCLUSIVE_LOCAL_REPLAY_NOT_RUN`; a green static suite cannot be reported as local replay PASS.
+
+When full realpath mode is eligible, it asserts:
 
 - the accepted lock and input-manifest hashes match;
 - the selected five manifests are exact `0.1.0-rc.6`;
@@ -332,7 +348,7 @@ The verifier deep-compares the committed JSON with a recomputation, realpaths ev
 - every Harness declaration realpath is below the disposable dependency root;
 - the workbench package manifest bytes equal baseline;
 - root manifests remain unchanged;
-- storage-domain is not one of the selected declaration roots.
+- storage/storage-domain is not one of the selected declaration roots and is never imported, typechecked, configured, or executed; a transitive lock/cache record alone is allowed and proves nothing about storage.
 
 Do not treat `npm ls --depth=0` or the five exact root versions as a substitute for the recursive lock and realpath checks.
 
@@ -346,7 +362,9 @@ Do not modify the workbench package's bundled third-party document because none 
 
 Run the anti-bypass and input tests from the repository, then compile the byte-identical copied contracts from the disposable dependency root using the reviewed repository TypeScript executable. The acceptance script prints the exact generated paths; do not reconstruct them through ambient module paths.
 
-Expected: PASS with unchanged contract/config hashes, an accepted lock/input manifest, no unexpected cohort, and no Harness declaration outside the disposable root. The Client RPC contract must pass through direct public Connection types, while the Client slot contract passes through `ClientContext`; `ctx.connection` must remain absent from the Client contract.
+Expected when the matching accepted cache/root are local: PASS with unchanged contract/config hashes, an accepted lock/input manifest, no unexpected cohort, and no Harness declaration outside the disposable root. The Client RPC contract must pass through direct public Connection types, while the Client slot contract passes through `ClientContext`; `ctx.connection` must remain absent from the Client contract.
+
+When the accepted cache/root are absent, run only the clean-clone static checks, emit `SKIP_ACCEPTED_CACHE_OR_ROOT_ABSENT`, and record `INCONCLUSIVE_LOCAL_REPLAY_NOT_RUN`. Do not describe that result as compiler GREEN or local replay PASS.
 
 If either compiler reports a signature mismatch, record FAIL. Do not weaken the assignment, import the Host Connection root into the Client contract, add a local bridge, cast, copy a declaration, or add a module augmentation.
 
@@ -361,9 +379,9 @@ Append to the ledger:
 - closure JSON hash;
 - exact commands and exit codes;
 - `OFFICIAL_CLIENT_CONTEXT_CONNECTION_AUGMENTATION_ABSENT`;
-- PASS, FAIL, `MIXED_COHORT`, `INCONCLUSIVE_INPUT_NOT_ACCEPTED`, or `INCONCLUSIVE_CACHE_MISS`;
+- static metadata PASS plus the separate local replay status: PASS, FAIL, `MIXED_COHORT`, `INCONCLUSIVE_INPUT_NOT_ACCEPTED`, `INCONCLUSIVE_CACHE_MISS`, or `INCONCLUSIVE_LOCAL_REPLAY_NOT_RUN`;
 - the permitted report and every unproven item;
-- the statement that no Harness process, CLI, profile, browser, listener, workbench tgz, production manifest, production bridge, or storage package was used.
+- the statement that no Harness process, CLI, profile, browser, listener, workbench tgz, production manifest, production bridge, or storage package was selected, imported, typechecked, configured, or executed; storage packages may exist only as unselected transitive cohort records.
 
 ---
 
@@ -377,7 +395,7 @@ Append to the ledger:
 **Interfaces:**
 
 - Consumes: the unchanged declaration contracts, accepted input manifest/lock/cache identity, closure verifier, and closure JSON.
-- Produces: an accepted-input offline replay and arbitrary-path declaration-locality result. The repository by itself remains insufficient without the separately accepted cache bundle.
+- Produces: a clean-clone static metadata result and, only when the matching accepted selected cache/root exist locally, a separate offline replay and arbitrary-path declaration-locality result.
 
 - [ ] **Step 1: Extend the arbitrary-path copy allowlist**
 
@@ -393,7 +411,9 @@ The minimal replay root includes:
 
 Do not copy the source worktree's `node_modules`, any Harness checkout, root application manifest, absolute-path declaration, user profile, or global executable.
 
-- [ ] **Step 2: Install and compile in the copy**
+- [ ] **Step 2: Gate, install, and compile in the copy**
+
+First run the clean-clone static metadata checks. Before full replay, require both the fixed accepted selected cache and accepted disposable root, and recompute their manifest/lock, selected-cache-index, selected-content-aggregate, Node executable, and npm CLI-entry identities. If either local artifact is absent, explicitly skip with `SKIP_ACCEPTED_CACHE_OR_ROOT_ABSENT`, record `INCONCLUSIVE_LOCAL_REPLAY_NOT_RUN`, and do not invoke npm or the compiler. Static metadata PASS is not local replay PASS.
 
 Create the minimal replay root under a new arbitrary temporary parent that has no `node_modules`. Clear `NODE_PATH` and package-manager prefix overrides. The acceptance helper reads the fixed accepted cache location `.tmp/dsh-pm-workbench/declaration-input-cache/`, verifies it against `input-manifest.json`, and performs the whole replay through this exact command:
 
@@ -401,7 +421,7 @@ Create the minimal replay root under a new arbitrary temporary parent that has n
 node scripts/accept-rc6-declaration-input.mjs --replay-arbitrary-path
 ```
 
-The helper internally invokes npm with `ci`, `--ignore-scripts`, `--offline`, an explicit cache, and an explicit replay-root prefix; it then invokes the reviewed repository TypeScript executable on both copied configs and runs the closure verifier in check mode. The test asserts that the accepted cache is read-only and outside module resolution. Every Harness declaration and package manifest realpath must be below the replay root's `node_modules`; the TypeScript executable must equal the reviewed repository toolchain identity.
+The helper invokes the accepted npm CLI identity directly with `ci`, `--ignore-scripts`, `--offline`, `--audit=false`, `--fund=false`, `--update-notifier=false`, an explicit read-only selected cache, an explicit replay-root prefix, and separate writable log and temporary directories; it then invokes the reviewed repository TypeScript executable and full realpath verifier. The test hashes the read-only cache before and after the run. Every Harness declaration and package manifest realpath must be below the replay root's `node_modules`; the TypeScript and npm CLI identities must equal their accepted path-free version/hash records.
 
 - [ ] **Step 3: Preserve the evidence boundary**
 
@@ -409,7 +429,7 @@ The test and ledger use this exact label after PASS:
 
 > Accepted frozen-input offline replay and arbitrary-path declaration locality PASS. The repository alone is not self-contained without the separately accepted cache bundle, and this run did not test a Harness executable, workbench tgz, plugin load, or runtime compatibility.
 
-If the accepted cache lacks any integrity-bound artifact, record `INCONCLUSIVE_CACHE_MISS`. Do not access the network, fall back to an ambient machine cache, or call the repository alone self-contained.
+Use that label only after an eligible replay actually passes. If a present accepted cache lacks an integrity-bound artifact, record `INCONCLUSIVE_CACHE_MISS`; if the local cache/root are absent, record `INCONCLUSIVE_LOCAL_REPLAY_NOT_RUN`. Do not access the network, fall back to an ambient machine cache, copy the 183 MB source cache, or call a clean-clone static PASS an offline replay PASS.
 
 - [ ] **Step 4: Run the focused locality check**
 
@@ -419,7 +439,7 @@ Run:
 npm test -- tests/integration/standalone-copy.test.ts tests/integration/rc6-declaration-dependency-boundary.test.ts
 ```
 
-Expected: PASS or the explicit `INCONCLUSIVE_CACHE_MISS` stop result. A parent/global fallback, ambient-cache use, changed contract hash, closure mismatch, or unexpected cohort is FAIL.
+Expected: static metadata PASS plus an observed replay PASS, `INCONCLUSIVE_CACHE_MISS`, or `INCONCLUSIVE_LOCAL_REPLAY_NOT_RUN`. A parent/global fallback, ambient-cache use, changed contract hash, closure mismatch, unexpected cohort, or a skipped replay reported as PASS is FAIL.
 
 ---
 
@@ -447,12 +467,12 @@ Compare the exact working tree against `bd0ae743e0c490b5aa770eccae3dd77d325e9a48
 
 Record the exact `git diff --name-status` output and its hash in the ledger.
 
-- [ ] **Step 2: Run complete verification**
+- [ ] **Step 2: Run clean-clone verification, then the conditional local replay**
 
 Run:
 
 ```bash
-node scripts/accept-rc6-declaration-input.mjs --verify-and-compile
+node scripts/verify-rc6-declaration-closure.mjs --check-metadata-only
 npm run typecheck
 npm test
 npm run build
@@ -463,7 +483,9 @@ npm ls --all
 git diff --check
 ```
 
-The package verification must prove that the existing workbench tgz manifest and nine-file no-op skeleton are unchanged from baseline. None of the development declaration inputs or test contracts may enter it.
+The package verification must prove that the existing workbench tgz manifest and nine-file no-op skeleton are unchanged from baseline. None of the development declaration inputs or test contracts may enter it. These mandatory commands prove committed metadata, not local replay.
+
+Only when the matching accepted selected cache/root pass their identity preflight, additionally run `node scripts/accept-rc6-declaration-input.mjs --verify-and-compile` and `node scripts/verify-rc6-declaration-closure.mjs --check-realpaths`. Otherwise require `SKIP_ACCEPTED_CACHE_OR_ROOT_ABSENT` plus `INCONCLUSIVE_LOCAL_REPLAY_NOT_RUN`; do not synthesize or search for another cache.
 
 - [ ] **Step 3: Independently review the exact baseline diff**
 
@@ -480,6 +502,7 @@ The reviewer examines the complete diff from `bd0ae743e0c490b5aa770eccae3dd77d32
 - local dependency containment;
 - no production manifest, peer, injection, code, bundle, or tgz change;
 - accepted-input replay wording and repository-not-self-contained boundary;
+- clean-clone static metadata kept separate from conditional realpath/replay evidence;
 - permitted claim language and ledger completeness.
 
 Any requested change returns to the relevant focused check and then repeats the full verification and exact-diff review.
@@ -508,7 +531,7 @@ Record the commit ID and committed tree ID in the ledger before the final commit
 
 - [ ] **Step 6: Verify the committed result and stop**
 
-Run the accepted-input compile helper, closure verifier, focused tests, and `git status --short` against the committed tree. Report only the permitted A′-P1a statement above, the commit ID, the closure artifact, the official Client Context augmentation gap, and the accepted-input replay status.
+Run the metadata verifier, focused tests, and `git status --short` against the committed tree. Run the compile helper and full realpath verifier only when the accepted selected cache/root pass the local preflight. Report the static metadata and local replay statuses separately.
 
 Do not start A′-P1b or A′-P2 automatically.
 

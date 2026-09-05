@@ -5,7 +5,7 @@
 **Baseline:** `origin/main` merge commit `bd0ae743e0c490b5aa770eccae3dd77d325e9a48`
 
 **Target declarations and eventual runtime:** DeepSeek Harness `0.1.0-rc.6`
-**Owner direction:** continue from the accepted standalone Demo with the smallest isolated Harness integration proof
+**Owner direction:** after being told that the next step was an offline rc.6 declaration check, the owner replied “继续”, authorizing this reversible local declaration-input step only; this does not authorize network access, a Harness runtime, profile creation, browser launch, plugin installation, or model/data access
 
 ## 1. Purpose
 
@@ -111,9 +111,13 @@ The lock analysis records every resolved `@deepseek-ai/*` package in the Host an
 Two dependency-input facts are already known and must remain separate:
 
 - a fresh registry resolution of the selected exact rc.6 roots was observed selecting rc.8 through their `^0.1.0-rc.6` transitive ranges and ending in `ERESOLVE`; exact direct roots did not freeze the closure;
-- a path-free candidate labeled `local-2026-08-14-rc6-lock-v3` was replayed with `npm ci --ignore-scripts --offline` in a temporary root: 531 packages were installed and all 186 reachable `@deepseek-ai/dsh-*` packages were `0.1.0-rc.6`.
+- a pruned historical rc.6 lock candidate now has the path-free label `local-2026-09-05-rc6-declaration-lock-v1`. Its package-lock v3 contains 169 registry packages, 59 `@deepseek-ai/*` packages, and 54 `@deepseek-ai/dsh-*` packages; all 54 DSH packages are `0.1.0-rc.6`. Its exact manifest roots are Cordis `4.0.1`, `dsh-invariants` `0.1.0-rc.6`, the five selected declaration packages at `0.1.0-rc.6`, and React `18.3.1`. One nested `commander` placement is part of the recorded lock graph.
 
-The first observation is a fresh-resolution failure, not a cohort. The second is evidence that a frozen historical cohort can replay, but it is not an accepted A′-P1a input until its matching manifest, lock, cache artifacts, integrity values, provenance, and containment pass an independent acceptance check. Until one input is accepted, A′-P1a may end as `FAIL_FRESH_RESOLUTION` or `INCONCLUSIVE_INPUT_NOT_ACCEPTED`; it must not force GREEN with new overrides.
+The candidate's selected historical cache has complete index and content coverage for all 169 registry entries, with matching hashes and 9,590,214 selected tarball bytes. Its identity is the accepted manifest and lock hashes plus a canonical index of only those 169 selected cache entries and a canonical aggregate of their selected content hashes and byte lengths. The 183 MB source cache is never copied or treated as the input.
+
+The first observation is a fresh-resolution failure, not a cohort. The second is a bounded frozen-cohort candidate, but it is not an accepted A′-P1a input until its manifest, lock, selected canonical cache index/content aggregate, npm CLI identity, provenance, and containment pass the independent acceptance check. The absolute candidate source path must never enter a committed file. Until that input is accepted, A′-P1a may end as `FAIL_FRESH_RESOLUTION` or `INCONCLUSIVE_INPUT_NOT_ACCEPTED`; it must not force GREEN with new overrides.
+
+`@deepseek-ai/dsh-storage` and `@deepseek-ai/dsh-storage-domain` may occur as unselected transitive members of this frozen lock. Their presence is package metadata and cached input only: A′-P1a does not select, import, typecheck, execute, configure, or authorize either package, and it creates no storage evidence. The five selected declaration roots do not include storage.
 
 ### 5.2 Future Host and Client probe
 
@@ -170,12 +174,13 @@ PASS requires all of the following:
 4. The Host contract compiles against the official Host Context augmentation; the Client RPC contract compiles against direct exported `ConnectionHandle`/`ClientConnectionRpc` values; the Client slot contract compiles against `ClientContext` plus official layout/sidebar `/client` augmentations.
 5. The contracts prove `ctx.connection.rpc.handle(...)` on Host only, `connection.rpc.call(...)` on the direct Client handle, `sidebar.footer.action`, `shell.overlay`, synchronous UI disposers, the asynchronous RPC disposer, and the public Cordis lifecycle acceptance of that asynchronous disposer.
 6. Static guards reject a Host root import in the Client contract, any claim that official `ClientContext.connection` exists, self-declared Harness modules, `any`, double casts, TypeScript suppression directives, skipped library checks, copied declarations, path aliases, type-root aliases, and parent/source-checkout fallback.
-7. The accepted lock-derived complete DeepSeek declaration closure is recorded and contains no unexpected cohort.
+7. The accepted lock-derived complete cohort and selected declaration subgraph are recorded with the exact 169/59/54 counts, selected root versions, one expected nested `commander`, and no unrecorded nested placement or unexpected cohort.
 8. The ledger records `OFFICIAL_CLIENT_CONTEXT_CONNECTION_AUGMENTATION_ABSENT` as an observed public-surface gap.
-9. No storage package, production manifest, production peer, production injection list, runtime implementation, Harness source, profile, tgz installation, browser, or listener is used.
-10. Input-acceptance checks, focused tests, separate compilers, complete project checks, build, existing package boundary checks, and dependency-locality checks pass.
+9. No storage package is selected, imported, typechecked, executed, or configured; storage/storage-domain may remain only as unselected transitive lock/cache members. No production manifest, production peer, production injection list, runtime implementation, Harness source, profile, tgz installation, browser, or listener is used.
+10. Clean-clone checks statically verify all committed input metadata without requiring a local cache. Full realpath, install, and replay evidence runs only when the accepted selected cache and disposable root exist locally and match the committed identity; otherwise it records an explicit SKIP plus `INCONCLUSIVE_LOCAL_REPLAY_NOT_RUN` and cannot claim replay PASS.
+11. Input-acceptance checks, focused tests, separate compilers, complete project checks, build, existing package boundary checks, and any locally eligible dependency-replay checks pass.
 
-Any mismatch is recorded as FAIL, `FAIL_FRESH_RESOLUTION`, `MIXED_COHORT`, or `INCONCLUSIVE_INPUT_NOT_ACCEPTED` and returns to architecture review. A′-P2 must not start.
+Any mismatch or missing local replay input is recorded as FAIL, `FAIL_FRESH_RESOLUTION`, `MIXED_COHORT`, `INCONCLUSIVE_INPUT_NOT_ACCEPTED`, `INCONCLUSIVE_CACHE_MISS`, or `INCONCLUSIVE_LOCAL_REPLAY_NOT_RUN` as applicable and returns to architecture review. A′-P2 must not start.
 
 ### 6.2 A′-P1b Storage declaration surface
 
@@ -230,7 +235,9 @@ Only rows in that reviewed matrix define Full Gate A′. The future matrix must 
 
 The current declaration plan uses one unchanged contract for RED and GREEN: first it fails because the exact packages are absent, then the same bytes pass after the frozen dependencies are installed. Dependency absence alone is setup evidence; it is not RPC, slot, lifecycle, or compatibility evidence.
 
-Host and Client compile in separate TypeScript projects. A sealed arbitrary-path copy proves dependency locality after installation. Offline reproducibility is a different claim: it requires a declared cache/input bundle containing every integrity-bound tarball. A successful `npm ci --offline` against an undeclared machine cache must be labeled cache-assisted locality evidence, not self-contained offline replay.
+Host and Client compile in separate TypeScript projects. Clean-clone tests always verify the committed manifest, package-lock v3, selected roots, counts, canonical selected-cache identities, path-free provenance, and absence of product changes. They do not require or reconstruct the local accepted cache.
+
+A full arbitrary-path realpath/install/replay test is conditional. It runs only when the local selected cache and disposable dependency root exist and match the committed canonical cache index/content aggregate. If either is absent, the test emits an explicit skip reason and the ledger records `INCONCLUSIVE_LOCAL_REPLAY_NOT_RUN`; the suite may remain green for static metadata checks, but A′-P1a may not report local replay PASS. An undeclared machine cache or the full 183 MB historical cache may never fill the gap.
 
 Future runtime tests use the accepted disposable profile and browser context only after the CLI closure, tgz, patch, environment, and expected evidence files are frozen. Cleanup assertions run on PASS, FAIL, timeout, and signal paths.
 
