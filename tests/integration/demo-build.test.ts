@@ -28,6 +28,7 @@ test('builds exactly the three standalone UTF-8 Demo assets and replaces stale o
     const html = await readFile(path.join(outdir, 'index.html'), 'utf8')
     expect(html).toContain('./assets/demo.js')
     expect(html).toContain('./assets/demo.css')
+    expect(html).toContain('<link rel="icon" href="data:,">')
     const js = await readFile(path.join(outdir, 'assets/demo.js'), 'utf8')
     expect(js).toContain('演示数据')
     expect(js).not.toContain('__ModuleLoader__')
