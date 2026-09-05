@@ -37,8 +37,8 @@ A′-P1a may report only:
 
 **Files:**
 
-- Create: `tests/types/harness-host-rc6-surface.ts`
-- Create: `tests/types/harness-client-rc6-surface.ts`
+- Create: `tools/harness-rc6-declarations/contracts/harness-host-rc6-surface.ts`
+- Create: `tools/harness-rc6-declarations/contracts/harness-client-rc6-surface.ts`
 - Create: `tsconfig.surface.host.json`
 - Create: `tsconfig.surface.client.json`
 - Create: `tests/contract/rc6-declaration-contract-guard.test.ts`
@@ -51,7 +51,7 @@ A′-P1a may report only:
 
 - [ ] **Step 1: Write the Host declaration contract**
 
-Create `tests/types/harness-host-rc6-surface.ts` with only public imports and a real Cordis Context:
+Create `tools/harness-rc6-declarations/contracts/harness-host-rc6-surface.ts` with only public imports and a real Cordis Context. The dedicated tools path deliberately stays outside `tsconfig.tests.json`; only the strict surface compiler may compile this contract, so the repository's ordinary test typecheck cannot resolve it through the wrong dependency root:
 
 ```ts
 import '@deepseek-ai/dsh-client-connection'
@@ -79,7 +79,7 @@ This must test the public Cordis lifecycle acceptance of the asynchronous dispos
 
 - [ ] **Step 2: Write the Client declaration contract**
 
-Create `tests/types/harness-client-rc6-surface.ts` with direct public Client Connection types and explicit layout/sidebar Client entrypoints. Connection RPC and slots are deliberately proven through different values:
+Create `tools/harness-rc6-declarations/contracts/harness-client-rc6-surface.ts` with direct public Client Connection types and explicit layout/sidebar Client entrypoints. The dedicated tools path is outside `tsconfig.tests.json` for the same dependency-root isolation reason. Connection RPC and slots are deliberately proven through different values:
 
 ```ts
 import '@deepseek-ai/dsh-client-ui-layout/client'
