@@ -35,6 +35,7 @@ function escapeMarkdownLine(value: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/[\\`*_{}[\]()#+!|\-]/g, '\\$&')
+    .replace(/^(\d{1,9})\.(?=\s)/, '$1\\.')
 }
 
 function escapeMarkdown(value: string): string {

@@ -101,6 +101,22 @@ describe('deterministic Demo PRD artifacts', () => {
     expect(artifact.value.markdown).toContain(`[0, ${quote.length})`)
   })
 
+  it('escapes only an initial ordered-list marker in quoted source evidence', () => {
+    const { includedCited } = fixture()
+    const material = { text: '01. 原话里的编号需要保留。', displayName: '编号访谈.txt', format: 'text/plain' as const }
+    const quote = '01. 原话里的编号需要保留'
+    const numbered = { ...includedCited, citations: [{ start: 0, end: quote.length, text: quote }] } as CitedRequirement
+
+    const first = renderDemoPrd({ projectTitle: '访谈', material, cards: [numbered] })
+    const second = renderDemoPrd({ projectTitle: '访谈', material, cards: [numbered] })
+    expect(first.ok).toBe(true)
+    if (!first.ok || !second.ok) return
+    expect(first).toEqual(second)
+    expect(first.value.markdown).toContain('> 01\\. 原话里的编号需要保留')
+    expect(first.value.markdown).toContain('[0, 14)')
+    expect(new TextDecoder().decode(first.value.bytes)).toBe(first.value.markdown)
+  })
+
   it('sorts included cards by citation coordinates and then direct id comparison', () => {
     const { material, includedCited } = fixture()
     const later = { ...includedCited, id: 'z-card', title: '后面的卡', citations: [{ ...includedCited.citations[0], start: 34, end: 56, text: '我希望能先看到需求对应的原文，再决定是否纳入' }] } as CitedRequirement
