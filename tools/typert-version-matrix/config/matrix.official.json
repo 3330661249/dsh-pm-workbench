@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "1",
+  "decisionMode": "selection",
+  "purpose": "selection",
+  "runtime": { "node": "24.14.0", "npmCli": "11.9.0" },
+  "toolchain": { "typescript": "6.0.3", "tsdown": "0.22.2", "zod": "4.4.3" },
+  "registry": "https://registry.npmjs.org/",
+  "generatorAdapter": "workspace-v1",
+  "fixture": "strict-remote-v1",
+  "policy": { "requireAllCasesConclusive": true, "requireAtLeastOneCandidatePass": true },
+  "cases": [
+    {
+      "id": "typert-0.1.0-rc.6-control",
+      "role": "control",
+      "release": { "@deepseek-ai/dsh": "0.1.0-rc.6" },
+      "packages": {
+        "@deepseek-ai/dsh-typert-generator": "0.1.0-rc.6",
+        "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.6",
+        "@deepseek-ai/dsh-invariants": "0.1.0-rc.6",
+        "@deepseek-ai/cordis": "4.0.1"
+      }
+    },
+    {
+      "id": "typert-0.1.0-rc.7",
+      "role": "candidate",
+      "release": { "@deepseek-ai/dsh": "0.1.0-rc.7" },
+      "packages": {
+        "@deepseek-ai/dsh-typert-generator": "0.1.0-rc.7",
+        "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.7",
+        "@deepseek-ai/dsh-invariants": "0.1.0-rc.7",
+        "@deepseek-ai/cordis": "4.0.1"
+      }
+    },
+    {
+      "id": "typert-0.1.0-rc.8",
+      "role": "candidate",
+      "release": { "@deepseek-ai/dsh": "0.1.0-rc.8" },
+      "packages": {
+        "@deepseek-ai/dsh-typert-generator": "0.1.0-rc.8",
+        "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.8",
+        "@deepseek-ai/dsh-invariants": "0.1.0-rc.8",
+        "@deepseek-ai/cordis": "4.0.1"
+      }
+    },
+    {
+      "id": "typert-0.1.1-rc.1",
+      "role": "candidate",
+      "release": { "@deepseek-ai/dsh": "0.1.1-rc.1" },
+      "packages": {
+        "@deepseek-ai/dsh-typert-generator": "0.1.1-rc.1",
+        "@deepseek-ai/dsh-typert-protocol": "0.1.1-rc.1",
+        "@deepseek-ai/dsh-invariants": "0.1.1-rc.1",
+        "@deepseek-ai/cordis": "4.0.1"
+      }
+    },
+    {
+      "id": "typert-0.1.1-rc.2",
+      "role": "candidate",
+      "release": { "@deepseek-ai/dsh": "0.1.1-rc.2" },
+      "packages": {
+        "@deepseek-ai/dsh-typert-generator": "0.1.1-rc.2",
+        "@deepseek-ai/dsh-typert-protocol": "0.1.1-rc.2",
+        "@deepseek-ai/dsh-invariants": "0.1.1-rc.2",
+        "@deepseek-ai/cordis": "4.0.1"
+      }
+    }
+  ]
+}

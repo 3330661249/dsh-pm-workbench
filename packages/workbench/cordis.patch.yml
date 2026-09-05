@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-pm-workbench
+      name: '@knight/dsh-pm-workbench'

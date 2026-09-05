@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="typert-version-matrix" tests="3" failures="3">
+  <testcase name="typert-0.1.2-alpha.2 (experimental)"><failure message="GENERATION_EMPTY">FAIL_COMPATIBILITY</failure></testcase>
+  <testcase name="typert-0.1.2-alpha.3 (experimental)"><failure message="GENERATION_EMPTY">FAIL_COMPATIBILITY</failure></testcase>
+  <testcase name="typert-0.1.2-alpha.4 (experimental)"><failure message="GENERATION_EMPTY">FAIL_COMPATIBILITY</failure></testcase>
+</testsuite>

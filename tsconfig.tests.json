@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "types": ["node", "vitest/globals"] },
+  "include": ["packages/workbench/src/**/*.ts", "packages/workbench/src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx"]
+}

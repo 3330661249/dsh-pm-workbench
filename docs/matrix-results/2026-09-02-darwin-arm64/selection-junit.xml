@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="typert-version-matrix" tests="5" failures="5">
+  <testcase name="typert-0.1.0-rc.6-control (control)"><failure message="GENERATION_EMPTY">FAIL_COMPATIBILITY</failure></testcase>
+  <testcase name="typert-0.1.0-rc.7 (candidate)"><failure message="GENERATION_EMPTY">FAIL_COMPATIBILITY</failure></testcase>
+  <testcase name="typert-0.1.0-rc.8 (candidate)"><failure message="GENERATION_EMPTY">FAIL_COMPATIBILITY</failure></testcase>
+  <testcase name="typert-0.1.1-rc.1 (candidate)"><failure message="GENERATION_EMPTY">FAIL_COMPATIBILITY</failure></testcase>
+  <testcase name="typert-0.1.1-rc.2 (candidate)"><failure message="GENERATION_EMPTY">FAIL_COMPATIBILITY</failure></testcase>
+</testsuite>

@@ -1,0 +1,23 @@
+{
+  "name": "@knight/dsh-typert-version-matrix",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": "24.14.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build",
+    "verify:locks": "node dist/cli.js verify-locks --platform-key darwin-arm64-node24-npm11"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "npm": "11.9.0",
+    "typescript": "6.0.3",
+    "vitest": "3.2.7"
+  }
+}

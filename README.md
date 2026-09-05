@@ -8,41 +8,113 @@ manager could organize evidence from product discovery through requirement
 analysis, prioritization, and later POC planning inside a DeepSeek Harness
 extension.
 
-The long-term workflow is a product direction, not a statement of implemented
-functionality.
+The long-term Harness workflow is a product direction. The standalone browser
+Demo described below is implemented; it does not establish Harness integration.
 
-## Current status: Gate A No-Go
+## Current implementation: standalone four-step Demo
 
-The current architecture requires generated, strict Typert Host/Client Remote
-artifacts. In the isolated `0.1.0-rc.6` probe, the workspace package was
-discovered but the generator emitted no Remote artifacts. The required files
-were absent, so Gate A was recorded as **NO-GO** and all downstream work stopped.
+A deterministic, in-memory browser Demo implements the four-step
+`材料 → 需求 → 优先级 → PRD` workflow. It accepts synthetic text or text files,
+generates fixture requirement cards with exact citations using local Demo rules,
+supports human edits, priorities and inclusion decisions, and previews/downloads
+Markdown containing only included cited requirements. These are local fixture
+results, not AI analysis or real model output. State exists only in the current
+page and is lost on refresh or close.
 
-The repository currently contains a private static package skeleton and
-technical evidence only. It has **not** established that the package:
+From the repository root:
+
+```sh
+npm run demo:serve
+```
+
+Open [the local Demo](http://127.0.0.1:4173/). The server builds the three browser
+files in `.tmp/dsh-pm-workbench/demo/` and listens only on `127.0.0.1`.
+`npm run demo:build` builds the same files without starting a server. Use only
+synthetic, non-identifying material.
+
+The approved scope is §8.1 of the
+[simple Demo/Alpha design](docs/superpowers/specs/2026-09-04-dsh-pm-workbench-simple-alpha-design.md),
+implemented through the
+[standalone interactive Demo plan](docs/superpowers/plans/2026-09-05-dsh-pm-workbench-interactive-demo.md).
+That design supersedes the older complex rollout as the current implementation
+scope; the earlier documents remain research history.
+
+The separately packaged Harness Host/Web Client is still a no-op skeleton.
+Real Harness installation/mounting, model calls, Host-owned persistence, restart
+recovery, and the Alpha privacy/real-data capability remain unimplemented and
+unverified. The Demo is not an installed Harness plugin. The historical Typert
+**NO-GO** remains historical, and Connection RPC Gate A′ has **not run**.
+
+## Historical Harness investigation and gate status
+
+The canonical Harness investigation and gate-status ledger, with append-only run blocks, is
+[`docs/probe-results.md`](docs/probe-results.md). Future phase and gate evidence
+commits update that ledger and bind observations to exact source/tgz hashes;
+this README provides orientation and must not be used to infer a newer runtime
+state. README/compatibility files packed inside any tgz describe only that
+artifact's build-time state, while the external ledger is authoritative for
+later observed runs of the same hash.
+
+The historical architecture required generated, strict Typert Host/Client Remote
+artifacts. The initial isolated `0.1.0-rc.6` probe discovered the workspace
+package but emitted no Remote artifacts. A later hardened frozen matrix repeated
+the same synthetic probe across eight exact official cohorts from
+`0.1.0-rc.6` through `0.1.2-alpha.4`. All eight completed as
+`FAIL_COMPATIBILITY / GENERATION_EMPTY`: automatic and forced generation each
+returned zero outputs, so none produced the five required files. The selection
+decision is `NO_ELIGIBLE_CANDIDATE`; that generated-Typert Gate A remains a
+historical **NO-GO**.
+
+On 2026-09-02, the owner approved a revised architecture specification:
+public Connection RPC, a shared strict Zod endpoint registry, Host-owned state,
+and a `WorkbenchTransport` abstraction that preserves a later Typert migration
+path. The approved canonical specification is
+[`docs/superpowers/specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md`](docs/superpowers/specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md).
+Its historical gated implementation plan set is retained at
+[`docs/superpowers/plans/2026-09-02-dsh-pm-workbench-v0.1-rollout.md`](docs/superpowers/plans/2026-09-02-dsh-pm-workbench-v0.1-rollout.md).
+That Harness integration plan has not been executed. The later approved simple
+design governs the current standalone Demo scope. Gate A′ has **not run**;
+approving the architecture does not establish that Connection RPC works from
+this third-party tarball.
+
+The source-free canonical result set is retained in
+[`docs/matrix-results/2026-09-02-darwin-arm64/`](docs/matrix-results/2026-09-02-darwin-arm64/).
+
+Alongside the implemented standalone Demo, the repository retains the private
+static Harness package skeleton and technical evidence. The canonical Harness
+ledger has **not** established that the package:
 
 - can be installed into DeepSeek Harness;
 - can load or mount in a Harness profile;
 - is compatible with any Harness version;
 - can persist projects or requirements;
-- can analyze interviews;
+- can perform model-based interview analysis inside Harness;
 - can call a real model;
 - can process real user data.
 
 No handwritten descriptor, copied generated file, private HTTP fallback,
 dynamic Cordis fallback, protocol vendoring, or generator patch is accepted as
-proof that Gate A passed.
+proof that the historical Gate A passed. The newly selected Connection RPC seam
+must instead pass its own isolated Gate A′.
 
-## Next approved investigation
+## Completed investigation and current decision
 
-The next bounded task is an isolated official-version compatibility matrix. It
-must reuse one fixed synthetic Remote probe for every tested version, preserve
-the raw exit status and artifact assertions, and subject any apparent success
-to adversarial review before the architecture decision changes.
+The approved official-version matrix is complete. It reused one fixed synthetic
+Remote probe, exact reviewed locks, a clean committed runner, and source-free
+canonical evidence for every tested version. Independent adversarial review
+found no remaining P0 or P1 issue in the evidence path; its residual P2 findings
+are recorded alongside the results.
 
-Version-matrix work does not authorize UI development, persistence, a real
-model, real interviews, installation into the user's active Harness profile, or
-public distribution.
+No tested candidate is eligible for an isolated mount probe under the old
+strict generated-Remote architecture. The owner has approved Connection RPC as
+the next architecture boundary, not as a proved compatibility result. The older
+rollout proposed an F0 foundation and bounded Gate A′ using `health`, a synthetic
+persisted counter, an additive launcher/overlay, and a real tarball in an isolated
+profile. That proposal is retained as investigation history, not the current
+Demo task list. Any later Harness Alpha work needs its own approved implementation
+scope and observed integration evidence. The standalone Demo does not authorize
+a real model, real interviews, installation into the user's active Harness
+profile, merge, or public distribution.
 
 ## Data boundary
 
@@ -95,4 +167,3 @@ visibility is an access setting; it does not grant a reuse license.
 Third-party dependencies and reference projects remain subject to their own
 licenses. Their presence in documentation does not mean their source code was
 copied or approved for redistribution.
-
