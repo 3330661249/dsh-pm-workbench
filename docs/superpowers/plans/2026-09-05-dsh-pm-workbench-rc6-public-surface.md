@@ -72,10 +72,22 @@ const disposeChannel: () => Promise<void> = connection.rpc.handle(
   { authority: 'loopback' },
 )
 
-ctx.effect(() => disposeChannel())
+const disposeEffect: () => Promise<void> =
+  ctx.effect(() => disposeChannel)
+
+void disposeEffect
 ```
 
-This must test the public Cordis lifecycle acceptance of the asynchronous disposer. If that final statement does not compile against exact public Cordis types, record `FAIL_ASYNC_DISPOSER_LIFECYCLE` and stop; do not discard the statement, cast it, or wrap the promise in an unawaited callback.
+This compile-only assignment tests that public Cordis lifecycle typing accepts
+the asynchronous disposer **function**. It must not call `disposeChannel()`
+during effect setup: that would return `Promise<void>` instead of installing a
+disposer, and it would be an unawaited-cleanup bug. The Connection declaration
+also states that channel registration belongs to the caller fiber, so this
+generic compatibility assignment is not an instruction to double-register the
+same disposer in production. A′-P2 must verify the actual single-registration
+ownership and unload behavior. If the assignment does not compile against the
+exact public Cordis types, record `FAIL_ASYNC_DISPOSER_LIFECYCLE` and stop; do
+not cast or suppress it.
 
 - [ ] **Step 2: Write the Client declaration contract**
 
