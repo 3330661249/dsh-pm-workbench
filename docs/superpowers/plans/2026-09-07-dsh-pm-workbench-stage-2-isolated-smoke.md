@@ -31,8 +31,8 @@
 - Create: `tests/contract/harness-rc6-public-surface.test.ts`
 - Create: `tests/types/harness-host-rc6-surface.ts`
 - Create: `tests/types/harness-client-rc6-surface.ts`
-- Preserve unchanged: `tsconfig.surface.host.json`
-- Preserve unchanged: `tsconfig.surface.client.json`
+- Restore to the frozen legacy bytes: `tsconfig.surface.host.json`
+- Restore to the frozen legacy bytes: `tsconfig.surface.client.json`
 - Create: `tsconfig.stage2.surface.host.json`
 - Create: `tsconfig.stage2.surface.client.json`
 - Modify: `package.json`
@@ -41,6 +41,7 @@
 - Modify: `tests/contract/package-manifest.test.ts`
 - Create: `research/2026-09-07-stage-2-rc6-public-surface.md`
 - Modify: `tests/integration/rc6-declaration-input.test.ts`
+- Modify: `tests/integration/helpers/rc6-169-production-path.ts`
 - Create: `tests/fixtures/rc6-legacy-production-boundary.json`
 - Modify: `tests/fixtures/standalone-source-manifest.json`
 - Append only: `docs/reviews/2026-09-05-rc6-declaration-surface-ledger.md`
@@ -114,7 +115,7 @@ npm test -- tests/integration/rc6-declaration-input.test.ts
 
 ```bash
 git diff --check
-git add -- package.json package-lock.json packages/workbench/package.json tests/contract/package-manifest.test.ts tests/contract/harness-rc6-public-surface.test.ts tests/types/harness-host-rc6-surface.ts tests/types/harness-client-rc6-surface.ts tsconfig.stage2.surface.host.json tsconfig.stage2.surface.client.json research/2026-09-07-stage-2-rc6-public-surface.md tests/integration/rc6-declaration-input.test.ts tests/fixtures/rc6-legacy-production-boundary.json tests/fixtures/standalone-source-manifest.json docs/reviews/2026-09-05-rc6-declaration-surface-ledger.md
+git add -- package.json package-lock.json packages/workbench/package.json tests/contract/package-manifest.test.ts tests/contract/harness-rc6-public-surface.test.ts tests/types/harness-host-rc6-surface.ts tests/types/harness-client-rc6-surface.ts tsconfig.surface.host.json tsconfig.surface.client.json tsconfig.stage2.surface.host.json tsconfig.stage2.surface.client.json research/2026-09-07-stage-2-rc6-public-surface.md tests/integration/rc6-declaration-input.test.ts tests/integration/helpers/rc6-169-production-path.ts tests/fixtures/rc6-legacy-production-boundary.json tests/fixtures/standalone-source-manifest.json docs/reviews/2026-09-05-rc6-declaration-surface-ledger.md
 git diff --cached --check
 git commit -m "build: pin rc6 smoke integration surface"
 ```
