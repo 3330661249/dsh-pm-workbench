@@ -239,6 +239,7 @@ describe('rc.6 declaration dependency boundary', () => {
 
     try {
       await expect(readFile(resolve(workspaceRoot, closureRelativePath))).resolves.toEqual(before)
+      await expect(realpath(missingWorkspace)).rejects.toMatchObject({ code: 'ENOENT' })
       await expect(realpath(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
       const proxyOutcome = await closure.writeCommittedDeclarationClosure(explosiveInput).then(
         () => 'RESOLVED',
@@ -250,6 +251,7 @@ describe('rc.6 declaration dependency boundary', () => {
       )
 
       await expect(readFile(resolve(workspaceRoot, closureRelativePath))).resolves.toEqual(before)
+      await expect(realpath(missingWorkspace)).rejects.toMatchObject({ code: 'ENOENT' })
       await expect(realpath(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
       expect(proxyOutcome).toMatchObject({
         code: 'LEGACY_CLOSURE_WRITE_DISABLED',
