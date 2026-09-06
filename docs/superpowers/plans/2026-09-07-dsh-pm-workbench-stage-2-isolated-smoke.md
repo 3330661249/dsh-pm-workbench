@@ -354,6 +354,8 @@ The runner may use CDP `Page`, `DOM`, `Input`, and accessibility/lifecycle opera
 
 Use the 30-second startup budget only for `Page.navigate`; keep the ordinary CDP command budget at 10 seconds. The navigation request is not retried after a local timeout because the first browser navigation may still be active and a retry would make loader evidence ambiguous.
 
+A fresh rc.6 profile may render public first-run dialogs over the plugin slots after page lifecycle. Handle only these exact accessible dialog/action pairs, in order when present: `内测声明` / `继续`, then `添加一个 API Key 开始使用` / `稍后配置`. Discover them from the rendered accessibility tree, require one unambiguous button inside the matching dialog, and dismiss them with real pointer input. Do not write local storage, profile state, configuration, or private Harness APIs to bypass onboarding. The first dialog is optional after its acknowledgment persists in the isolated Harness profile; the API dialog may recur for each fresh browser profile. Before clicking a plugin marker, require its center to remain the topmost pointer target through a bounded quiet window so a late modal cannot intercept the click. Any ambiguous known dialog, unexpected blocking dialog, or readiness timeout fails closed without treating the plugin as observed.
+
 Observe this exact sequence:
 
 1. installed and enabled, fresh Harness and Chrome: wait for the launcher marker, click it, observe overlay and counter markers at `data-counter="0"` and `data-version="0"`, click increment, and observe counter/version `1`;
