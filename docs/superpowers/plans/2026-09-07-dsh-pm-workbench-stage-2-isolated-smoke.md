@@ -105,7 +105,7 @@ The root dependency and workbench package changes intentionally leave the new St
 npm test -- tests/contract/harness-rc6-public-surface.test.ts tests/contract/package-manifest.test.ts
 ./node_modules/.bin/tsc -p tsconfig.stage2.surface.host.json --noEmit
 ./node_modules/.bin/tsc -p tsconfig.stage2.surface.client.json --noEmit
-./node_modules/.bin/tsc -p tsconfig.surface.host.json --noEmit
+./node_modules/.bin/tsc -p tsconfig.surface.host.json --noEmit --types node
 ./node_modules/.bin/tsc -p tsconfig.surface.client.json --noEmit
 npm run typecheck
 npm test -- tests/integration/rc6-declaration-input.test.ts
