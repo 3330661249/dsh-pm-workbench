@@ -226,49 +226,201 @@ git commit -m "feat: add minimal Harness smoke probe"
 **Files:**
 
 - Create: `scripts/run-stage-2-isolated-smoke.mjs`
+- Create: `scripts/verify-stage-2-smoke-result.mjs`
 - Create: `tests/integration/stage-2-smoke-runner.test.ts`
+- Create: `tests/integration/package-freeze.test.ts`
 - Modify: `packages/workbench/build.mjs`
+- Modify: `scripts/pack-dry.mjs`
+- Modify: `scripts/verify-package.mjs`
 - Modify: `package.json`
-- Create outside Git during execution: a fresh marker-owned directory under the operating system temporary root
-- Create only after a completed sanitized run: `docs/gate-results/stage-2-isolated-smoke.md`
+- Modify: `tests/fixtures/standalone-source-manifest.json`
+- Create outside Git during execution: one fresh marker-owned directory under the canonical operating-system temporary root
+- Create only from a separately verified sanitized result after the run has ended: `docs/gate-results/stage-2-isolated-smoke.md`
 
 **Interfaces:**
 
-- Produces: one marker-owned run directory with temporary raw evidence and cleanup receipt; only a separately verified sanitized report may later be copied into the repository.
-- The runner accepts an explicit absolute rc.6 CLI entry and never resolves `dsh` via PATH.
+- The canonical runner invocation supplies six explicit absolute inputs: `--node`, `--dsh-cli`, `--npm-cli`, `--pnpm-node`, `--pnpm-cli`, and `--chrome`. The declared `--node` must equal the canonical executable running the runner. No input may be inferred from `PATH`, a shebang, npm configuration, Corepack, `npx`, a package-manager wrapper, or a browser search.
+- Before first use and immediately before every later use, validate each input as an absolute canonical non-symlink regular file, verify the required executable bit for Node and Chrome, record device/inode/size/SHA-256 identity, and verify bounded version/package identity. The DSH entry must be the declared `dsh` bin of `@deepseek-ai/dsh@0.1.0-rc.6`; the npm and pnpm entries must match their nearest package manifests and declared bin entries.
+- The npm package, profile dependency, profile bundle, Client ModuleLoader, add, and remove identity is exactly `@knight/dsh-pm-workbench`. The Cordis row inserted by `cordis.patch.yml` has exact `id: dsh-pm-workbench`. Package/name identity is verified separately and is not repeated in the disable patch.
+- Raw evidence exists only below the marker-owned run root while the run is active. Before deletion, derive a bounded, closed, path-free result candidate in memory. Only after successful deletion and absence verification may the runner append a successful cleanup receipt and emit the canonical result; it never writes the cleanup receipt into the directory it will delete.
+- `scripts/verify-stage-2-smoke-result.mjs` independently validates the emitted closed result schema, outcome-specific evidence, allowed claims, size bounds, and sanitization. Only its verified Markdown output is eligible to be copied into `docs/gate-results/`.
 
-- [ ] **Step 1: Write RED ownership and command-graph tests**
+- [ ] **Step 1: Write RED ownership, provenance, command-graph, and UI-boundary tests**
 
-Prove refusal of actual port `3080`, non-loopback bind, an existing/non-owned run root, symlinks at owned roots, missing/mismatched marker, PATH CLI fallback, source/link/Git install specs, unexpected package hash, signaling a PID whose identity changed, and cleanup outside the owned run directory. The runner owns a state machine with explicit `PASS`, `FAIL`, `INCONCLUSIVE`, `NEEDS_NETWORK_PERMISSION`, and `SAFETY_ABORT` outcomes.
+Use injected filesystem, child-process, `lsof`, package, and browser/CDP fakes; these tests do not start real Harness, Chrome, npm, or pnpm processes.
 
-- [ ] **Step 2: Implement deterministic package freeze**
+Prove refusal of:
 
-Build the workbench, run package allowlist verification, create one real tgz in the owned run directory, hash it, and install that exact file. Do not publish it.
+- missing, relative, symlinked, non-regular, wrong-package, wrong-bin, wrong-version, or identity-drifting Node, DSH CLI, npm CLI, pnpm Node, pnpm CLI, and Chrome inputs;
+- inherited or multi-entry `PATH`, a global `pnpm`, Corepack, `npx`, a shell-based DSH invocation, or any executable fallback;
+- actual port `3080`, a non-loopback Harness bind, an existing or non-owned run root, symlinks at owned roots, a missing or mismatched marker, or a working directory outside the run root;
+- source, link, Git, registry, range, or tag install specs in place of the one absolute frozen tgz;
+- an unexpected package allowlist, package byte/hash, build graph, package member set, or second tgz;
+- a build or package path that bypasses the canonical write guard, rereads repository package files after their bytes are frozen, uses `npm pack --workspace`, or performs a separate dry-run;
+- importing `scripts/verify-package.mjs` if import rebuilds, writes, packs, or resolves npm through `PATH`;
+- remove argv containing `--offline`, `--ignore-scripts`, an unscoped package ID, or any additional token;
+- direct Harness HTTP, `/api`, Probe-channel, Connection-carrier, `fetch`, `XMLHttpRequest`, or runtime-evaluated transport probes;
+- private Harness selectors or any selector other than the stable `data-dsh-pm-workbench` markers;
+- signaling through a raw PID, signaling after the retained `ChildProcess` has exited, or signaling when the spawn receipt, retained child, PID, cwd witness, marker witness, or listener witness disagrees;
+- cleanup outside the owned root, cleanup after ownership drift, cleanup through a changed root name, or emission of a successful cleanup receipt before confirmed deletion.
 
-- [ ] **Step 3: Initialize and install into a fresh profile**
+Prove this exact DSH plugin command graph:
 
-Start from an empty allowlisted child environment and isolate `HOME`, `DSH_HOME`, XDG, npm, pnpm, temp, cwd, and browser paths. Use the public `dsh plugin --profile web add <absolute-tgz> --offline` path and verify the resolved package, tgz hash, bundle row, and package entrypoints directly in the isolated profile. Do not use `--dump-config` as PASS evidence. If an exact external runtime dependency is unexpectedly absent from the new isolated store, stop as `NEEDS_NETWORK_PERMISSION`; never silently retry online.
+```text
+<node> <dsh-cli> plugin --profile web add <absolute-tgz> --offline
+<node> <dsh-cli> plugin --profile web remove @knight/dsh-pm-workbench
+```
 
-- [ ] **Step 4: Start only the isolated runtime**
+The remove command has no `--offline`, no `--ignore-scripts`, and no other forwarded pnpm flag.
 
-Launch the explicit fixed rc.6 CLI entry on `127.0.0.1` with `--port 0`, parse the actual port, reject `3080`, and prove the child owns the listener. Reject inherited proxy/provider/credential variables and never signal a process whose PID, start time, argv, marker path, or listener ownership no longer matches. Start a new isolated headless Chrome profile for each runtime phase; if Chrome/CDP is unavailable, the overall result is `INCONCLUSIVE` rather than an inferred UI success.
+Prove the closed result states `PASS`, `FAIL`, `INCONCLUSIVE`, `NEEDS_NETWORK_PERMISSION`, and `SAFETY_ABORT`. A runtime observation mismatch is `FAIL`; a validated Chrome that cannot start or expose CDP is `INCONCLUSIVE`; an offline install that proves a required exact external artifact is absent is `NEEDS_NETWORK_PERMISSION`; uncertain ownership, process, listener, or cleanup identity is `SAFETY_ABORT`.
 
-- [ ] **Step 5: Observe the smoke graph**
+- [ ] **Step 2: Implement the non-bypassable canonical build and byte-frozen package**
 
-Observe the following through real Host RPC, Client bundle and plugin-owned DOM markers: initial counter `0`; launcher and overlay interaction; UI-driven increment to `1`; restart persistence at `1`; public patch disable while the package remains installed; public remove and runtime disappearance; reinstall of the byte-identical tgz with retained counter `1`; and another UI-driven increment to `2`. Every plugin-set change gets a new Harness process and new Chrome profile. The boot entry identifier is the package name `@knight/dsh-pm-workbench`. Disabled or removed RPC proves only that the plugin's successful response is absent; rc.6 may return `404` or `405`.
+In `packages/workbench/build.mjs`, retain the existing test hook only as an additional restriction. Immediately after that hook and immediately before every `rm`, `mkdir`, or `writeFile`, always run repository-owned `assertWorkbenchWritePath`; a caller-supplied no-op guard must never weaken the physical boundary.
 
-- [ ] **Step 6: Cleanup and prove isolation**
+Expose a no-argument canonical package-build entry such as `buildPackableWorkbench()`. It fixes output to `packages/workbench/lib`, accepts no caller-selected `outdir` or guard, runs both graph validators before writing, writes exactly `lib/index.js` and `lib/client.js`, and returns both metafiles plus output hashes. The smoke runner may call only this canonical entry.
 
-Stop only identity-verified owned children, verify each dynamic listener disappears, remove the marker-owned run root without following dependency symlinks, and record that no command targeted `3080`, the default profile, or user browser state. If ownership changes or cleanup cannot be proven, stop destructive cleanup and return `SAFETY_ABORT`. Do not delete retained data outside the owned run root.
+Refactor `scripts/verify-package.mjs` so its reusable verifier is import-safe and side-effect-free: importing it must not build, pack, invoke npm, or write. Its Stage 2 verification entry accepts canonical build evidence, opens and verifies the exact package closure once, and returns both a closed verification receipt and the frozen bytes for exactly these nine relative files:
 
-- [ ] **Step 7: Verify, sanitize, and commit only code plus the eligible report**
+```text
+LICENSE
+README.md
+cordis.patch.yml
+docs/compatibility.md
+docs/privacy.md
+docs/third-party.md
+lib/client.js
+lib/index.js
+package.json
+```
+
+The verifier validates the exact allowlist, zero-runtime-dependency contract, Zod bundling and notice, Host/Client graph direction, entrypoints, modes, sizes, hashes, and absence of absolute-path leakage. Each returned byte buffer must come from the same bounded read whose before/after file identity passed. Its ordinary command-line wrapper may compose the canonical builder for repository checks, but that wrapper is not Stage 2 runtime evidence.
+
+After canonical build and verification, create `<run-root>/package-source` exclusively and copy only the nine already-returned verified byte buffers into that tree with their verified relative paths and modes. Do not reopen or reread a repository package file after verification. Reinventory `package-source` and require exact equality to the nine-file receipt.
+
+With cwd exactly `<run-root>/package-source`, invoke the explicit absolute Node and npm CLI exactly once as:
+
+```text
+<absolute-node> <absolute-npm-cli> pack . --json
+```
+
+Do not run a separate npm dry-run and do not use `npm pack --workspace`. Reject package lifecycle hooks that could mutate the frozen package source. Require exactly one newly created regular tgz, validate npm's exact nine-member path/size/mode inventory, revalidate the staged nine-file byte receipt after packing, independently verify the tgz byte count, npm SHA-1 and SHA-512 integrity, then compute and freeze the whole-tgz SHA-256 for every later add or reinstall. npm metadata does not expose per-member SHA-256, so Stage 2 makes no such claim. Do not publish, rebuild after freeze, select a tgz by “latest” or mtime, or accept a package created by another command.
+
+- [ ] **Step 3: Initialize the isolated profile with the owned pnpm shim**
+
+Create the run root exclusively below the canonical system temporary directory, write its random ownership marker with `wx`, record root and marker device/inode/mode identities, and create every isolation path beneath it.
+
+Build every child environment from an empty object. Isolate at least `HOME`, `DSH_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_HOME`, `TMPDIR`, npm cache and both npm config files, pnpm home/store/cache/state directories, cwd, and browser user-data. Strip all inherited proxy, registry override, auth, token, credential, provider, model, DSH, Node-option, npm, pnpm, Corepack, and browser variables.
+
+Because rc.6 resolves `pnpm` by name, create exactly one exclusive regular executable at `<run-root>/bin/pnpm`. Its fixed, tested bytes invoke only the validated absolute pnpm Node with the validated absolute pnpm CLI and forward original argv without interpretation. Before every plugin operation, revalidate shim bytes/mode/identity and both pnpm inputs. For plugin operations, `PATH` is exactly `<run-root>/bin`; no other child receives an inherited executable search path.
+
+Initialize and install only with:
+
+```text
+<absolute-node> <absolute-dsh-cli> plugin --profile web add <absolute-frozen-tgz> --offline
+```
+
+Verify in the isolated profile that `package.json` has exact dependency `@knight/dsh-pm-workbench`; `dsh.profile.bundles` contains exact `@knight/dsh-pm-workbench`; the resolved manifest matches the frozen tgz; the patch, Host bundle, Client bundle, and entrypoints match the verification receipt; and the package Cordis row has exact `id: dsh-pm-workbench` while package/name identity is independently `@knight/dsh-pm-workbench`.
+
+Do not treat `--dump-config`, a profile listing, package listing, or filesystem presence as runtime PASS evidence. If offline add proves an exact required external artifact is unavailable, return `NEEDS_NETWORK_PERMISSION`; never retry online.
+
+- [ ] **Step 4: Start and stop only identity-witnessed isolated children**
+
+Launch Harness only as:
+
+```text
+<absolute-node> <absolute-dsh-cli> web [--patch <absolute-owned-disable-patch>] --host 127.0.0.1 --port 0
+```
+
+Launch Chrome directly from the validated absolute Chrome executable with a new owned user-data directory and dynamically allocated CDP port for every phase. Obtain the DevTools WebSocket URL from bounded Chrome process output; do not make an HTTP request to a Chrome discovery endpoint. Use CDP only to control the rendered browser.
+
+Immediately after each spawn, retain an in-memory receipt containing exact executable, argv, cwd, allowlisted-environment-key digest, marker ID, `ChildProcess` object, and PID. Treat the retained child object as authoritative continuity. Use fixed absolute `/usr/sbin/lsof` to prove the live child's marker-owned cwd, the Harness child's exact `127.0.0.1:<dynamic-port>` listener, and the Chrome child's exact CDP listener.
+
+Reject port `3080`. Before signaling, require the same retained child object, unchanged PID, `exitCode === null`, `signalCode === null`, matching receipt, matching cwd, and matching listener. Signal through the retained child object, not a caller-supplied or raw PID. After exit, prove the listener is gone.
+
+Do not require OS `ps` start time, OS-reported argv, or executable-name matching. The accepted witness is the spawn receipt plus still-live retained `ChildProcess` plus `lsof` cwd/listener ownership. If any element disagrees, do not signal and return `SAFETY_ABORT`.
+
+If validated Chrome cannot start, expose bounded CDP, or render the isolated loopback page, return `INCONCLUSIVE`; do not infer UI success.
+
+- [ ] **Step 5: Observe the smoke graph through rendered UI only**
+
+The runner may use CDP `Page`, `DOM`, `Input`, and accessibility/lifecycle operations needed to navigate, wait, query stable plugin-owned attributes, read attributes/text, and dispatch real pointer input. It must not evaluate or inject code that calls `fetch`, `XMLHttpRequest`, a Connection object, the Probe channel, or any Harness API. It must not inspect Harness-private classes, component structure, globals, source modules, or private DOM.
+
+Observe this exact sequence:
+
+1. installed and enabled, fresh Harness and Chrome: wait for the launcher marker, click it, observe overlay and counter markers at `data-counter="0"` and `data-version="0"`, click increment, and observe counter/version `1`;
+2. restart with fresh Harness and Chrome: reopen overlay and observe retained counter/version `1`;
+3. stop both children, then start fresh Harness and Chrome with the owned disable patch below; prove package dependency, profile bundle, and installed package remain present while plugin-owned launcher and overlay markers remain absent after normal page lifecycle and a bounded quiet period;
+4. stop both children and run the exact remove command below;
+5. start fresh Harness and Chrome; prove dependency, bundle, and installed package are absent and plugin-owned markers remain absent after normal page lifecycle and a bounded quiet period;
+6. stop both children, reinstall the byte-identical frozen tgz with the original add argv, and start fresh Harness and Chrome;
+7. reopen overlay, observe retained counter/version `1`, click increment, and observe counter/version `2`.
+
+The owned public disable patch is exactly:
+
+```yaml
+- id: dsh-pm-workbench
+  disabled: true
+```
+
+Package/name identity remains independently verified as `@knight/dsh-pm-workbench`; it is deliberately not repeated in the disable patch.
+
+The exact remove command is:
+
+```text
+<absolute-node> <absolute-dsh-cli> plugin --profile web remove @knight/dsh-pm-workbench
+```
+
+It contains neither `--offline` nor `--ignore-scripts`. Every plugin-set change occurs while Harness is stopped and is followed by a new Harness process and Chrome profile.
+
+UI increment followed by restart persistence is the RPC proof: it demonstrates the shipped Client invoking the shipped Host through public Connection RPC without the runner calling the carrier. Disabled and removed states are proved by isolated-profile state plus rendered plugin-marker absence. Do not call a raw RPC or HTTP endpoint, and do not accept `404` or `405` as evidence.
+
+- [ ] **Step 6: Cleanup with rename, revalidation, no-follow removal, and post-deletion emission**
+
+First stop only children satisfying retained-child, spawn-receipt, cwd, marker, and listener witnesses. Verify every Harness and Chrome listener disappeared.
+
+Before deleting filesystem state:
+
+1. derive a bounded, sanitized, path-free result candidate and cleanup-receipt draft in memory;
+2. revalidate the run root, every existing ancestor below the canonical temporary parent, ownership marker, and saved device/inode/mode identities with `lstat`;
+3. require the original root to contain only the owned run closure and reject a changed root, marker, ancestor, symlink, hardlink anomaly, or special file;
+4. exclusively choose a fresh sibling tombstone under the same verified temporary parent;
+5. atomically rename the run root to that tombstone;
+6. require the original pathname to be absent;
+7. revalidate that tombstone and marker retain exact pre-rename identities under the unchanged temporary parent;
+8. recursively remove the tombstone without following symlinks;
+9. verify both original and tombstone pathnames are absent and the temporary parent identity is unchanged.
+
+Only after step 9 may the runner finalize `cleanup.deleted: true` in memory and emit the canonical sanitized result. The successful cleanup receipt is emitted from memory after deletion and never stored inside the deleted root.
+
+If identity changes before rename, do not rename or delete. If it changes after rename, do not continue removal. If removal or absence verification fails, return bounded `SAFETY_ABORT` with `cleanup.deleted: false` and no successful cleanup receipt. Do not reveal a retained absolute path in sanitized output.
+
+This rename/revalidate/remove sequence protects against accidental path or ownership drift. It does not claim resistance to a malicious same-user process racing filesystem mutations between checks; that adversarial same-user race is explicitly outside the Stage 2 threat model.
+
+- [ ] **Step 7: Verify, sanitize, and commit only code plus an eligible report**
+
+Run:
 
 ```bash
 npm test -- tests/integration/stage-2-smoke-runner.test.ts
 npm run check
 npm run build
 npm run verify:package
+npm test -- tests/integration/standalone-copy.test.ts
 git diff --check
 ```
 
-The runner does not commit its own report. After cleanup, independently validate sanitization before copying an eligible report to `docs/gate-results/`. The result is `PASS`, `FAIL`, `INCONCLUSIVE`, `NEEDS_NETWORK_PERMISSION`, or `SAFETY_ABORT`. `PASS` permits only the phrase: “The Stage 2 isolated smoke passed for the recorded rc.6 combination.” It does not permit “Gate A-prime passed,” “the PM Workbench is complete,” real interview use, or public distribution.
+The standalone source manifest must include the runner, its test, the smoke-result verifier, and every Task 3 production file needed to reproduce the same build/package checks after relocation.
+
+Invoke the real smoke directly through explicit Node, not `npm run`, `npx`, a shebang, or a PATH-resolved command:
+
+```text
+<absolute-node> scripts/run-stage-2-isolated-smoke.mjs --node <absolute-node> --dsh-cli <absolute-dsh-cli> --npm-cli <absolute-npm-cli> --pnpm-node <absolute-pnpm-node> --pnpm-cli <absolute-pnpm-cli> --chrome <absolute-chrome>
+```
+
+The runner emits one bounded canonical JSON result only after the cleanup decision is final. Independently pass those exact bytes to `scripts/verify-stage-2-smoke-result.mjs`. The verifier rejects unknown fields, raw logs, credentials, payload text, local absolute paths, unbounded strings, an invalid outcome/evidence combination, or a successful cleanup claim without post-deletion proof. It alone renders the eligible Markdown report.
+
+The runner and verifier do not commit or copy the report. Only after verifier success may the verified Markdown be copied into `docs/gate-results/stage-2-isolated-smoke.md`.
+
+The result is `PASS`, `FAIL`, `INCONCLUSIVE`, `NEEDS_NETWORK_PERMISSION`, or `SAFETY_ABORT`. `PASS` requires every enabled UI observation, restart persistence, disabled state, removal/reinstall, package identity, process/listener closure, and successful cleanup receipt. `PASS` permits only the phrase: “The Stage 2 isolated smoke passed for the recorded rc.6 combination.” It does not permit “Gate A-prime passed,” “the PM Workbench is complete,” real interview use, or public distribution.
