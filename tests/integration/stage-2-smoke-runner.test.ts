@@ -5,6 +5,7 @@ import { link, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
+import * as stage2Runner from '../../scripts/run-stage-2-isolated-smoke.mjs'
 import {
   Stage2RunnerError,
   STAGE2_PHASES,
@@ -132,9 +133,19 @@ function fakeAdapters(overrides: Record<string, unknown> = {}) {
       }),
     },
     browser: {
-      observePhase: vi.fn(async ({ phase, profilePath }: { phase: string; profilePath: string }) => {
+      observePhase: vi.fn(async ({
+        phase,
+        profilePath,
+        networkState,
+      }: {
+        phase: string
+        profilePath: string
+        networkState?: { externalAttempts: number; controlFailed: boolean }
+      }) => {
         events.push(`browser:${phase}:${profilePath}`)
-        return expectedObservation(phase)
+        const observation = expectedObservation(phase)
+        if (networkState) networkState.externalAttempts = observation.externalNetworkAttempts
+        return observation
       }),
     },
   }
@@ -302,6 +313,280 @@ describe('Stage 2 browser and listener guards', () => {
     close() {
       this.dispatch('close', {})
     }
+  }
+
+  type AxNodeFixture = {
+    nodeId: string
+    ignored: boolean
+    role?: { type: 'role'; value: string }
+    name?: { type: 'computedString'; value: string }
+    properties?: Array<{ name: string; value: { type: string; value: unknown } }>
+    parentId?: string
+    childIds?: string[]
+    backendDOMNodeId?: number
+    frameId?: string
+  }
+
+  function axNode(
+    nodeId: string,
+    role: string,
+    name: string,
+    {
+      parentId,
+      backendDOMNodeId,
+      ignored = false,
+      disabled = false,
+      frameId,
+    }: {
+      parentId?: string
+      backendDOMNodeId?: number
+      ignored?: boolean
+      disabled?: boolean
+      frameId?: string
+    } = {},
+  ): AxNodeFixture {
+    return {
+      nodeId,
+      ignored,
+      role: { type: 'role', value: role },
+      name: { type: 'computedString', value: name },
+      properties: disabled
+        ? [{ name: 'disabled', value: { type: 'boolean', value: true } }]
+        : [],
+      ...(parentId === undefined ? {} : { parentId }),
+      childIds: [],
+      ...(backendDOMNodeId === undefined ? {} : { backendDOMNodeId }),
+      ...(frameId === undefined ? {} : { frameId }),
+    }
+  }
+
+  function axTree(...entries: AxNodeFixture[]) {
+    const nodes = [
+      axNode('root', 'RootWebArea', 'DeepSeek Harness', { backendDOMNodeId: 1, frameId: 'main-frame' }),
+      ...entries,
+    ]
+    const byId = new Map(nodes.map((node) => [node.nodeId, node]))
+    for (const node of nodes) {
+      if (node.parentId !== undefined) {
+        const parent = byId.get(node.parentId)
+        if (parent) (parent.childIds ??= []).push(node.nodeId)
+      }
+    }
+    return nodes
+  }
+
+  function betaDialog(options: {
+    dialogId?: string
+    buttonId?: string
+    buttonParentId?: string
+    backendDOMNodeId?: number
+    role?: 'dialog' | 'alertdialog'
+  } = {}) {
+    const dialogId = options.dialogId ?? 'beta-dialog'
+    const buttonId = options.buttonId ?? 'continue-button'
+    const buttonParentId = options.buttonParentId ?? dialogId
+    const backendDOMNodeId = options.backendDOMNodeId ?? 201
+    const role = options.role ?? 'dialog'
+    return [
+      axNode(dialogId, role, '内测声明', { parentId: 'root', backendDOMNodeId: 200 }),
+      axNode(buttonId, 'button', '继续', { parentId: buttonParentId, backendDOMNodeId }),
+    ]
+  }
+
+  function apiDialog(options: {
+    dialogId?: string
+    buttonId?: string
+    buttonParentId?: string
+    backendDOMNodeId?: number
+  } = {}) {
+    const dialogId = options.dialogId ?? 'api-dialog'
+    const buttonId = options.buttonId ?? 'later-button'
+    const buttonParentId = options.buttonParentId ?? dialogId
+    const backendDOMNodeId = options.backendDOMNodeId ?? 202
+    return [
+      axNode(dialogId, 'dialog', '添加一个 API Key 开始使用', { parentId: 'root', backendDOMNodeId: 210 }),
+      axNode(buttonId, 'button', '稍后配置', { parentId: buttonParentId, backendDOMNodeId }),
+    ]
+  }
+
+  function onboardingFixture({
+    readAx,
+    topmost,
+    hitAncestors,
+    markerNodeIds = () => [10],
+    markerBackendDOMNodeId = () => 100,
+    boxModel,
+    viewport = () => ({ clientWidth: 1_200, clientHeight: 800 }),
+    onMove = () => undefined,
+    onPress = () => undefined,
+    onRelease = () => undefined,
+  }: {
+    readAx: (context: { clock: number; readCount: number }) => AxNodeFixture[]
+    topmost?: (context: {
+      clock: number
+      targetBackendDOMNodeId: number | undefined
+      params: Record<string, unknown>
+    }) => { backendNodeId: number; frameId: string }
+    hitAncestors?: (context: {
+      backendNodeId: number
+      targetBackendDOMNodeId: number | undefined
+      nodes: AxNodeFixture[]
+    }) => AxNodeFixture[]
+    markerNodeIds?: (context: { clock: number }) => number[]
+    markerBackendDOMNodeId?: (nodeId: number) => number
+    boxModel?: (context: {
+      backendDOMNodeId: number | undefined
+      nodeId: number | undefined
+      clock: number
+    }) => number[]
+    viewport?: () => { clientWidth: number; clientHeight: number }
+    onMove?: (context: { emit: (method: string, params?: Record<string, unknown>) => void }) => void
+    onPress?: (backendDOMNodeId: number | undefined) => void
+    onRelease?: (backendDOMNodeId: number | undefined) => void
+  }) {
+    let clock = 0
+    let readCount = 0
+    let targetBackendDOMNodeId: number | undefined
+    let lastNodes = axTree()
+    let eventHandler: ((event: { method: string; params: Record<string, unknown>; sessionId: string }) => void) | undefined
+    const resolveTopmost = topmost ?? (({ targetBackendDOMNodeId }: {
+      targetBackendDOMNodeId: number | undefined
+    }) => ({ backendNodeId: targetBackendDOMNodeId ?? 100, frameId: 'main-frame' }))
+    const emit = (method: string, params: Record<string, unknown> = {}) => {
+      eventHandler?.({ method, params, sessionId: 'session-1' })
+    }
+    const send = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'Accessibility.getFullAXTree') {
+        readCount += 1
+        lastNodes = readAx({ clock, readCount })
+        return { nodes: lastNodes }
+      }
+      if (method === 'Accessibility.getAXNodeAndAncestors') {
+        const backendNodeId = params.backendNodeId
+        if (typeof backendNodeId !== 'number') throw new Error('missing hit backend id')
+        if (hitAncestors) {
+          return { nodes: hitAncestors({ backendNodeId, targetBackendDOMNodeId, nodes: lastNodes }) }
+        }
+        const byBackend = lastNodes.find((node) => node.backendDOMNodeId === backendNodeId)
+        if (byBackend) {
+          const byId = new Map(lastNodes.map((node) => [node.nodeId, node]))
+          const nodes = [byBackend]
+          let parentId = byBackend.parentId
+          while (parentId !== undefined) {
+            const parent = byId.get(parentId)
+            if (!parent) break
+            nodes.push(parent)
+            parentId = parent.parentId
+          }
+          return { nodes }
+        }
+        if (backendNodeId === targetBackendDOMNodeId) {
+          return {
+            nodes: [
+              axNode('launcher-ax', 'button', 'AI PM Workbench', {
+                parentId: 'root', backendDOMNodeId: backendNodeId, frameId: 'main-frame',
+              }),
+              axNode('root', 'RootWebArea', 'DeepSeek Harness', {
+                backendDOMNodeId: 1, frameId: 'main-frame',
+              }),
+            ],
+          }
+        }
+        return {
+          nodes: [
+            axNode('overlay-ax', 'group', '', {
+              parentId: 'root', backendDOMNodeId: backendNodeId, frameId: 'main-frame',
+            }),
+            axNode('root', 'RootWebArea', 'DeepSeek Harness', {
+              backendDOMNodeId: 1, frameId: 'main-frame',
+            }),
+          ],
+        }
+      }
+      if (method === 'DOM.getDocument') return { root: { nodeId: 1 } }
+      if (method === 'DOM.querySelector') return { nodeId: 10 }
+      if (method === 'DOM.querySelectorAll') return { nodeIds: markerNodeIds({ clock }) }
+      if (method === 'DOM.describeNode') {
+        const nodeId = typeof params.nodeId === 'number' ? params.nodeId : 10
+        const backendNodeId = markerBackendDOMNodeId(nodeId)
+        targetBackendDOMNodeId = backendNodeId
+        return { node: { nodeId, backendNodeId } }
+      }
+      if (method === 'DOM.scrollIntoViewIfNeeded') return {}
+      if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: viewport() }
+      if (method === 'DOM.getBoxModel') {
+        const backendNodeId = params.backendNodeId
+        const nodeId = params.nodeId
+        if (typeof backendNodeId === 'number') targetBackendDOMNodeId = backendNodeId
+        if (typeof nodeId === 'number') targetBackendDOMNodeId = markerBackendDOMNodeId(nodeId)
+        if (boxModel) {
+          return { model: { content: boxModel({
+            backendDOMNodeId: typeof backendNodeId === 'number' ? backendNodeId : undefined,
+            nodeId: typeof nodeId === 'number' ? nodeId : undefined,
+            clock,
+          }) } }
+        }
+        const start = backendNodeId === 201 ? 20 : backendNodeId === 202 ? 40 : 0
+        return { model: { content: [start, start, start + 20, start, start + 20, start + 20, start, start + 20] } }
+      }
+      if (method === 'DOM.getNodeForLocation') {
+        const hit = resolveTopmost({ clock, targetBackendDOMNodeId, params })
+        return hit
+      }
+      if (method === 'Input.dispatchMouseEvent') {
+        if (params.type === 'mouseMoved') onMove({ emit })
+        if (params.type === 'mousePressed') onPress(targetBackendDOMNodeId)
+        if (params.type === 'mouseReleased') onRelease(targetBackendDOMNodeId)
+        return {}
+      }
+      throw new Error(`unexpected CDP method: ${method}`)
+    })
+    const sleep = vi.fn(async (milliseconds: number) => { clock += milliseconds })
+    return {
+      peer: {
+        send,
+        onEvent: vi.fn((handler: typeof eventHandler) => {
+          eventHandler = handler
+          return () => { eventHandler = undefined }
+        }),
+      },
+      send,
+      sleep,
+      now: () => clock,
+      clock: () => clock,
+      emit,
+    }
+  }
+
+  async function prepareOnboarding(
+    fixture: ReturnType<typeof onboardingFixture>,
+    { quietMs = 100, timeoutMs = 500, mainFrameId = 'main-frame' } = {},
+  ) {
+    const prepare = Reflect.get(stage2Runner, 'prepareRc6PageForPluginInteraction')
+    expect(prepare).toBeTypeOf('function')
+    return prepare(fixture.peer, 'session-1', {
+      mainFrameId,
+      quietMs,
+      timeoutMs,
+      sleep: (milliseconds: number) => fixture.sleep(milliseconds),
+      now: fixture.now,
+    })
+  }
+
+  async function clickMarkerSafely(
+    fixture: ReturnType<typeof onboardingFixture>,
+    marker = 'launcher',
+    { quietMs = 100, timeoutMs = 500 } = {},
+  ) {
+    const click = Reflect.get(stage2Runner, 'clickMarker')
+    expect(click).toBeTypeOf('function')
+    return click(fixture.peer, 'session-1', marker, {
+      mainFrameId: 'main-frame',
+      quietMs,
+      timeoutMs,
+      sleep: (milliseconds: number) => fixture.sleep(milliseconds),
+      now: fixture.now,
+    })
   }
 
   it('parses only a loopback DevToolsActivePort and rejects 3080', () => {
@@ -765,7 +1050,508 @@ describe('Stage 2 browser and listener guards', () => {
     expect(send.mock.calls
       .filter(([method]) => method !== 'Page.navigate')
       .every((call) => call[3] === undefined)).toBe(true)
+    expect(page.frameId).toBe('frame-1')
     await page.disposeNetwork()
+  })
+
+  it('rejects a navigation response without a non-empty main frame id', async () => {
+    const origin = 'http://127.0.0.1:32001'
+    const peer = {
+      send: vi.fn(async (method: string) => {
+        if (method === 'Target.createTarget') return { targetId: 'target-1' }
+        if (method === 'Target.attachToTarget') return { sessionId: 'session-1' }
+        if (method === 'Page.navigate') return { loaderId: 'loader-1' }
+        return {}
+      }),
+      onEvent: vi.fn(() => () => undefined),
+    }
+
+    await expect(createPageSession(
+      peer,
+      origin,
+      { externalAttempts: 0, controlFailed: false },
+      'initial-enabled',
+    )).rejects.toMatchObject({ stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED' })
+  })
+
+  it('dismisses both rc.6 onboarding dialogs in order and waits for each to disappear', async () => {
+    let stage = 0
+    const fixture = onboardingFixture({
+      readAx: () => {
+        if (stage === 0) return axTree(...betaDialog())
+        if (stage === 1) {
+          stage = 2
+          return axTree(...betaDialog())
+        }
+        if (stage === 2) return axTree(...apiDialog())
+        if (stage === 3) {
+          stage = 4
+          return axTree(...apiDialog())
+        }
+        return axTree()
+      },
+      onRelease: (backendDOMNodeId) => {
+        if (backendDOMNodeId === 201 && stage === 0) stage = 1
+        else if (backendDOMNodeId === 202 && stage === 2) stage = 3
+      },
+    })
+
+    await prepareOnboarding(fixture)
+
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'DOM.getBoxModel' && params?.backendNodeId === 201)
+      .length).toBeGreaterThan(1)
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'DOM.getBoxModel' && params?.backendNodeId === 202)
+      .length).toBeGreaterThan(1)
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')
+      .map(([, params]) => params)).toEqual([
+      { type: 'mouseMoved', x: 30, y: 30, button: 'none', buttons: 0, pointerType: 'mouse' },
+      { type: 'mousePressed', x: 30, y: 30, button: 'left', buttons: 1, clickCount: 1, pointerType: 'mouse' },
+      { type: 'mouseReleased', x: 30, y: 30, button: 'left', buttons: 0, clickCount: 1, pointerType: 'mouse' },
+      { type: 'mouseMoved', x: 50, y: 50, button: 'none', buttons: 0, pointerType: 'mouse' },
+      { type: 'mousePressed', x: 50, y: 50, button: 'left', buttons: 1, clickCount: 1, pointerType: 'mouse' },
+      { type: 'mouseReleased', x: 50, y: 50, button: 'left', buttons: 0, clickCount: 1, pointerType: 'mouse' },
+    ])
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Accessibility.getFullAXTree')
+      .every(([, params]) => params?.frameId === 'main-frame')).toBe(true)
+  })
+
+  it('handles a fresh Chrome profile that shows only the API Key dialog', async () => {
+    let dismissed = false
+    const fixture = onboardingFixture({
+      readAx: () => dismissed ? axTree() : axTree(...apiDialog()),
+      onRelease: (backendDOMNodeId) => { if (backendDOMNodeId === 202) dismissed = true },
+    })
+
+    await prepareOnboarding(fixture)
+
+    expect(dismissed).toBe(true)
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(3)
+  })
+
+  it('handles a known onboarding alertdialog with the same exact action boundary', async () => {
+    let dismissed = false
+    const fixture = onboardingFixture({
+      readAx: () => dismissed ? axTree() : axTree(...betaDialog({ role: 'alertdialog' })),
+      onRelease: () => { dismissed = true },
+    })
+
+    await prepareOnboarding(fixture)
+
+    expect(dismissed).toBe(true)
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent' && params?.type === 'mousePressed'))
+      .toHaveLength(1)
+  })
+
+  it('catches and dismisses an onboarding dialog that appears during launcher quiet time', async () => {
+    let dismissed = false
+    const fixture = onboardingFixture({
+      readAx: ({ clock }) => !dismissed && clock >= 50 ? axTree(...apiDialog()) : axTree(),
+      onRelease: (backendDOMNodeId) => { if (backendDOMNodeId === 202) dismissed = true },
+    })
+
+    await prepareOnboarding(fixture)
+
+    expect(dismissed).toBe(true)
+    expect(fixture.clock()).toBeGreaterThanOrEqual(150)
+  })
+
+  it('requires a stable topmost launcher target through the full quiet window when no dialog exists', async () => {
+    const fixture = onboardingFixture({ readAx: () => axTree() })
+
+    await prepareOnboarding(fixture)
+
+    expect(fixture.clock()).toBeGreaterThanOrEqual(100)
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'DOM.getNodeForLocation')).toHaveLength(3)
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
+    expect(fixture.send.mock.calls.some(([method]) => method === 'DOM.querySelectorAll')).toBe(true)
+    expect(fixture.send.mock.calls.some(([method]) => method === 'DOM.querySelector')).toBe(false)
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'DOM.getNodeForLocation')
+      .every(([, params]) => params?.includeUserAgentShadowDOM === false
+        && params?.ignorePointerEventsNone === false)).toBe(true)
+  })
+
+  it.each([
+    [
+      'an ignored known dialog',
+      () => axTree(
+        axNode('beta-dialog', 'dialog', '内测声明', {
+          parentId: 'root', backendDOMNodeId: 200, ignored: true,
+        }),
+        axNode('continue-button', 'button', '继续', {
+          parentId: 'beta-dialog', backendDOMNodeId: 201,
+        }),
+      ),
+    ],
+    [
+      'an ignored action',
+      () => axTree(
+        axNode('beta-dialog', 'dialog', '内测声明', { parentId: 'root', backendDOMNodeId: 200 }),
+        axNode('continue-button', 'button', '继续', {
+          parentId: 'beta-dialog', backendDOMNodeId: 201, ignored: true,
+        }),
+      ),
+    ],
+    [
+      'a disabled action',
+      () => axTree(
+        axNode('beta-dialog', 'dialog', '内测声明', { parentId: 'root', backendDOMNodeId: 200 }),
+        axNode('continue-button', 'button', '继续', {
+          parentId: 'beta-dialog', backendDOMNodeId: 201, disabled: true,
+        }),
+      ),
+    ],
+    [
+      'a detached action ancestry',
+      () => axTree(
+        axNode('beta-dialog', 'dialog', '内测声明', { parentId: 'root', backendDOMNodeId: 200 }),
+        axNode('continue-button', 'button', '继续', {
+          parentId: 'missing-parent', backendDOMNodeId: 201,
+        }),
+      ),
+    ],
+    [
+      'a cyclic action ancestry',
+      () => axTree(
+        axNode('beta-dialog', 'dialog', '内测声明', { parentId: 'root', backendDOMNodeId: 200 }),
+        axNode('cycle-a', 'group', '', { parentId: 'cycle-b', backendDOMNodeId: 230 }),
+        axNode('cycle-b', 'group', '', { parentId: 'cycle-a', backendDOMNodeId: 231 }),
+        axNode('continue-button', 'button', '继续', { parentId: 'cycle-a', backendDOMNodeId: 201 }),
+      ),
+    ],
+  ])('fails before pointer input for %s', async (_label, readAx) => {
+    const fixture = onboardingFixture({ readAx })
+
+    await expect(prepareOnboarding(fixture)).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
+  })
+
+  it('rejects two known dialogs shown at once without clicking either action', async () => {
+    const fixture = onboardingFixture({
+      readAx: () => axTree(...betaDialog(), ...apiDialog()),
+    })
+
+    await expect(prepareOnboarding(fixture)).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
+  })
+
+  it('requires the action nearest modal ancestor to be its exact known dialog', async () => {
+    const fixture = onboardingFixture({
+      readAx: () => axTree(
+        axNode('beta-dialog', 'dialog', '内测声明', { parentId: 'root', backendDOMNodeId: 200 }),
+        axNode('unknown-dialog', 'dialog', '未知提示', { parentId: 'beta-dialog', backendDOMNodeId: 220 }),
+        axNode('continue-button', 'button', '继续', {
+          parentId: 'unknown-dialog', backendDOMNodeId: 201,
+        }),
+      ),
+    })
+
+    await expect(prepareOnboarding(fixture)).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
+  })
+
+  it('accepts a topmost text descendant only when its AX ancestors contain the action and dialog', async () => {
+    let dismissed = false
+    const fixture = onboardingFixture({
+      readAx: () => dismissed ? axTree() : axTree(...betaDialog()),
+      topmost: ({ targetBackendDOMNodeId }) => ({
+        backendNodeId: targetBackendDOMNodeId === 201 ? 301 : (targetBackendDOMNodeId ?? 100),
+        frameId: 'main-frame',
+      }),
+      hitAncestors: ({ backendNodeId, targetBackendDOMNodeId, nodes }) => backendNodeId === 301
+        ? [
+            axNode('continue-text', 'StaticText', '继续', {
+              parentId: 'continue-button', backendDOMNodeId: 301,
+            }),
+            ...nodes.filter((node) => ['continue-button', 'beta-dialog', 'root'].includes(node.nodeId)),
+          ]
+        : [
+            axNode('launcher-ax', 'button', 'AI PM Workbench', {
+              parentId: 'root', backendDOMNodeId: targetBackendDOMNodeId, frameId: 'main-frame',
+            }),
+            axNode('root', 'RootWebArea', 'DeepSeek Harness', {
+              backendDOMNodeId: 1, frameId: 'main-frame',
+            }),
+          ],
+      onRelease: () => { dismissed = true },
+    })
+
+    await prepareOnboarding(fixture)
+
+    expect(fixture.send.mock.calls.some(([method]) => method === 'Accessibility.getAXNodeAndAncestors')).toBe(true)
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent' && params?.type === 'mousePressed'))
+      .toHaveLength(1)
+  })
+
+  it.each([
+    ['an overlay sibling', { backendNodeId: 999, frameId: 'main-frame' }],
+    ['an iframe hit', { backendNodeId: 201, frameId: 'child-frame' }],
+  ])('rejects %s before pointer input', async (_label, hit) => {
+    const fixture = onboardingFixture({
+      readAx: () => axTree(...betaDialog()),
+      topmost: () => hit,
+      hitAncestors: ({ backendNodeId }) => [
+        axNode('overlay-ax', 'group', '', {
+          parentId: 'root', backendDOMNodeId: backendNodeId, frameId: 'main-frame',
+        }),
+        axNode('root', 'RootWebArea', 'DeepSeek Harness', {
+          backendDOMNodeId: 1, frameId: 'main-frame',
+        }),
+      ],
+    })
+
+    await expect(prepareOnboarding(fixture, { timeoutMs: 200 })).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
+  })
+
+  it.each([
+    ['a degenerate quad', [10, 10, 10, 10, 10, 10, 10, 10]],
+    ['an out-of-viewport quad', [1_300, 10, 1_320, 10, 1_320, 30, 1_300, 30]],
+    ['a quad with no integer interior point', [10.1, 10.1, 10.4, 10.1, 10.4, 10.4, 10.1, 10.4]],
+  ])('rejects %s before pointer input', async (_label, content) => {
+    const fixture = onboardingFixture({
+      readAx: () => axTree(...betaDialog()),
+      boxModel: () => content,
+    })
+
+    await expect(prepareOnboarding(fixture)).rejects.toMatchObject({
+      stage2Code: 'STAGE2_DOM_RESULT_INVALID',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
+  })
+
+  it('rechecks AX and topmost state after mouseMoved and never presses through a late modal', async () => {
+    let moved = false
+    const fixture = onboardingFixture({
+      readAx: () => moved
+        ? axTree(
+            axNode('unknown-dialog', 'dialog', '迟到遮挡', { parentId: 'root', backendDOMNodeId: 220 }),
+          )
+        : axTree(...betaDialog()),
+      onMove: () => { moved = true },
+    })
+
+    await expect(prepareOnboarding(fixture)).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(0)
+  })
+
+  it('stops before mousePressed when Page.windowOpen fires after mouseMoved', async () => {
+    let dismissed = false
+    const fixture = onboardingFixture({
+      readAx: () => dismissed ? axTree() : axTree(...apiDialog()),
+      onMove: ({ emit }) => emit('Page.windowOpen', { url: 'about:blank' }),
+      onRelease: () => { dismissed = true },
+    })
+
+    await expect(prepareOnboarding(fixture)).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(0)
+  })
+
+  it('does not retry after a press command fails or a clicked dialog never disappears', async () => {
+    const pressFailure = onboardingFixture({
+      readAx: () => axTree(...apiDialog()),
+      onPress: () => { throw new Error('press failed') },
+    })
+    await expect(prepareOnboarding(pressFailure)).rejects.toThrow('press failed')
+    expect(pressFailure.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(1)
+
+    const neverDisappears = onboardingFixture({ readAx: () => axTree(...apiDialog()) })
+    await expect(prepareOnboarding(neverDisappears, { timeoutMs: 250 })).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(neverDisappears.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(1)
+  })
+
+  it('clicks a unique plugin marker through a topmost icon descendant after a fresh post-move check', async () => {
+    const fixture = onboardingFixture({
+      readAx: () => axTree(),
+      topmost: () => ({ backendNodeId: 301, frameId: 'main-frame' }),
+      hitAncestors: ({ backendNodeId }) => backendNodeId === 301
+        ? [
+            axNode('launcher-icon', 'image', '', {
+              parentId: 'launcher-ax', backendDOMNodeId: 301,
+            }),
+            axNode('launcher-ax', 'button', 'AI PM Workbench', {
+              parentId: 'root', backendDOMNodeId: 100, frameId: 'main-frame',
+            }),
+            axNode('root', 'RootWebArea', 'DeepSeek Harness', {
+              backendDOMNodeId: 1, frameId: 'main-frame',
+            }),
+          ]
+        : [],
+    })
+
+    await clickMarkerSafely(fixture)
+
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')
+      .map(([, params]) => params)).toEqual([
+      { type: 'mouseMoved', x: 10, y: 10, button: 'none', buttons: 0, pointerType: 'mouse' },
+      { type: 'mousePressed', x: 10, y: 10, button: 'left', buttons: 1, clickCount: 1, pointerType: 'mouse' },
+      { type: 'mouseReleased', x: 10, y: 10, button: 'left', buttons: 0, clickCount: 1, pointerType: 'mouse' },
+    ])
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Accessibility.getFullAXTree').length).toBeGreaterThan(2)
+  })
+
+  it('rejects a duplicate plugin marker without pointer input', async () => {
+    const fixture = onboardingFixture({
+      readAx: () => axTree(),
+      markerNodeIds: () => [10, 11],
+    })
+
+    await expect(clickMarkerSafely(fixture)).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
+  })
+
+  it('rejects a plugin target replaced after mouseMoved without sending mousePressed', async () => {
+    let moved = false
+    const fixture = onboardingFixture({
+      readAx: () => axTree(),
+      markerBackendDOMNodeId: () => moved ? 101 : 100,
+      onMove: () => { moved = true },
+    })
+
+    await expect(clickMarkerSafely(fixture)).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(0)
+  })
+
+  it('rejects a modal appearing after plugin-marker mouseMoved without sending mousePressed', async () => {
+    let moved = false
+    const fixture = onboardingFixture({
+      readAx: () => moved
+        ? axTree(axNode('late-dialog', 'dialog', '迟到遮挡', {
+            parentId: 'root', backendDOMNodeId: 220,
+          }))
+        : axTree(),
+      onMove: () => { moved = true },
+    })
+
+    await expect(clickMarkerSafely(fixture)).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(0)
+  })
+
+  it.each([
+    [
+      'duplicate matching dialogs',
+      () => axTree(
+        ...betaDialog({ dialogId: 'beta-1', buttonId: 'continue-1' }),
+        ...betaDialog({ dialogId: 'beta-2', buttonId: 'continue-2', backendDOMNodeId: 203 }),
+      ),
+    ],
+    [
+      'duplicate matching actions',
+      () => axTree(
+        ...betaDialog(),
+        axNode('continue-2', 'button', '继续', { parentId: 'beta-dialog', backendDOMNodeId: 203 }),
+      ),
+    ],
+    [
+      'an action outside its dialog',
+      () => axTree(...betaDialog({ buttonParentId: 'root' })),
+    ],
+    [
+      'an unknown blocking dialog',
+      () => axTree(
+        axNode('unknown-dialog', 'dialog', '未知提示', { parentId: 'root', backendDOMNodeId: 220 }),
+        axNode('unknown-action', 'button', '知道了', { parentId: 'unknown-dialog', backendDOMNodeId: 221 }),
+      ),
+    ],
+  ])('fails closed for %s in the accessibility tree', async (_label, readAx) => {
+    const fixture = onboardingFixture({ readAx })
+
+    await expect(prepareOnboarding(fixture)).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+      stage2Outcome: 'INCONCLUSIVE',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
+  })
+
+  it('fails closed when an unknown topmost node keeps obscuring the launcher', async () => {
+    const fixture = onboardingFixture({
+      readAx: () => axTree(),
+      topmost: () => ({ backendNodeId: 999, frameId: 'main-frame' }),
+    })
+
+    await expect(prepareOnboarding(fixture, { quietMs: 100, timeoutMs: 200 })).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+      stage2Outcome: 'INCONCLUSIVE',
+    })
+    expect(fixture.clock()).toBe(200)
+  })
+
+  it('uses only the allowed accessibility, DOM-read, and real pointer CDP methods', async () => {
+    let dismissed = false
+    const fixture = onboardingFixture({
+      readAx: () => dismissed ? axTree() : axTree(...apiDialog()),
+      onRelease: (backendDOMNodeId) => { if (backendDOMNodeId === 202) dismissed = true },
+    })
+
+    await prepareOnboarding(fixture)
+
+    const allowedMethods = new Set([
+      'Accessibility.getFullAXTree',
+      'Accessibility.getAXNodeAndAncestors',
+      'DOM.getDocument',
+      'DOM.querySelectorAll',
+      'DOM.describeNode',
+      'DOM.scrollIntoViewIfNeeded',
+      'DOM.getBoxModel',
+      'DOM.getNodeForLocation',
+      'Page.getLayoutMetrics',
+      'Input.dispatchMouseEvent',
+    ])
+    const methods = fixture.send.mock.calls.map(([method]) => method)
+    expect(methods.every((method) => allowedMethods.has(method))).toBe(true)
+    expect(methods).not.toContain('DOM.querySelector')
+    expect(methods).not.toContain('Runtime.evaluate')
+    expect(methods).not.toContain('DOM.performSearch')
   })
 
   function fakePageNetworkPeer() {
@@ -905,6 +1691,66 @@ describe('Stage 2 browser and listener guards', () => {
     })
     expect(sleepCount).toBeGreaterThanOrEqual(2)
     expect(state.externalAttempts).toBe(1)
+  })
+
+  it('counts an external Page.windowOpen as a page-target scope escape', async () => {
+    const origin = 'http://127.0.0.1:32001'
+    const { peer, emit } = fakePageNetworkPeer()
+    const state = { externalAttempts: 0, controlFailed: false }
+    let sleepCount = 0
+    const gate = createPageNetworkGate(peer, 'page-session', origin, state, {
+      quietMs: 1,
+      timeoutMs: 50,
+      sleep: vi.fn(async () => {
+        sleepCount += 1
+        if (sleepCount === 1) {
+          emit('Page.windowOpen', {
+            url: 'https://example.invalid/escape',
+            windowName: '',
+            windowFeatures: [],
+            userGesture: true,
+          })
+        }
+      }),
+    })
+    gate.setMainLoader('main-loader')
+    emitSuccessfulMain(emit, origin)
+    emitSuccessfulPluginClient(emit, origin)
+
+    await expect(gate.settle('initial-enabled')).rejects.toMatchObject({
+      stage2Code: 'STAGE2_EXTERNAL_NETWORK_ATTEMPT',
+      stage2Outcome: 'FAIL',
+    })
+    expect(state.externalAttempts).toBe(1)
+    expect(sleepCount).toBeGreaterThanOrEqual(2)
+  })
+
+  it('fails closed for an allowed-url Page.windowOpen that escapes the attached page target', async () => {
+    const origin = 'http://127.0.0.1:32001'
+    const { peer, emit } = fakePageNetworkPeer()
+    const state = { externalAttempts: 0, controlFailed: false }
+    let emitted = false
+    const gate = createPageNetworkGate(peer, 'page-session', origin, state, {
+      quietMs: 1,
+      timeoutMs: 50,
+      sleep: vi.fn(async () => {
+        if (!emitted) {
+          emitted = true
+          emit('Page.windowOpen', {
+            url: 'about:blank', windowName: '', windowFeatures: [], userGesture: true,
+          })
+        }
+      }),
+    })
+    gate.setMainLoader('main-loader')
+    emitSuccessfulMain(emit, origin)
+    emitSuccessfulPluginClient(emit, origin)
+
+    await expect(gate.settle('initial-enabled')).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+      stage2Outcome: 'INCONCLUSIVE',
+    })
+    expect(state.externalAttempts).toBe(0)
   })
 
   it('drains Fetch controls before requiring a fresh event-stable quiet window', async () => {
@@ -1304,10 +2150,14 @@ describe('Stage 2 five-phase state machine', () => {
 
   it('records attached page-target network attempts before returning the matching FAIL', async () => {
     const { adapters } = fakeAdapters()
-    adapters.browser.observePhase.mockImplementationOnce(async () => ({
-      ...expectedObservation('initial-enabled'),
-      externalNetworkAttempts: 1,
-    }))
+    adapters.browser.observePhase.mockImplementationOnce(async ({ networkState }) => {
+      if (!networkState) throw new Error('missing shared network state')
+      networkState.externalAttempts = 1
+      return {
+        ...expectedObservation('initial-enabled'),
+        externalNetworkAttempts: 1,
+      }
+    })
 
     const result = await executeStage2Smoke({ inputs, adapters })
 
@@ -1319,6 +2169,78 @@ describe('Stage 2 five-phase state machine', () => {
       ...result,
       network: { scope: 'browser-page-target', externalAttempts: 0 },
     })).toThrow(/STAGE2_RESULT_INVALID/)
+  })
+
+  it('retains a page-target external attempt when browser observation rejects and upgrades a weaker error', async () => {
+    const { adapters, events } = fakeAdapters()
+    adapters.browser.observePhase.mockImplementationOnce(async ({ networkState }) => {
+      if (!networkState) throw new Error('missing shared network state')
+      networkState.externalAttempts = 1
+      throw new Stage2RunnerError('STAGE2_PAGE_NAVIGATION_FAILED', 'INCONCLUSIVE')
+    })
+
+    const result = await executeStage2Smoke({ inputs, adapters })
+
+    expect(result.outcome).toBe('FAIL')
+    expect(result.failure).toEqual({ code: 'STAGE2_EXTERNAL_NETWORK_ATTEMPT' })
+    expect(result.network).toEqual({ scope: 'browser-page-target', externalAttempts: 1 })
+    expect(result.phases).toHaveLength(0)
+    expect(events).toContain('runtime.stop:initial-enabled')
+    expect(events.at(-1)).toBe('workspace.cleanup')
+  })
+
+  it('retains a page-target external attempt while preserving a browser SAFETY_ABORT', async () => {
+    const { adapters } = fakeAdapters()
+    adapters.browser.observePhase.mockImplementationOnce(async ({ networkState }) => {
+      if (!networkState) throw new Error('missing shared network state')
+      networkState.externalAttempts = 1
+      throw new Stage2RunnerError('STAGE2_CDP_PROTOCOL_FAILED', 'SAFETY_ABORT')
+    })
+
+    const result = await executeStage2Smoke({ inputs, adapters })
+
+    expect(result.outcome).toBe('SAFETY_ABORT')
+    expect(result.failure).toEqual({ code: 'STAGE2_CDP_PROTOCOL_FAILED' })
+    expect(result.network).toEqual({ scope: 'browser-page-target', externalAttempts: 1 })
+  })
+
+  it('retains external attempts when runtime shutdown raises the higher-priority SAFETY_ABORT', async () => {
+    const { adapters } = fakeAdapters()
+    adapters.runtime.start.mockResolvedValueOnce({
+      port: 32_001,
+      origin: 'http://127.0.0.1:32001',
+      spawnReceiptSha256: HASH_B,
+      listenerWitnessSha256: HASH_C,
+      loopback: true,
+      stop: vi.fn(async () => { throw new Error('uncertain stop') }),
+    })
+    adapters.browser.observePhase.mockImplementationOnce(async ({ networkState }) => {
+      if (!networkState) throw new Error('missing shared network state')
+      networkState.externalAttempts = 1
+      throw new Stage2RunnerError('STAGE2_PAGE_NAVIGATION_FAILED', 'INCONCLUSIVE')
+    })
+
+    const result = await executeStage2Smoke({ inputs, adapters })
+
+    expect(result.outcome).toBe('SAFETY_ABORT')
+    expect(result.failure).toEqual({ code: 'STAGE2_RUNTIME_STOP_FAILED' })
+    expect(result.network).toEqual({ scope: 'browser-page-target', externalAttempts: 1 })
+    expect(result.cleanup).toEqual({ renamed: false, revalidated: false, removed: false })
+  })
+
+  it('rejects an observation whose returned network count contradicts the shared gate state', async () => {
+    const { adapters } = fakeAdapters()
+    adapters.browser.observePhase.mockImplementationOnce(async ({ networkState }) => {
+      if (!networkState) throw new Error('missing shared network state')
+      networkState.externalAttempts = 1
+      return expectedObservation('initial-enabled')
+    })
+
+    const result = await executeStage2Smoke({ inputs, adapters })
+
+    expect(result.outcome).toBe('SAFETY_ABORT')
+    expect(result.failure).toEqual({ code: 'STAGE2_BROWSER_WITNESS_INVALID' })
+    expect(result.network).toEqual({ scope: 'browser-page-target', externalAttempts: 1 })
   })
 
   it('classifies a missing offline dependency without silently retrying online', async () => {

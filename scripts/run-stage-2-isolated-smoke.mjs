@@ -50,6 +50,11 @@ const COMMAND_TIMEOUT_MS = 60_000
 const START_TIMEOUT_MS = 30_000
 const CDP_TIMEOUT_MS = 10_000
 const QUIET_PERIOD_MS = 750
+const ONBOARDING_POLL_MS = 50
+const RC6_ONBOARDING_DIALOGS = Object.freeze([
+  Object.freeze({ dialogName: '内测声明', actionName: '继续' }),
+  Object.freeze({ dialogName: '添加一个 API Key 开始使用', actionName: '稍后配置' }),
+])
 const PLUGIN_MARKERS = Object.freeze({
   launcher: '[data-dsh-pm-workbench="launcher"]',
   overlay: '[data-dsh-pm-workbench="overlay"]',
@@ -67,6 +72,11 @@ const PHASE_EXPECTATIONS = Object.freeze({
 const OUTCOMES = new Set(['PASS', 'FAIL', 'INCONCLUSIVE', 'NEEDS_NETWORK_PERMISSION', 'SAFETY_ABORT'])
 
 const execFileAsync = promisify(nodeExecFile)
+
+/** @param {number} milliseconds */
+async function readinessDelay(milliseconds) {
+  await delay(milliseconds)
+}
 
 export class Stage2RunnerError extends Error {
   constructor(code, outcome = 'INCONCLUSIVE') {
@@ -332,18 +342,39 @@ async function observeRuntimePhase({ phase, run, inputs, adapters, result, inven
       || runtime.origin !== `http://127.0.0.1:${String(runtime.port)}`
     ) fail('STAGE2_RUNTIME_WITNESS_INVALID', 'SAFETY_ABORT')
 
-    const observation = await adapters.browser.observePhase({
-      phase,
-      chrome: inputs.chrome,
-      origin: runtime.origin,
-      profilePath: run.browserProfile(phase),
-      run,
-    })
+    const networkState = Object.seal({ externalAttempts: 0, controlFailed: false })
+    let observation
+    let observationError
+    try {
+      observation = await adapters.browser.observePhase({
+        phase,
+        chrome: inputs.chrome,
+        origin: runtime.origin,
+        profilePath: run.browserProfile(phase),
+        run,
+        networkState,
+      })
+    } catch (error) {
+      observationError = error
+    }
+    if (
+      !Number.isSafeInteger(networkState.externalAttempts)
+      || networkState.externalAttempts < 0
+      || typeof networkState.controlFailed !== 'boolean'
+      || !Number.isSafeInteger(result.network.externalAttempts + networkState.externalAttempts)
+    ) fail('STAGE2_BROWSER_WITNESS_INVALID', 'SAFETY_ABORT')
+    result.network.externalAttempts += networkState.externalAttempts
+    if (observationError) {
+      if (networkState.externalAttempts > 0 && safeOutcome(observationError) !== 'SAFETY_ABORT') {
+        fail('STAGE2_EXTERNAL_NETWORK_ATTEMPT', 'FAIL')
+      }
+      throw observationError
+    }
     if (
       !HASH_PATTERN.test(observation?.chromeSpawnReceiptSha256 ?? '')
       || !HASH_PATTERN.test(observation?.chromeListenerWitnessSha256 ?? '')
+      || observation?.externalNetworkAttempts !== networkState.externalAttempts
     ) fail('STAGE2_BROWSER_WITNESS_INVALID', 'SAFETY_ABORT')
-    result.network.externalAttempts += observation.externalNetworkAttempts
     validateObservation(phase, observation)
 
     await runtime.stop()
@@ -1991,11 +2022,18 @@ function allowedPageUrl(rawUrl, origin) {
 async function queryMarker(peer, sessionId, marker) {
   if (!Object.hasOwn(PLUGIN_MARKERS, marker)) fail('STAGE2_MARKER_INVALID', 'SAFETY_ABORT')
   const document = await peer.send('DOM.getDocument', { depth: -1, pierce: true }, sessionId)
-  const queried = await peer.send('DOM.querySelector', {
-    nodeId: document.root.nodeId,
+  const rootNodeId = document?.root?.nodeId
+  if (!Number.isSafeInteger(rootNodeId) || rootNodeId < 1) fail('STAGE2_DOM_RESULT_INVALID')
+  const queried = await peer.send('DOM.querySelectorAll', {
+    nodeId: rootNodeId,
     selector: PLUGIN_MARKERS[marker],
   }, sessionId)
-  return queried.nodeId ?? 0
+  if (
+    !Array.isArray(queried?.nodeIds)
+    || queried.nodeIds.some((nodeId) => !Number.isSafeInteger(nodeId) || nodeId < 1)
+  ) fail('STAGE2_DOM_RESULT_INVALID')
+  if (queried.nodeIds.length > 1) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+  return queried.nodeIds[0] ?? 0
 }
 
 async function waitForMarker(peer, sessionId, marker, { present = true, milliseconds = CDP_TIMEOUT_MS } = {}) {
@@ -2046,21 +2084,541 @@ async function waitForEnabledMarker(peer, sessionId, marker) {
   fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
 }
 
-async function clickMarker(peer, sessionId, marker, { requireEnabled = false } = {}) {
-  const nodeId = requireEnabled
-    ? await waitForEnabledMarker(peer, sessionId, marker)
-    : await waitForMarker(peer, sessionId, marker)
-  await peer.send('DOM.scrollIntoViewIfNeeded', { nodeId }, sessionId)
-  const model = await peer.send('DOM.getBoxModel', { nodeId }, sessionId)
-  const quad = model?.model?.content
+function axString(node, property) {
+  return typeof node?.[property]?.value === 'string' ? node[property].value : undefined
+}
+
+function positiveBackendNodeId(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined
+}
+
+function axPropertyIsTrue(node, name) {
+  return Array.isArray(node?.properties) && node.properties.some((property) =>
+    property?.name === name && property?.value?.value === true,
+  )
+}
+
+function inspectRc6OnboardingTree(response, mainFrameId) {
+  if (!Array.isArray(response?.nodes)) fail('STAGE2_CDP_PROTOCOL_FAILED')
+  const nodeById = new Map()
+  for (const node of response.nodes) {
+    if (
+      !isPlainObject(node)
+      || typeof node.nodeId !== 'string'
+      || node.nodeId.length === 0
+      || typeof node.ignored !== 'boolean'
+      || (node.parentId !== undefined && typeof node.parentId !== 'string')
+      || (node.frameId !== undefined && typeof node.frameId !== 'string')
+      || (node.backendDOMNodeId !== undefined && positiveBackendNodeId(node.backendDOMNodeId) === undefined)
+    ) {
+      fail('STAGE2_CDP_PROTOCOL_FAILED')
+    }
+    if (nodeById.has(node.nodeId)) fail('STAGE2_CDP_PROTOCOL_FAILED')
+    nodeById.set(node.nodeId, node)
+  }
+  if (!response.nodes.some((node) => node.frameId === mainFrameId)) fail('STAGE2_CDP_PROTOCOL_FAILED')
+
+  const modalNodes = response.nodes.filter((node) => {
+    const role = axString(node, 'role')
+    return role === 'dialog' || role === 'alertdialog'
+  })
+  if (modalNodes.length > 1) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+
+  const modal = modalNodes[0]
+  if (!modal) {
+    const strayKnownAction = response.nodes.some((node) =>
+      axString(node, 'role') === 'button'
+      && RC6_ONBOARDING_DIALOGS.some((entry) => entry.actionName === axString(node, 'name')),
+    )
+    if (strayKnownAction) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+    return Object.freeze({ dialog: undefined, nodeById, nodes: response.nodes, modalSignature: 'none' })
+  }
+
+  const dialogIndex = RC6_ONBOARDING_DIALOGS.findIndex((entry) =>
+    entry.dialogName === axString(modal, 'name'),
+  )
+  const dialogBackendNodeId = positiveBackendNodeId(modal.backendDOMNodeId)
+  if (
+    dialogIndex < 0
+    || modal.ignored
+    || dialogBackendNodeId === undefined
+    || (modal.frameId !== undefined && modal.frameId !== mainFrameId)
+  ) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+
+  const expected = RC6_ONBOARDING_DIALOGS[dialogIndex]
+  const actions = response.nodes.filter((node) =>
+    axString(node, 'role') === 'button' && axString(node, 'name') === expected.actionName,
+  )
+  if (actions.length !== 1) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+  const action = actions[0]
+  const actionBackendNodeId = positiveBackendNodeId(action.backendDOMNodeId)
+  if (
+    action.ignored
+    || axPropertyIsTrue(action, 'disabled')
+    || actionBackendNodeId === undefined
+    || (action.frameId !== undefined && action.frameId !== mainFrameId)
+  ) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+
+  const seen = new Set([action.nodeId])
+  let parentId = action.parentId
+  let nearestModal
+  let terminal
+  while (parentId !== undefined) {
+    if (seen.has(parentId)) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+    seen.add(parentId)
+    const parent = nodeById.get(parentId)
+    if (!parent) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+    terminal = parent
+    const role = axString(parent, 'role')
+    if (nearestModal === undefined && (role === 'dialog' || role === 'alertdialog')) nearestModal = parent
+    parentId = parent.parentId
+  }
+  if (nearestModal !== modal || axString(terminal, 'role') !== 'RootWebArea') {
+    fail('STAGE2_PAGE_NAVIGATION_FAILED')
+  }
+
+  return Object.freeze({
+    dialog: Object.freeze({
+      index: dialogIndex,
+      node: modal,
+      backendNodeId: dialogBackendNodeId,
+      action,
+      actionBackendNodeId,
+    }),
+    nodeById,
+    nodes: response.nodes,
+    modalSignature: `${dialogIndex}:${modal.nodeId}:${dialogBackendNodeId}:${action.nodeId}:${actionBackendNodeId}`,
+  })
+}
+
+function pointInsideConvexQuad(x, y, quad) {
+  let sign = 0
+  for (let index = 0; index < 4; index += 1) {
+    const next = (index + 1) % 4
+    const cross = (quad[next * 2] - quad[index * 2]) * (y - quad[index * 2 + 1])
+      - (quad[next * 2 + 1] - quad[index * 2 + 1]) * (x - quad[index * 2])
+    if (!Number.isFinite(cross) || Math.abs(cross) <= Number.EPSILON) return false
+    const currentSign = Math.sign(cross)
+    if (sign !== 0 && sign !== currentSign) return false
+    sign = currentSign
+  }
+  return sign !== 0
+}
+
+function safeBoxModelPoint(response, metrics) {
+  const quad = response?.model?.content
   if (!Array.isArray(quad) || quad.length !== 8 || quad.some((value) => typeof value !== 'number' || !Number.isFinite(value))) {
     fail('STAGE2_DOM_RESULT_INVALID')
   }
-  const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4
-  const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4
-  await peer.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }, sessionId)
-  await peer.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 }, sessionId)
-  await peer.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 }, sessionId)
+  const viewport = metrics?.cssVisualViewport
+  const width = viewport?.clientWidth
+  const height = viewport?.clientHeight
+  if (
+    typeof width !== 'number'
+    || !Number.isFinite(width)
+    || width <= 0
+    || typeof height !== 'number'
+    || !Number.isFinite(height)
+    || height <= 0
+  ) fail('STAGE2_DOM_RESULT_INVALID')
+
+  let twiceArea = 0
+  for (let index = 0; index < 4; index += 1) {
+    const next = (index + 1) % 4
+    twiceArea += quad[index * 2] * quad[next * 2 + 1] - quad[next * 2] * quad[index * 2 + 1]
+  }
+  if (!Number.isFinite(twiceArea) || Math.abs(twiceArea) <= Number.EPSILON) {
+    fail('STAGE2_DOM_RESULT_INVALID')
+  }
+
+  const centerX = (quad[0] + quad[2] + quad[4] + quad[6]) / 4
+  const centerY = (quad[1] + quad[3] + quad[5] + quad[7]) / 4
+  const originX = Math.round(centerX)
+  const originY = Math.round(centerY)
+  for (let radius = 0; radius <= 2; radius += 1) {
+    for (let offsetY = -radius; offsetY <= radius; offsetY += 1) {
+      for (let offsetX = -radius; offsetX <= radius; offsetX += 1) {
+        const x = originX + offsetX
+        const y = originY + offsetY
+        if (
+          x >= 0
+          && x < width
+          && y >= 0
+          && y < height
+          && pointInsideConvexQuad(x, y, quad)
+        ) {
+          return Object.freeze({ x, y, geometrySignature: `${quad.join(',')}@${width}x${height}` })
+        }
+      }
+    }
+  }
+  fail('STAGE2_DOM_RESULT_INVALID')
+}
+
+function createReadinessClock({ quietMs, timeoutMs, sleep, now }) {
+  if (
+    !Number.isSafeInteger(quietMs)
+    || quietMs < 1
+    || !Number.isSafeInteger(timeoutMs)
+    || timeoutMs < quietMs
+    || timeoutMs > COMMAND_TIMEOUT_MS
+    || typeof sleep !== 'function'
+    || typeof now !== 'function'
+  ) fail('STAGE2_CDP_PROTOCOL_FAILED')
+
+  let lastNow
+  const current = () => {
+    const value = now()
+    if (!Number.isFinite(value) || (lastNow !== undefined && value < lastNow)) {
+      fail('STAGE2_CDP_PROTOCOL_FAILED')
+    }
+    lastNow = value
+    return value
+  }
+  const deadline = current() + timeoutMs
+  if (!Number.isFinite(deadline)) fail('STAGE2_CDP_PROTOCOL_FAILED')
+  return Object.freeze({
+    quietMs,
+    current,
+    assertBeforeDeadline() {
+      if (current() >= deadline) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+    },
+    async pause() {
+      const before = current()
+      const remaining = deadline - before
+      if (remaining <= 0) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+      await sleep(Math.min(ONBOARDING_POLL_MS, remaining))
+      if (current() <= before) fail('STAGE2_CDP_PROTOCOL_FAILED')
+    },
+  })
+}
+
+export function createPageWindowOpenGuard(peer, sessionId) {
+  if (typeof peer?.onEvent !== 'function' || typeof sessionId !== 'string' || sessionId.length === 0) {
+    fail('STAGE2_CDP_PROTOCOL_FAILED')
+  }
+  let opened = false
+  let disposed = false
+  const unsubscribe = peer.onEvent((event) => {
+    if (!disposed && event?.sessionId === sessionId && event?.method === 'Page.windowOpen') opened = true
+  })
+  if (typeof unsubscribe !== 'function') fail('STAGE2_CDP_PROTOCOL_FAILED')
+  return Object.freeze({
+    assertSafe() {
+      if (opened) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+    },
+    dispose() {
+      if (disposed) return
+      disposed = true
+      unsubscribe()
+    },
+  })
+}
+
+async function readOnboardingState(peer, sessionId, mainFrameId) {
+  return inspectRc6OnboardingTree(
+    await peer.send('Accessibility.getFullAXTree', { frameId: mainFrameId }, sessionId),
+    mainFrameId,
+  )
+}
+
+function validateHitAxChain(response, targetBackendNodeId, dialogBackendNodeId, mainFrameId) {
+  if (!Array.isArray(response?.nodes) || response.nodes.length === 0) fail('STAGE2_CDP_PROTOCOL_FAILED')
+  const frameIds = []
+  let targetMatches = 0
+  let dialogMatches = 0
+  for (const node of response.nodes) {
+    if (!isPlainObject(node)) fail('STAGE2_CDP_PROTOCOL_FAILED')
+    if (node.frameId !== undefined) {
+      if (typeof node.frameId !== 'string') fail('STAGE2_CDP_PROTOCOL_FAILED')
+      frameIds.push(node.frameId)
+    }
+    if (node.backendDOMNodeId === targetBackendNodeId) targetMatches += 1
+    if (dialogBackendNodeId !== undefined && node.backendDOMNodeId === dialogBackendNodeId) dialogMatches += 1
+  }
+  if (
+    frameIds.length === 0
+    || frameIds.some((frameId) => frameId !== mainFrameId)
+    || targetMatches !== 1
+    || (dialogBackendNodeId !== undefined && dialogMatches !== 1)
+  ) return false
+  return true
+}
+
+async function captureReadyTarget(peer, sessionId, mainFrameId, onboarding, {
+  marker,
+  requireEnabled = false,
+} = {}) {
+  const dialog = onboarding.dialog
+  let nodeId
+  let targetBackendNodeId
+  let dialogBackendNodeId
+  let kind
+  let dialogIndex
+
+  if (dialog) {
+    kind = 'dialog'
+    dialogIndex = dialog.index
+    targetBackendNodeId = dialog.actionBackendNodeId
+    dialogBackendNodeId = dialog.backendNodeId
+  } else {
+    if (typeof marker !== 'string') fail('STAGE2_CDP_PROTOCOL_FAILED')
+    kind = 'marker'
+    nodeId = await queryMarker(peer, sessionId, marker)
+    if (nodeId === 0) return undefined
+    if (requireEnabled) {
+      const attributes = await peer.send('DOM.getAttributes', { nodeId }, sessionId)
+      if (attributeMap(attributes?.attributes).has('disabled')) return undefined
+    }
+    const described = await peer.send('DOM.describeNode', { nodeId }, sessionId)
+    if (described?.node?.nodeId !== nodeId) fail('STAGE2_DOM_RESULT_INVALID')
+    targetBackendNodeId = positiveBackendNodeId(described?.node?.backendNodeId)
+    if (targetBackendNodeId === undefined) fail('STAGE2_DOM_RESULT_INVALID')
+  }
+
+  await peer.send('DOM.scrollIntoViewIfNeeded', { backendNodeId: targetBackendNodeId }, sessionId)
+  const [box, metrics] = await Promise.all([
+    peer.send('DOM.getBoxModel', { backendNodeId: targetBackendNodeId }, sessionId),
+    peer.send('Page.getLayoutMetrics', {}, sessionId),
+  ])
+  const point = safeBoxModelPoint(box, metrics)
+  const hit = await peer.send('DOM.getNodeForLocation', {
+    x: point.x,
+    y: point.y,
+    includeUserAgentShadowDOM: false,
+    ignorePointerEventsNone: false,
+  }, sessionId)
+  const hitBackendNodeId = positiveBackendNodeId(hit?.backendNodeId)
+  if (hitBackendNodeId === undefined) fail('STAGE2_DOM_RESULT_INVALID')
+  if (hit?.frameId !== mainFrameId) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+  const hitAx = await peer.send('Accessibility.getAXNodeAndAncestors', {
+    backendNodeId: hitBackendNodeId,
+  }, sessionId)
+  if (!validateHitAxChain(hitAx, targetBackendNodeId, dialogBackendNodeId, mainFrameId)) return undefined
+
+  return Object.freeze({
+    kind,
+    dialogIndex,
+    dialogBackendNodeId,
+    targetBackendNodeId,
+    point: Object.freeze({ x: point.x, y: point.y }),
+    signature: [
+      onboarding.modalSignature,
+      kind,
+      dialogIndex ?? '',
+      nodeId ?? '',
+      targetBackendNodeId,
+      dialogBackendNodeId ?? '',
+      point.geometrySignature,
+      hitBackendNodeId,
+      mainFrameId,
+    ].join('|'),
+  })
+}
+
+async function dispatchVerifiedPointerClick(peer, sessionId, guard, snapshot, recapture) {
+  guard.assertSafe()
+  await peer.send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    ...snapshot.point,
+    button: 'none',
+    buttons: 0,
+    pointerType: 'mouse',
+  }, sessionId)
+  guard.assertSafe()
+  const fresh = await recapture()
+  guard.assertSafe()
+  if (!fresh || fresh.signature !== snapshot.signature) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+
+  await peer.send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    ...snapshot.point,
+    button: 'left',
+    buttons: 1,
+    clickCount: 1,
+    pointerType: 'mouse',
+  }, sessionId)
+  guard.assertSafe()
+  await peer.send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    ...snapshot.point,
+    button: 'left',
+    buttons: 0,
+    clickCount: 1,
+    pointerType: 'mouse',
+  }, sessionId)
+  guard.assertSafe()
+}
+
+/**
+ * @param {any} peer
+ * @param {string} sessionId
+ * @param {{
+ *   mainFrameId: string,
+ *   windowGuard?: { assertSafe: () => void, dispose: () => void },
+ *   quietMs?: number,
+ *   timeoutMs?: number,
+ *   sleep?: (milliseconds: number) => Promise<unknown>,
+ *   now?: () => number,
+ * }} options
+ */
+export async function prepareRc6PageForPluginInteraction(peer, sessionId, {
+  mainFrameId,
+  windowGuard,
+  quietMs = QUIET_PERIOD_MS,
+  timeoutMs = START_TIMEOUT_MS,
+  sleep = readinessDelay,
+  now = Date.now,
+} = {}) {
+  if (
+    typeof peer?.send !== 'function'
+    || typeof peer?.onEvent !== 'function'
+    || typeof sessionId !== 'string'
+    || sessionId.length === 0
+    || typeof mainFrameId !== 'string'
+    || mainFrameId.length === 0
+  ) fail('STAGE2_CDP_PROTOCOL_FAILED')
+
+  const clock = createReadinessClock({ quietMs, timeoutMs, sleep, now })
+  const ownGuard = windowGuard === undefined
+  const guard = windowGuard ?? createPageWindowOpenGuard(peer, sessionId)
+  if (typeof guard?.assertSafe !== 'function' || typeof guard?.dispose !== 'function') {
+    fail('STAGE2_CDP_PROTOCOL_FAILED')
+  }
+  let waitingForDialog
+  let highestHandledDialog = -1
+  let stableSignature
+  let stableSince
+
+  try {
+    while (true) {
+      guard.assertSafe()
+      clock.assertBeforeDeadline()
+      const onboarding = await readOnboardingState(peer, sessionId, mainFrameId)
+      guard.assertSafe()
+
+      if (waitingForDialog !== undefined) {
+        if (onboarding.dialog?.index === waitingForDialog.index) {
+          if (onboarding.dialog.backendNodeId !== waitingForDialog.backendNodeId) {
+            fail('STAGE2_PAGE_NAVIGATION_FAILED')
+          }
+          stableSignature = undefined
+          stableSince = undefined
+          await clock.pause()
+          continue
+        }
+        waitingForDialog = undefined
+      }
+
+      if (onboarding.dialog && onboarding.dialog.index <= highestHandledDialog) {
+        fail('STAGE2_PAGE_NAVIGATION_FAILED')
+      }
+
+      const snapshot = await captureReadyTarget(peer, sessionId, mainFrameId, onboarding, {
+        marker: 'launcher',
+      })
+      guard.assertSafe()
+      const observedAt = clock.current()
+      if (!snapshot) {
+        stableSignature = undefined
+        stableSince = undefined
+      } else if (snapshot.signature !== stableSignature) {
+        stableSignature = snapshot.signature
+        stableSince = observedAt
+      } else if (observedAt - stableSince >= clock.quietMs) {
+        if (snapshot.kind === 'marker') return
+        await dispatchVerifiedPointerClick(peer, sessionId, guard, snapshot, async () => {
+          const freshOnboarding = await readOnboardingState(peer, sessionId, mainFrameId)
+          if (freshOnboarding.dialog?.index !== snapshot.dialogIndex) return undefined
+          return captureReadyTarget(peer, sessionId, mainFrameId, freshOnboarding, { marker: 'launcher' })
+        })
+        highestHandledDialog = snapshot.dialogIndex
+        waitingForDialog = Object.freeze({
+          index: snapshot.dialogIndex,
+          backendNodeId: snapshot.dialogBackendNodeId,
+        })
+        stableSignature = undefined
+        stableSince = undefined
+        continue
+      }
+      await clock.pause()
+    }
+  } finally {
+    if (ownGuard) guard.dispose()
+  }
+}
+
+/**
+ * @param {any} peer
+ * @param {string} sessionId
+ * @param {string} marker
+ * @param {{
+ *   requireEnabled?: boolean,
+ *   mainFrameId: string,
+ *   windowGuard?: { assertSafe: () => void, dispose: () => void },
+ *   quietMs?: number,
+ *   timeoutMs?: number,
+ *   sleep?: (milliseconds: number) => Promise<unknown>,
+ *   now?: () => number,
+ * }} options
+ */
+export async function clickMarker(peer, sessionId, marker, {
+  requireEnabled = false,
+  mainFrameId,
+  windowGuard,
+  quietMs = QUIET_PERIOD_MS,
+  timeoutMs = CDP_TIMEOUT_MS,
+  sleep = readinessDelay,
+  now = Date.now,
+} = {}) {
+  if (
+    typeof peer?.send !== 'function'
+    || typeof peer?.onEvent !== 'function'
+    || typeof sessionId !== 'string'
+    || sessionId.length === 0
+    || typeof mainFrameId !== 'string'
+    || mainFrameId.length === 0
+    || !Object.hasOwn(PLUGIN_MARKERS, marker)
+  ) fail('STAGE2_CDP_PROTOCOL_FAILED')
+  const clock = createReadinessClock({ quietMs, timeoutMs, sleep, now })
+  const ownGuard = windowGuard === undefined
+  const guard = windowGuard ?? createPageWindowOpenGuard(peer, sessionId)
+  let stableSignature
+  let stableSince
+  try {
+    while (true) {
+      guard.assertSafe()
+      clock.assertBeforeDeadline()
+      const onboarding = await readOnboardingState(peer, sessionId, mainFrameId)
+      if (onboarding.dialog) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+      const snapshot = await captureReadyTarget(peer, sessionId, mainFrameId, onboarding, {
+        marker,
+        requireEnabled,
+      })
+      guard.assertSafe()
+      const observedAt = clock.current()
+      if (!snapshot) {
+        stableSignature = undefined
+        stableSince = undefined
+      } else if (snapshot.signature !== stableSignature) {
+        stableSignature = snapshot.signature
+        stableSince = observedAt
+      } else if (observedAt - stableSince >= clock.quietMs) {
+        await dispatchVerifiedPointerClick(peer, sessionId, guard, snapshot, async () => {
+          const freshOnboarding = await readOnboardingState(peer, sessionId, mainFrameId)
+          if (freshOnboarding.dialog) return undefined
+          return captureReadyTarget(peer, sessionId, mainFrameId, freshOnboarding, {
+            marker,
+            requireEnabled,
+          })
+        })
+        return
+      }
+      await clock.pause()
+    }
+  } finally {
+    if (ownGuard) guard.dispose()
+  }
 }
 
 async function waitForLauncherFocus(peer, sessionId) {
@@ -2087,8 +2645,9 @@ async function waitForLauncherFocus(peer, sessionId) {
   return false
 }
 
-async function observeMarkers(peer, sessionId, phase) {
+async function observeMarkers(peer, sessionId, mainFrameId, windowGuard, phase) {
   if (phase === 'disabled' || phase === 'removed') {
+    windowGuard.assertSafe()
     await delay(QUIET_PERIOD_MS)
     for (const marker of Object.keys(PLUGIN_MARKERS)) {
       if (await queryMarker(peer, sessionId, marker) !== 0) fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
@@ -2097,23 +2656,26 @@ async function observeMarkers(peer, sessionId, phase) {
     for (const marker of Object.keys(PLUGIN_MARKERS)) {
       if (await queryMarker(peer, sessionId, marker) !== 0) fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
     }
+    windowGuard.assertSafe()
     return { markerState: 'absent', counters: [], focusRestored: false }
   }
 
+  await prepareRc6PageForPluginInteraction(peer, sessionId, { mainFrameId, windowGuard })
   const start = phase === 'initial-enabled' ? 0 : 1
   const increment = phase === 'initial-enabled' || phase === 'readded'
   await waitForMarker(peer, sessionId, 'launcher')
-  await clickMarker(peer, sessionId, 'launcher')
+  await clickMarker(peer, sessionId, 'launcher', { mainFrameId, windowGuard })
   await waitForMarker(peer, sessionId, 'overlay')
   await waitForCounter(peer, sessionId, start)
   const counters = [start]
   if (increment) {
-    await clickMarker(peer, sessionId, 'increment', { requireEnabled: true })
+    await clickMarker(peer, sessionId, 'increment', { requireEnabled: true, mainFrameId, windowGuard })
     counters.push(await waitForCounter(peer, sessionId, start + 1))
   }
-  await clickMarker(peer, sessionId, 'close')
+  await clickMarker(peer, sessionId, 'close', { mainFrameId, windowGuard })
   await waitForMarker(peer, sessionId, 'overlay', { present: false })
   const focusRestored = await waitForLauncherFocus(peer, sessionId)
+  windowGuard.assertSafe()
   return { markerState: 'present', counters, focusRestored }
 }
 
@@ -2186,6 +2748,8 @@ export function createPageNetworkGate(peer, sessionId, origin, networkState, {
   let mainLoaderId
   let loadingFailed = false
   let nonSuccessResponse = false
+  let pageTargetEscaped = false
+  let windowOpenOrdinal = 0
   let networkEpoch = 0
   let unsubscribed = false
   let quiescePromise
@@ -2235,6 +2799,14 @@ export function createPageNetworkGate(peer, sessionId, origin, networkState, {
   const unsubscribe = peer.onEvent((event) => {
     if (unsubscribed || event.sessionId !== sessionId) return
     if (event.method.startsWith('Network.') || event.method.startsWith('Fetch.')) networkEpoch += 1
+
+    if (event.method === 'Page.windowOpen') {
+      networkEpoch += 1
+      pageTargetEscaped = true
+      windowOpenOrdinal += 1
+      if (!allowedPageUrl(event.params?.url, origin)) noteExternal(`window-open-${windowOpenOrdinal}`)
+      return
+    }
 
     if (event.method === 'Page.lifecycleEvent') {
       if (event.params?.name === 'load' && typeof event.params?.loaderId === 'string') {
@@ -2332,6 +2904,7 @@ export function createPageNetworkGate(peer, sessionId, origin, networkState, {
     async settle(phase) {
       await quiesce()
       if (networkState.externalAttempts !== 0) fail('STAGE2_EXTERNAL_NETWORK_ATTEMPT', 'FAIL')
+      if (pageTargetEscaped) fail('STAGE2_PAGE_NAVIGATION_FAILED')
       if (loadingFailed) fail('STAGE2_PAGE_NAVIGATION_FAILED')
       if (nonSuccessResponse) fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
       const mainCompleted = [...records.values()].some((record) =>
@@ -2371,6 +2944,7 @@ export async function createPageSession(peer, origin, networkState, phase) {
     peer.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }, sessionId),
   ])
   const networkGate = createPageNetworkGate(peer, sessionId, origin, networkState)
+  const windowGuard = createPageWindowOpenGuard(peer, sessionId)
 
   const navigation = await peer.send(
     'Page.navigate',
@@ -2378,7 +2952,13 @@ export async function createPageSession(peer, origin, networkState, phase) {
     sessionId,
     { timeoutMs: START_TIMEOUT_MS },
   )
-  if (navigation?.errorText !== undefined || typeof navigation?.loaderId !== 'string') {
+  if (
+    navigation?.errorText !== undefined
+    || typeof navigation?.loaderId !== 'string'
+    || navigation.loaderId.length === 0
+    || typeof navigation?.frameId !== 'string'
+    || navigation.frameId.length === 0
+  ) {
     fail('STAGE2_PAGE_NAVIGATION_FAILED')
   }
   networkGate.setMainLoader(navigation.loaderId)
@@ -2404,11 +2984,18 @@ export async function createPageSession(peer, origin, networkState, phase) {
   if (new URL(document?.root?.documentURL).origin !== origin) fail('STAGE2_PAGE_NAVIGATION_FAILED')
   return Object.freeze({
     sessionId,
+    frameId: navigation.frameId,
+    windowGuard,
     async settleNetwork() {
       await networkGate.settle(phase)
+      windowGuard.assertSafe()
     },
     async disposeNetwork() {
-      await networkGate.dispose()
+      try {
+        await networkGate.dispose()
+      } finally {
+        windowGuard.dispose()
+      }
     },
   })
 }
@@ -2463,7 +3050,7 @@ export async function cleanupBrowserPhaseResources({
 
 function createProductionBrowserAdapter(validated) {
   return Object.freeze({
-    async observePhase({ phase, chrome, origin, profilePath, run }) {
+    async observePhase({ phase, chrome, origin, profilePath, run, networkState }) {
       const parsedOrigin = new URL(origin)
       if (
         parsedOrigin.protocol !== 'http:'
@@ -2471,6 +3058,9 @@ function createProductionBrowserAdapter(validated) {
         || !/^[1-9][0-9]{0,4}$/u.test(parsedOrigin.port)
         || Number(parsedOrigin.port) === FORBIDDEN_PORT
         || parsedOrigin.pathname !== '/'
+        || !isPlainObject(networkState)
+        || networkState.externalAttempts !== 0
+        || networkState.controlFailed !== false
       ) fail('STAGE2_BROWSER_ORIGIN_INVALID', 'SAFETY_ABORT')
       await run.assertOwned()
       await validated.assert('chrome')
@@ -2497,7 +3087,6 @@ function createProductionBrowserAdapter(validated) {
       let devtools
       let peer
       let page
-      const networkState = { externalAttempts: 0, controlFailed: false }
       let primaryError
       try {
         await lsofCwd(receipt.pid, run.runRoot, validated)
@@ -2506,7 +3095,13 @@ function createProductionBrowserAdapter(validated) {
         const chromeListenerWitnessSha256 = sha256(canonical(listener))
         peer = await createCdpPeer(devtools.webSocketUrl)
         page = await createPageSession(peer, origin, networkState, phase)
-        const observation = await observeMarkers(peer, page.sessionId, phase)
+        const observation = await observeMarkers(
+          peer,
+          page.sessionId,
+          page.frameId,
+          page.windowGuard,
+          phase,
+        )
         await page.settleNetwork()
         if (networkState.externalAttempts !== 0) fail('STAGE2_EXTERNAL_NETWORK_ATTEMPT', 'FAIL')
         return Object.freeze({
