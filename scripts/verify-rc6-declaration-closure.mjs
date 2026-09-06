@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
-import { lstat, open, readdir, realpath, writeFile } from 'node:fs/promises'
+import { lstat, open, readdir, realpath } from 'node:fs/promises'
 import { basename, dirname, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
@@ -667,34 +667,26 @@ export async function verifyStagedDeclarationClosure({ workspaceRoot, inputManif
   }
 }
 
-export async function writeCommittedDeclarationClosure({ workspaceRoot = DEFAULT_WORKSPACE_ROOT } = {}) {
-  const replay = await verifyLocalAcceptedDeclarationClosure({ workspaceRoot })
-  if (replay.status !== 'PASS_LOCAL_REPLAY') fail('LOCAL_REPLAY_UNAVAILABLE', replay.status)
-  const inputManifestPath = resolve(workspaceRoot, 'tools/harness-rc6-declarations/input-manifest.json')
-  const inputSnapshot = await readJsonSnapshot(inputManifestPath, { containmentRoot: workspaceRoot })
-  const inputManifest = inputSnapshot.value
-  const closure = {
-    schemaVersion: '1',
-    generationCommand: 'node scripts/verify-rc6-declaration-closure.mjs --write',
-    inputManifestSha256: inputSnapshot.sha256,
-    packageLockSha256: inputManifest.packageLockSha256,
-    packageCounts: inputManifest.packageCounts,
-    runtime: inputManifest.runtime,
-    fullDeepseekCohort: replay.closure.fullDeepseekCohort,
-    selectedDeclarationSubgraph: replay.closure.selectedDeclarationSubgraph,
+export async function writeCommittedDeclarationClosure(_options) {
+  fail('LEGACY_CLOSURE_WRITE_DISABLED', 'use staged proposal closure')
+}
+
+function mapPublicClosureError(error) {
+  if (error?.code === 'LEGACY_CLOSURE_WRITE_DISABLED') {
+    return { status: 'FAIL_CLOSURE_POLICY', reasonCode: error.code }
   }
-  await writeFile(resolve(workspaceRoot, CLOSURE_RELATIVE), canonicalJson(closure), 'utf8')
-  return closure
+  return { status: 'FAIL_CLOSURE_INTERNAL', reasonCode: 'UNEXPECTED_CLOSURE_ERROR' }
 }
 
 async function main() {
-  const closure = await writeCommittedDeclarationClosure()
-  process.stdout.write(`${canonicalJson({ status: 'PASS_LOCAL_REPLAY', fullDeepseekCount: closure.fullDeepseekCohort.length, selectedDeclarationCount: closure.selectedDeclarationSubgraph.records.length })}`)
+  try {
+    await writeCommittedDeclarationClosure()
+  } catch (error) {
+    process.stdout.write(canonicalJson(mapPublicClosureError(error)))
+    process.exitCode = 1
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`)
-    process.exitCode = 1
-  })
+  void main()
 }

@@ -74,7 +74,7 @@ const EXPECTED_ACCEPTED_PACKAGE_JSON_CANONICAL_SHA256 = 'ec3d67e9bcc952d225166c4
 const EXPECTED_ACCEPTED_PACKAGE_LOCK_CANONICAL_SHA256 = 'd99f9a20b594ca3bd825d33a17c5f4f3953de3589c2df7fd5d87e77cbea2ecd1'
 const EXPECTED_COMMITTED_V1_INPUT_RAW_SHA256 = 'eaa89753953535e0a231ac99d3053de75d8fb67c2d73f7b9bcae9a2997d7e489'
 const EXPECTED_COMPILER_SOURCE_AGGREGATE_SHA256 = '44535345dd7a3448bac9206c60ad352f67c265708d410c4c5e20dad0de83d943'
-const EXPECTED_VERIFIER_SOURCE_SHA256 = '1cd80842bb5b1d8b6b74d9a818bdd827d85a3e0e1e63003e665864ce28096a37'
+const EXPECTED_VERIFIER_SOURCE_SHA256 = '7e28949d1899df9dda79e765f342c559254ab67e45a77dca1b2abe329c5d9f8e'
 const EXPECTED_ACCEPTANCE_SOURCE_NORMALIZED_SHA256 = '3caf3ab49fe4b79c7ce703411e95f3d3af625a4a8ad96a10d77427dfd2972d56'
 const CLIENT_COMPILER_OVERLAY_RELATIVE = 'tsconfig.surface.client.overlay.json'
 const EXPECTED_CLIENT_COMPILER_OVERLAY_SHA256 = 'ccc1578a3ed59a72264d3d468af7968b2a0771b693875d9ea9ee8fda4b1a2d24'
@@ -504,6 +504,9 @@ const PUBLIC_INPUT_OPERATIONAL_CODES = new Set(publicInputOperationalCodes)
 
 export function mapPublicInputError(error) {
   const code = typeof error?.code === 'string' ? error.code : ''
+  if (code === 'LEGACY_ACCEPT_DISABLED') {
+    return { status: 'FAIL_INPUT_POLICY', reasonCode: code }
+  }
   if (PUBLIC_INPUT_SCHEMA_CODES.has(code)) {
     return { status: 'FAIL_INPUT_SCHEMA', reasonCode: code }
   }
@@ -5513,82 +5516,13 @@ export async function stageRc6DeclarationInputV2(options) {
   }
 }
 
-export async function acceptRc6DeclarationInput({
-  workspaceRoot = DEFAULT_WORKSPACE_ROOT,
-  candidateRoot = DEFAULT_CANDIDATE_ROOT,
-  replay = true,
-} = {}) {
-  const committed = await inspectCommittedDeclarationInput({ workspaceRoot })
-  if (committed.inputManifest.schemaVersion !== '2') {
-    return {
-      status: 'CHANGES_REQUIRED_REVIEW',
-      reason: 'INPUT_MANIFEST_V2_PENDING_B2',
-    }
-  }
-  await assertDirectory(candidateRoot, 'INVALID_CANDIDATE_ROOT')
-  const candidatePath = resolve(candidateRoot, 'candidate.json')
-  const packagePath = resolve(candidateRoot, 'package.json')
-  const lockPath = resolve(candidateRoot, 'package-lock.json')
-  await Promise.all([assertRegularFile(candidatePath), assertRegularFile(packagePath), assertRegularFile(lockPath)])
-  const { value: candidate } = await readJsonFile(candidatePath)
-  const { value: packageJson } = await readJsonFile(packagePath)
-  const { value: packageLock } = await readJsonFile(lockPath)
-  assertProductionCandidateShape(candidate)
-  assertCandidateShape(candidate, packageJson, packageLock)
-  if (typeof candidate.sourceCacheRoot !== 'string' || typeof candidate.npmCliPath !== 'string') {
-    fail('INVALID_CANDIDATE_LIVE_PATHS', 'sourceCacheRoot/npmCliPath')
-  }
-  const sourceCacheRoot = await realpathWithStableMissingCode(candidate.sourceCacheRoot, 'INVALID_SOURCE_CACHE')
-  const npmCliPath = await realpathWithStableMissingCode(candidate.npmCliPath, 'INVALID_NPM_CLI')
-  const nodePath = await realpathWithStableMissingCode(process.execPath, 'INVALID_NODE_EXECUTABLE')
-  const selected = await readSelectedCacheRecords({ cacheRoot: sourceCacheRoot, packageLock })
-  const paths = {
-    targetCacheRoot: resolve(workspaceRoot, '.tmp/dsh-pm-workbench/declaration-input-cache'),
-    logRoot: resolve(workspaceRoot, '.tmp/dsh-pm-workbench/declaration-input-logs'),
-    tempRoot: resolve(workspaceRoot, '.tmp/dsh-pm-workbench/declaration-input-tmp'),
-    acceptedRoot: resolve(workspaceRoot, '.tmp/dsh-pm-workbench/rc6-declarations/accepted'),
-  }
-  await assertDirectoryEmptyOrAbsent(paths.targetCacheRoot)
-  await assertDirectoryEmptyOrAbsent(paths.acceptedRoot)
-  await mkdir(paths.logRoot, { recursive: true })
-  await mkdir(paths.tempRoot, { recursive: true })
-  await copySelectedCache({
-    cacheRoot: sourceCacheRoot,
-    targetCacheRoot: resolve(paths.targetCacheRoot, '_cacache'),
-    entries: selected.entries,
-  })
-  await makeTreeReadOnlyStrict(paths.targetCacheRoot)
-  await copyAcceptedInputFiles({ candidateRoot, acceptedRoot: paths.acceptedRoot })
-  await copyImmutableContractFiles({ workspaceRoot, acceptedRoot: paths.acceptedRoot })
-  const acceptedToolsRoot = resolve(workspaceRoot, 'tools/harness-rc6-declarations')
-  await mkdir(acceptedToolsRoot, { recursive: true })
-  await copyFile(packagePath, resolve(acceptedToolsRoot, 'package.json'))
-  await copyFile(lockPath, resolve(acceptedToolsRoot, 'package-lock.json'))
-  const runtime = await readRuntimeIdentity(nodePath, npmCliPath)
-  const inputManifest = await writeInputManifest({ workspaceRoot, candidate, packageJson, packageLock, selected, runtime })
-  if (replay) {
-    const userNpmrc = resolve(paths.tempRoot, 'user-npmrc')
-    const globalNpmrc = resolve(paths.tempRoot, 'global-npmrc')
-    await Promise.all([
-      writeFile(userNpmrc, 'ignore-scripts=true\n', 'utf8'),
-      writeFile(globalNpmrc, 'ignore-scripts=true\n', 'utf8'),
-    ])
-    await execFileAsync(nodePath, [npmCliPath, 'ci', '--ignore-scripts', '--offline', '--audit=false', '--fund=false', '--update-notifier=false', `--cache=${paths.targetCacheRoot}`, `--prefix=${paths.acceptedRoot}`, `--logs-dir=${paths.logRoot}`, `--userconfig=${userNpmrc}`, `--globalconfig=${globalNpmrc}`], {
-      cwd: paths.acceptedRoot,
-      env: { PATH: process.env.PATH ?? '', HOME: paths.tempRoot, TMPDIR: paths.tempRoot },
-      maxBuffer: 10 * 1024 * 1024,
-    })
-  }
-  return { status: replay ? 'PASS_OFFLINE_INSTALL' : 'PASS_ACCEPTED_INPUT', paths, inputManifest }
+export async function acceptRc6DeclarationInput(_options) {
+  fail('LEGACY_ACCEPT_DISABLED', 'use stageRc6DeclarationInputV2')
 }
 
 async function main() {
   try {
-    const result = await acceptRc6DeclarationInput()
-    process.stdout.write(canonicalJson(result.status === 'CHANGES_REQUIRED_REVIEW'
-      ? { status: result.status, reason: result.reason }
-      : { status: result.status }))
-    if (result.status === 'CHANGES_REQUIRED_REVIEW') process.exitCode = 1
+    await acceptRc6DeclarationInput()
   } catch (error) {
     process.stdout.write(canonicalJson(mapPublicInputError(error)))
     process.exitCode = 1
