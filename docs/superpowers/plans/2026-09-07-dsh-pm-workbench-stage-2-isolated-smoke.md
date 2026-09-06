@@ -88,7 +88,7 @@ Expected: fail because Connection, storage, sidebar, slots, and Zod are not yet 
 
 - [ ] **Step 3: Add exact public dependencies and package injection metadata**
 
-Pin the complete 56-package rc.6 closure exactly in the root development graph and verify every installed occurrence stays on `0.1.0-rc.6`. Pin the four observed compatible Cordis support packages and one exact Zod version. The workbench Client injection graph contains only packages that expose an rc.6 Web client bundle: Connection, runtime, layout, and sidebar, in dependency-topological order. `@deepseek-ai/dsh-client-ui-slots` remains a type/peer dependency and must not appear in `dsh.client.inject` because rc.6 exposes no `dsh.client` declaration or `./client` bundle for it. Every Harness peer is exact and optional. The Host exports `inject = ['client-connection', 'storage-domain']` only after Task 2.
+Pin the complete 56-package rc.6 closure exactly in the root development graph and verify every installed occurrence stays on `0.1.0-rc.6`. Pin the four observed compatible Cordis support packages and one exact Zod version. The workbench Client injection graph contains only packages that expose an rc.6 Web client bundle: Connection, runtime, layout, and sidebar, in dependency-topological order. `@deepseek-ai/dsh-client-ui-slots` remains a type/peer dependency and must not appear in `dsh.client.inject` because rc.6 exposes no `dsh.client` declaration or `./client` bundle for it. Every Harness peer is exact and optional. The Host exports Cordis service injection keys `inject = ['connection', 'storageDomain']` only after Task 2.
 
 - [ ] **Step 4: Run GREEN and record the observed public signatures**
 
@@ -128,7 +128,14 @@ git commit -m "build: pin rc6 smoke integration surface"
 - Modify: `packages/workbench/package.json`
 - Modify: `package-lock.json`
 - Modify: `tests/contract/package-manifest.test.ts`
+- Modify: `tests/contract/harness-rc6-public-surface.test.ts`
 - Modify: `scripts/verify-package.mjs`
+- Modify: `packages/workbench/README.md`
+- Modify: `packages/workbench/docs/compatibility.md`
+- Modify: `packages/workbench/docs/privacy.md`
+- Modify: `packages/workbench/docs/third-party.md`
+- Modify: `README.md`
+- Modify: `THIRD_PARTY_NOTICES.md`
 - Create: `tests/probe/protocol.test.ts`
 - Create: `tests/probe/service.test.ts`
 - Create: `tests/probe/transport.test.ts`
@@ -172,7 +179,7 @@ The overlay is a `role="dialog"` with `aria-modal="true"`; the counter exposes n
 
 - [ ] **Step 6: Implement Host and Client entrypoints**
 
-Host opens the synthetic domain, registers one loopback channel, rejects excess in-flight requests, and performs ordered drain: stop admissions, unregister route, abort lifecycle, await in-flight work and repository writes, then close storage. Its Cordis `inject` keys are the provided service names `['connection', 'storageDomain']`, not the provider package/plugin names. Client contributes one `sidebar.footer.action` and one `shell.overlay`, renders no replacement root, uses the public rc.6 Connection-context intersection, and restores focus after close. Bundle Zod into both Host and Client artifacts; keep the root development pin but remove Zod from the published package runtime dependencies so a fresh profile can install the tgz offline. Package verification must prove neither bundle contains a bare Zod runtime import.
+Host opens the synthetic domain, registers one loopback channel, rejects excess in-flight requests, and performs ordered drain: stop admissions, unregister route, abort lifecycle, await in-flight work and repository writes, then close storage. Its Cordis `inject` keys are the provided service names `['connection', 'storageDomain']`, not the provider package/plugin names. Client contributes one `sidebar.footer.action` and one `shell.overlay`, renders no replacement root, uses the public rc.6 Connection-context intersection, and restores focus after close. Bundle Zod into both Host and Client artifacts; keep the root development pin but remove Zod from the published package runtime dependencies so a fresh profile can install the tgz offline. Update both manifest contracts that currently require a published Zod dependency. Package verification must prove neither bundle contains a bare Zod runtime import. Update the packed third-party notice and root notice with the applicable Zod 4.4.3 MIT attribution/license, and update packed privacy/compatibility plus root/package READMEs from “static no-op” to “implemented but not yet runtime-verified.” No document may claim installation or smoke success before Task 3 observes it.
 
 - [ ] **Step 7: Run Task 2 verification and commit**
 
@@ -182,7 +189,7 @@ npm run typecheck
 npm run build
 npm run verify:package
 git diff --check
-git add -- packages/workbench/src packages/workbench/build.mjs packages/workbench/package.json package-lock.json tests/probe tests/contract/package-manifest.test.ts scripts/verify-package.mjs
+git add -- packages/workbench/src packages/workbench/build.mjs packages/workbench/package.json package-lock.json tests/probe tests/contract/package-manifest.test.ts tests/contract/harness-rc6-public-surface.test.ts scripts/verify-package.mjs packages/workbench/README.md packages/workbench/docs/compatibility.md packages/workbench/docs/privacy.md packages/workbench/docs/third-party.md README.md THIRD_PARTY_NOTICES.md
 git diff --cached --check
 git commit -m "feat: add minimal Harness smoke probe"
 ```
