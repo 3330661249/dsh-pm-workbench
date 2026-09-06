@@ -142,6 +142,7 @@ git commit -m "build: pin rc6 smoke integration surface"
 - Modify: `package-lock.json`
 - Modify: `tests/contract/package-manifest.test.ts`
 - Modify: `tests/contract/harness-rc6-public-surface.test.ts`
+- Modify: `tests/types/harness-client-rc6-surface.ts`
 - Modify: `scripts/verify-package.mjs`
 - Modify: `packages/workbench/README.md`
 - Modify: `packages/workbench/docs/compatibility.md`
@@ -155,13 +156,17 @@ git commit -m "build: pin rc6 smoke integration surface"
 - Create: `tests/probe/protocol.test.ts`
 - Create: `tests/probe/service.test.ts`
 - Create: `tests/probe/transport.test.ts`
+- Create: `tests/probe/store.test.ts`
 - Create: `tests/probe/lifecycle.test.tsx`
+- Create: `tests/probe/host-lifecycle.test.ts`
+- Create: `tests/probe/build.test.ts`
 
 **Interfaces:**
 
 - Produces: `createProbeHandler(repository)`, `ProbeRepository`, `ConnectionRpcProbeTransport`, and the two exact endpoints `health` and `counter.increment`.
 - `health({})` returns `mode`, exact capability constants, `counter`, and `aggregateVersion`.
 - `counter.increment({ apiVersion, expectedVersion, commandId, delta: 1 })` implements CAS and same-command idempotency over synthetic state.
+- The wire capability versions are strings (`apiVersion: 'pmwb-v1'`, `wireSchemaVersion: '1'`, `dataSchemaVersion: '1'`); only persisted `ProbeState.schemaVersion` is numeric `1`.
 
 - [ ] **Step 1: Write RED protocol and service tests**
 
@@ -193,6 +198,8 @@ data-dsh-pm-workbench="counter"
 
 The overlay is a `role="dialog"` with `aria-modal="true"`; the counter exposes numeric `data-counter` and `data-version` values. Tests and the runner must not query Harness-private DOM structure or class names.
 
+Keep Host lifecycle and build-graph proof in their own focused files. Host lifecycle tests cover transactional Domain/route setup, the 16-request cap, and ordered idempotent drain. Build tests inspect esbuild metafiles rather than searching source strings, while preserving the existing Demo and write-boundary tests.
+
 - [ ] **Step 6: Implement Host and Client entrypoints**
 
 Host opens the synthetic domain, registers one loopback channel, rejects excess in-flight requests, and performs ordered drain: stop admissions, unregister route, abort lifecycle, await in-flight work and repository writes, then close storage. Its Cordis `inject` keys are the provided service names `['connection', 'storageDomain']`, not the provider package/plugin names. Client contributes one `sidebar.footer.action` and one `shell.overlay`, renders no replacement root, uses the public rc.6 Connection-context intersection, imports the public Client declaration entrypoints it consumes instead of relying on test-global augmentations, and restores focus after close. Add `tsc -p packages/workbench/tsconfig.json --noEmit` to the root typecheck chain so production Host and Client sources compile in their own program. Bundle Zod into both Host and Client artifacts; keep the root development pin but remove Zod from the published package runtime dependencies so a fresh profile can install the tgz offline. Use esbuild metafiles to prove both entry graphs include Zod, exclude Cordis/DeepSeek runtime source, and contain only the declared external packages; never use `packages: 'external'`. Keep Host externals at `@deepseek-ai/*` plus Cordis and Node built-ins, and Client externals at React/React DOM and `@deepseek-ai/*`. Update both manifest contracts that currently require a published Zod dependency. Package verification must prove zero published runtime dependencies, no bare Zod runtime import, no bundled second Harness/Cordis runtime, and inclusion of the Zod notice. Append the resulting Task 2 dependency delta to the Task 1 research checkpoint and append a source-only checkpoint to `docs/probe-results.md`; do not rewrite its immutable historical run blocks or call the checkpoint a runtime PASS. Update the packed third-party notice and root notice with the applicable Zod 4.4.3 MIT attribution/license, and update packed privacy/compatibility plus root/package READMEs from “static no-op” to “implemented but not yet runtime-verified.” Add every new production file, Probe test, and required build/contract/doc file to the standalone relocation manifest so the cloned verification path runs the same implementation and checks. No document may claim installation or smoke success before Task 3 observes it.
@@ -205,7 +212,7 @@ npm run typecheck
 npm run build
 npm run verify:package
 git diff --check
-git add -- packages/workbench/src packages/workbench/build.mjs packages/workbench/package.json package.json package-lock.json tests/probe tests/contract/package-manifest.test.ts tests/contract/harness-rc6-public-surface.test.ts tests/fixtures/standalone-source-manifest.json scripts/verify-package.mjs packages/workbench/README.md packages/workbench/docs/compatibility.md packages/workbench/docs/privacy.md packages/workbench/docs/third-party.md README.md THIRD_PARTY_NOTICES.md research/2026-09-07-stage-2-rc6-public-surface.md docs/probe-results.md
+git add -- packages/workbench/src packages/workbench/build.mjs packages/workbench/package.json package.json package-lock.json tests/probe tests/contract/package-manifest.test.ts tests/contract/harness-rc6-public-surface.test.ts tests/types/harness-client-rc6-surface.ts tests/fixtures/standalone-source-manifest.json scripts/verify-package.mjs packages/workbench/README.md packages/workbench/docs/compatibility.md packages/workbench/docs/privacy.md packages/workbench/docs/third-party.md README.md THIRD_PARTY_NOTICES.md research/2026-09-07-stage-2-rc6-public-surface.md docs/probe-results.md
 git diff --cached --check
 git commit -m "feat: add minimal Harness smoke probe"
 ```
