@@ -190,9 +190,9 @@ function makeSyntheticV2Input({
     nestedCommander: currentInput.nestedCommander,
     selectedCache: { entries: selectedEntries, totalBytes: (currentInput.selectedCache as any).totalBytes },
     ...selectedHashes,
-    acceptance: {
-      command: 'node scripts/accept-rc6-declaration-input.mjs',
-      result: 'PASS_OFFLINE_INSTALL',
+    proposalStage: {
+      command: 'stageRc6DeclarationInputV2({ workspaceRoot })',
+      result: 'PASS_STAGED_RC6_DECLARATION_INPUT_V2',
     },
     runtime: currentInput.runtime,
     compilerToolchain: acceptance.expectedCompilerToolchain,
@@ -1941,7 +1941,11 @@ describe('rc.6 accepted declaration input', () => {
           candidateInputManifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
           candidateClosureSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         })
-        expect(serialized).not.toContain('PASS_OFFLINE_INSTALL')
+        for (const retiredValue of [
+          'node scripts/accept-rc6-declaration-input.mjs',
+          'PASS_ACCEPTED_INPUT',
+          'PASS_OFFLINE_INSTALL',
+        ]) expect(serialized).not.toContain(retiredValue)
         expect(serialized).not.toContain(fixture.workspaceRoot)
         expect(serialized).not.toMatch(/(?:\/Users\/|\/private\/|file:|[A-Za-z]:[\\/])/)
         expect(after).toBe(before)
@@ -2057,12 +2061,27 @@ describe('rc.6 accepted declaration input', () => {
         dirname(pointerPath),
         pointer.bundleRelativePath,
       )
-      const [receiptBytes, closureBytes] = await Promise.all([
+      const [inputManifestBytes, receiptBytes, closureBytes] = await Promise.all([
+        readFile(resolve(bundleRoot, 'input-manifest.v2.json')),
         readFile(resolve(bundleRoot, 'receipt.json')),
         readFile(resolve(bundleRoot, 'rc6-declaration-closure.v2.json')),
       ])
+      const inputManifest = JSON.parse(inputManifestBytes.toString('utf8'))
       const receipt = JSON.parse(receiptBytes.toString('utf8'))
       const closure = JSON.parse(closureBytes.toString('utf8'))
+      expect(inputManifestBytes.toString('utf8')).toBe(
+        `${acceptance.canonicalJsonBytes(inputManifest)}\n`,
+      )
+      expect(inputManifest.proposalStage).toEqual({
+        command: 'stageRc6DeclarationInputV2({ workspaceRoot })',
+        result: 'PASS_STAGED_RC6_DECLARATION_INPUT_V2',
+      })
+      expect(inputManifest).not.toHaveProperty('acceptance')
+      for (const retiredValue of [
+        'node scripts/accept-rc6-declaration-input.mjs',
+        'PASS_ACCEPTED_INPUT',
+        'PASS_OFFLINE_INSTALL',
+      ]) expect(JSON.stringify(inputManifest)).not.toContain(retiredValue)
       expect(receiptBytes.toString('utf8')).toBe(
         `${acceptance.canonicalJsonBytes(receipt)}\n`,
       )
@@ -2652,7 +2671,7 @@ describe('rc.6 accepted declaration input', () => {
     }
   })
 
-  test('derives a complete ASCII/UTF-8 ordered lock projection and validates a synthetic v2 snapshot', async () => {
+  test('derives a complete ASCII/UTF-8 ordered lock projection and validates an exact staged-proposal v2 snapshot', async () => {
     const [currentInput, packageJson, packageLock, rootPackageLock] = await Promise.all([
       readJson('tools/harness-rc6-declarations/input-manifest.json'),
       readJson('tools/harness-rc6-declarations/package.json'),
@@ -2674,6 +2693,11 @@ describe('rc.6 accepted declaration input', () => {
         Buffer.from(left, 'utf8').compare(Buffer.from(right, 'utf8')),
       ),
     )
+    expect(input.proposalStage).toEqual({
+      command: 'stageRc6DeclarationInputV2({ workspaceRoot })',
+      result: 'PASS_STAGED_RC6_DECLARATION_INPUT_V2',
+    })
+    expect(input).not.toHaveProperty('acceptance')
     expect(() =>
       acceptance.validateInputManifest({
         inputManifest: input,
@@ -2682,6 +2706,42 @@ describe('rc.6 accepted declaration input', () => {
         rootPackageLock,
       }),
     ).not.toThrow()
+  })
+
+  test.each([
+    ['retired top-level acceptance claim', (input: Record<string, any>) => {
+      input.acceptance = {
+        command: 'node scripts/accept-rc6-declaration-input.mjs',
+        result: 'PASS_OFFLINE_INSTALL',
+      }
+    }, 'SCHEMA_KEY_MISMATCH'],
+    ['retired acceptance CLI command', (input: Record<string, any>) => {
+      input.proposalStage.command = 'node scripts/accept-rc6-declaration-input.mjs'
+    }, 'PROPOSAL_STAGE_RESULT_MISMATCH'],
+    ['retired accepted-input result', (input: Record<string, any>) => {
+      input.proposalStage.result = 'PASS_ACCEPTED_INPUT'
+    }, 'PROPOSAL_STAGE_RESULT_MISMATCH'],
+    ['retired offline-install result', (input: Record<string, any>) => {
+      input.proposalStage.result = 'PASS_OFFLINE_INSTALL'
+    }, 'PROPOSAL_STAGE_RESULT_MISMATCH'],
+    ['missing proposal-stage command', (input: Record<string, any>) => {
+      delete input.proposalStage.command
+    }, 'SCHEMA_KEY_MISMATCH'],
+    ['extra proposal-stage key', (input: Record<string, any>) => {
+      input.proposalStage.extra = true
+    }, 'SCHEMA_KEY_MISMATCH'],
+  ])('rejects %s from the exact staged-proposal schema', async (_label, mutate, code) => {
+    const [currentInput, packageJson, packageLock, rootPackageLock] = await Promise.all([
+      readJson('tools/harness-rc6-declarations/input-manifest.json'),
+      readJson('tools/harness-rc6-declarations/package.json'),
+      readJson('tools/harness-rc6-declarations/package-lock.json'),
+      readJson('package-lock.json'),
+    ])
+    const input = makeSyntheticV2Input({ currentInput, packageLock })
+    mutate(input)
+
+    expect(() => acceptance.validateInputManifest({ inputManifest: input, packageJson, packageLock, rootPackageLock }))
+      .toThrow(expect.objectContaining({ code }))
   })
 
   test('B2b v2 identity keeps only the seven logical selected-entry fields and excludes physical index checksums', async () => {

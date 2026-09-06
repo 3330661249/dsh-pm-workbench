@@ -439,7 +439,7 @@ export const publicInputMismatchCodes = Object.freeze([
   'SELECTED_CACHE_COUNT_OR_BYTES_MISMATCH', 'INVALID_SELECTED_CACHE_ENTRY',
   'NONCANONICAL_SELECTED_CACHE_ORDER', 'LOCK_PROJECTION_MISMATCH', 'SELECTED_CACHE_BYTE_SUM_MISMATCH',
   'SELECTED_INDEX_HASH_MISMATCH', 'SELECTED_CONTENT_AGGREGATE_MISMATCH', 'LOCK_PROJECTION_HASH_MISMATCH',
-  'ACCEPTANCE_RESULT_MISMATCH', 'RUNTIME_IDENTITY_TYPE_MISMATCH', 'RUNTIME_IDENTITY_MISMATCH',
+  'PROPOSAL_STAGE_RESULT_MISMATCH', 'RUNTIME_IDENTITY_TYPE_MISMATCH', 'RUNTIME_IDENTITY_MISMATCH',
   'COMMITTED_INPUT_BYTE_HASH_MISMATCH', 'COMMITTED_INPUT_CANONICAL_MISMATCH',
   'INVALID_COMMITTED_SELECTED_CACHE', 'INVALID_COMMITTED_CACHE_ENTRY',
   'UNSUPPORTED_INTEGRITY', 'INVALID_SHA512_INTEGRITY',
@@ -2909,7 +2909,7 @@ export function validateInputManifest({ inputManifest, packageJson, packageLock,
   assertExactKeys(inputManifest, [
     'schemaVersion', 'inputLabel', 'authorizationBasis', 'packageJsonSha256', 'packageLockSha256',
     'lockfileVersion', 'acceptedRootPackage', 'packageCounts', 'dshVersion', 'nestedCommander',
-    'selectedCache', 'selectedCacheIndexSha256', 'selectedContentAggregateSha256', 'acceptance',
+    'selectedCache', 'selectedCacheIndexSha256', 'selectedContentAggregateSha256', 'proposalStage',
     'runtime', 'compilerToolchain', 'productionBoundary', 'lockProjectionSha256',
   ], 'inputManifest')
   assertSafeManifestStrings(inputManifest)
@@ -2940,8 +2940,8 @@ export function validateInputManifest({ inputManifest, packageJson, packageLock,
   if (hashes.selectedCacheIndexSha256 !== inputManifest.selectedCacheIndexSha256 || inputManifest.selectedCacheIndexSha256 !== V2_SELECTED_INDEX_SHA256) fail('SELECTED_INDEX_HASH_MISMATCH', 'selectedCacheIndexSha256')
   if (hashes.selectedContentAggregateSha256 !== inputManifest.selectedContentAggregateSha256 || inputManifest.selectedContentAggregateSha256 !== V2_SELECTED_CONTENT_AGGREGATE_SHA256) fail('SELECTED_CONTENT_AGGREGATE_MISMATCH', 'selectedContentAggregateSha256')
   if (projection.sha256 !== inputManifest.lockProjectionSha256) fail('LOCK_PROJECTION_HASH_MISMATCH', 'lockProjectionSha256')
-  assertExactKeys(inputManifest.acceptance, ['command', 'result'], 'acceptance')
-  if (inputManifest.acceptance.command !== 'node scripts/accept-rc6-declaration-input.mjs' || !['PASS_ACCEPTED_INPUT', 'PASS_OFFLINE_INSTALL'].includes(inputManifest.acceptance.result)) fail('ACCEPTANCE_RESULT_MISMATCH', 'acceptance')
+  assertExactKeys(inputManifest.proposalStage, ['command', 'result'], 'proposalStage')
+  if (inputManifest.proposalStage.command !== 'stageRc6DeclarationInputV2({ workspaceRoot })' || inputManifest.proposalStage.result !== 'PASS_STAGED_RC6_DECLARATION_INPUT_V2') fail('PROPOSAL_STAGE_RESULT_MISMATCH', 'proposalStage')
   assertExactKeys(inputManifest.runtime, ['node', 'npm'], 'runtime')
   assertExactKeys(inputManifest.runtime.node, ['version', 'basename', 'sha256'], 'runtime.node')
   assertExactKeys(inputManifest.runtime.npm, ['version', 'cliBasename', 'cliSha256'], 'runtime.npm')
@@ -5238,9 +5238,9 @@ export async function stageRc6DeclarationInputV2(options) {
       totalBytes: publicationBefore.snapshot.totalBytes,
     },
     ...selectedHashes,
-    acceptance: {
-      command: 'node scripts/accept-rc6-declaration-input.mjs',
-      result: 'PASS_OFFLINE_INSTALL',
+    proposalStage: {
+      command: 'stageRc6DeclarationInputV2({ workspaceRoot })',
+      result: 'PASS_STAGED_RC6_DECLARATION_INPUT_V2',
     },
     runtime,
     compilerToolchain: expectedCompilerToolchain,
