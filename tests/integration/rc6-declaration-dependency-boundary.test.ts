@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { promisify } from 'node:util'
@@ -15,7 +16,11 @@ const closureRelativePath = 'research/2026-09-05-rc6-declaration-closure.json'
 async function createClosureCliFixture() {
   const root = await mkdtemp(resolve(tmpdir(), 'rc6-retired-closure-cli-'))
   const scriptsRoot = resolve(root, 'scripts')
-  await mkdir(scriptsRoot, { recursive: true })
+  const fixtureClosurePath = resolve(root, closureRelativePath)
+  await Promise.all([
+    mkdir(scriptsRoot, { recursive: true }),
+    mkdir(dirname(fixtureClosurePath), { recursive: true }),
+  ])
   await Promise.all([
     copyFile(
       resolve(workspaceRoot, 'scripts/accept-rc6-declaration-input.mjs'),
@@ -25,13 +30,35 @@ async function createClosureCliFixture() {
       resolve(workspaceRoot, 'scripts/verify-rc6-declaration-closure.mjs'),
       resolve(scriptsRoot, 'verify-rc6-declaration-closure.mjs'),
     ),
+    copyFile(resolve(workspaceRoot, closureRelativePath), fixtureClosurePath),
   ])
   return root
 }
 
 async function runClosureFixtureCli(root: string, argv: string[]) {
   const script = resolve(root, 'scripts/verify-rc6-declaration-closure.mjs')
-  return execFileAsync(process.execPath, [script, ...argv], { cwd: root })
+  return execFileAsync(process.execPath, [await realpath(script), ...argv], { cwd: root })
+}
+
+async function fixtureFingerprint(root: string) {
+  const rows: string[] = []
+  async function visit(current: string) {
+    const entries = await readdir(current, { withFileTypes: true })
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const path = resolve(current, entry.name)
+      const relativePath = path.slice(root.length + 1)
+      if (entry.isDirectory()) {
+        rows.push(`directory:${relativePath}`)
+        await visit(path)
+      } else if (entry.isFile()) {
+        rows.push(`file:${relativePath}:${createHash('sha256').update(await readFile(path)).digest('hex')}`)
+      } else {
+        rows.push(`other:${relativePath}`)
+      }
+    }
+  }
+  await visit(root)
+  return createHash('sha256').update(rows.join('\n')).digest('hex')
 }
 
 type DependencyManifestFixture = {
@@ -202,7 +229,8 @@ describe('rc.6 declaration dependency boundary', () => {
 
   test('rejects the retired closure writer without observing caller input or changing the historical closure', async () => {
     const before = await readFile(resolve(workspaceRoot, closureRelativePath))
-    const missingWorkspace = resolve(await mkdtemp(resolve(tmpdir(), 'rc6-retired-closure-writer-')), 'missing')
+    const root = await mkdtemp(resolve(tmpdir(), 'rc6-retired-closure-writer-'))
+    const missingWorkspace = resolve(root, 'missing')
     const explosiveInput = new Proxy({}, {
       get() {
         throw new Error('caller input must remain unobserved')
@@ -210,6 +238,8 @@ describe('rc.6 declaration dependency boundary', () => {
     })
 
     try {
+      await expect(readFile(resolve(workspaceRoot, closureRelativePath))).resolves.toEqual(before)
+      await expect(realpath(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
       const proxyOutcome = await closure.writeCommittedDeclarationClosure(explosiveInput).then(
         () => 'RESOLVED',
         (error) => error,
@@ -219,15 +249,16 @@ describe('rc.6 declaration dependency boundary', () => {
         (error) => error,
       )
 
+      await expect(readFile(resolve(workspaceRoot, closureRelativePath))).resolves.toEqual(before)
+      await expect(realpath(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
       expect(proxyOutcome).toMatchObject({
         code: 'LEGACY_CLOSURE_WRITE_DISABLED',
       })
       expect(missingWorkspaceOutcome).toMatchObject({
         code: 'LEGACY_CLOSURE_WRITE_DISABLED',
       })
-      await expect(readFile(resolve(workspaceRoot, closureRelativePath))).resolves.toEqual(before)
     } finally {
-      await rm(dirname(missingWorkspace), { recursive: true, force: true })
+      await rm(root, { recursive: true, force: true })
     }
   })
 
@@ -239,10 +270,22 @@ describe('rc.6 declaration dependency boundary', () => {
     { label: 'unknown', argv: ['--unknown'] },
   ])('rejects retired closure CLI argv $label with fixed policy JSON only and preserves the historical closure', async ({ argv }) => {
     const root = await createClosureCliFixture()
-    const before = await readFile(resolve(workspaceRoot, closureRelativePath))
+    const fixtureClosurePath = resolve(root, closureRelativePath)
 
     try {
-      await expect(runClosureFixtureCli(root, argv)).rejects.toMatchObject({
+      const [before, fingerprint] = await Promise.all([
+        readFile(fixtureClosurePath),
+        fixtureFingerprint(root),
+      ])
+      await expect(realpath(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
+      const outcome = await runClosureFixtureCli(root, argv).then(
+        () => 'RESOLVED',
+        (error) => error,
+      )
+      await expect(realpath(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(readFile(fixtureClosurePath)).resolves.toEqual(before)
+      expect(await fixtureFingerprint(root)).toBe(fingerprint)
+      expect(outcome).toMatchObject({
         code: 1,
         stdout: `${JSON.stringify({
           status: 'FAIL_CLOSURE_POLICY',
@@ -250,7 +293,6 @@ describe('rc.6 declaration dependency boundary', () => {
         }, null, 2)}\n`,
         stderr: '',
       })
-      await expect(readFile(resolve(workspaceRoot, closureRelativePath))).resolves.toEqual(before)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

@@ -251,11 +251,38 @@ async function createBootstrapFixture() {
   return root
 }
 
-async function runFixtureCli(root: string, argv: string[] = []) {
+async function createAcceptanceCliFixture() {
+  const root = await mkdtemp(resolve(tmpdir(), 'rc6-retired-acceptance-cli-'))
   const script = resolve(root, 'scripts/accept-rc6-declaration-input.mjs')
   await mkdir(dirname(script), { recursive: true })
   await copyFile(resolve(workspaceRoot, 'scripts/accept-rc6-declaration-input.mjs'), script)
+  return root
+}
+
+async function runFixtureCli(root: string, argv: string[] = []) {
+  const script = resolve(root, 'scripts/accept-rc6-declaration-input.mjs')
   return execFileAsync(process.execPath, [script, ...argv], { cwd: root })
+}
+
+async function fixtureFingerprint(root: string) {
+  const rows: string[] = []
+  async function visit(current: string) {
+    const entries = await readdir(current, { withFileTypes: true })
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const path = resolve(current, entry.name)
+      const relativePath = path.slice(root.length + 1)
+      if (entry.isDirectory()) {
+        rows.push(`directory:${relativePath}`)
+        await visit(path)
+      } else if (entry.isFile()) {
+        rows.push(`file:${relativePath}:${createHash('sha256').update(await readFile(path)).digest('hex')}`)
+      } else {
+        rows.push(`other:${relativePath}`)
+      }
+    }
+  }
+  await visit(root)
+  return createHash('sha256').update(rows.join('\n')).digest('hex')
 }
 
 async function writeSyntheticCandidate(root: string, {
@@ -285,17 +312,6 @@ async function writeSyntheticCandidate(root: string, {
     copyFile(resolve(workspaceRoot, 'tools/harness-rc6-declarations/package.json'), resolve(candidateRoot, 'package.json')),
     copyFile(resolve(workspaceRoot, 'tools/harness-rc6-declarations/package-lock.json'), resolve(candidateRoot, 'package-lock.json')),
   ])
-}
-
-async function expectNoAcceptanceTargets(root: string) {
-  for (const path of [
-    '.tmp/dsh-pm-workbench/declaration-input-cache',
-    '.tmp/dsh-pm-workbench/rc6-declarations/accepted',
-    '.tmp/dsh-pm-workbench/declaration-input-logs',
-    '.tmp/dsh-pm-workbench/declaration-input-tmp',
-  ]) {
-    await expect(stat(resolve(root, path))).rejects.toMatchObject({ code: 'ENOENT' })
-  }
 }
 
 function cacheIndexPathForTest(cacheRoot: string, key: string) {
@@ -618,52 +634,6 @@ describe('rc.6 accepted declaration input', () => {
     }
   })
 
-  test.each([
-    ['unknown schema', async (root: string) => {
-      const path = resolve(root, 'tools/harness-rc6-declarations/input-manifest.json')
-      const value = JSON.parse(await readFile(path, 'utf8')); value.schemaVersion = 'unknown'
-      await writeFile(path, `${JSON.stringify(value)}\n`, 'utf8')
-    }, { status: 'FAIL_INPUT_SCHEMA', reasonCode: 'UNSUPPORTED_INPUT_MANIFEST_SCHEMA' }],
-    ['schema2 corruption', async (root: string) => {
-      const path = resolve(root, 'tools/harness-rc6-declarations/input-manifest.json')
-      const value = JSON.parse(await readFile(path, 'utf8')); value.inputLabel = 'forged'
-      await writeFile(path, `${JSON.stringify(value)}\n`, 'utf8')
-    }, { status: 'FAIL_INPUT_MISMATCH', reasonCode: 'INPUT_MANIFEST_TEXT_INVALID' }],
-    ['schema2 extra key', async (root: string) => {
-      const path = resolve(root, 'tools/harness-rc6-declarations/input-manifest.json')
-      const value = JSON.parse(await readFile(path, 'utf8')); value.extra = true
-      await writeFile(path, `${JSON.stringify(value)}\n`, 'utf8')
-    }, { status: 'FAIL_INPUT_MISMATCH', reasonCode: 'SCHEMA_KEY_MISMATCH' }],
-    ['schema2 selected hash mismatch', async (root: string) => {
-      const path = resolve(root, 'tools/harness-rc6-declarations/input-manifest.json')
-      const value = JSON.parse(await readFile(path, 'utf8')); value.selectedCacheIndexSha256 = '0'.repeat(64)
-      await writeFile(path, `${JSON.stringify(value)}\n`, 'utf8')
-    }, { status: 'FAIL_INPUT_MISMATCH', reasonCode: 'SELECTED_INDEX_HASH_MISMATCH' }],
-    ['schema2 runtime mismatch', async (root: string) => {
-      const path = resolve(root, 'tools/harness-rc6-declarations/input-manifest.json')
-      const value = JSON.parse(await readFile(path, 'utf8')); value.runtime.node.sha256 = '0'.repeat(64)
-      await writeFile(path, `${JSON.stringify(value)}\n`, 'utf8')
-    }, { status: 'FAIL_INPUT_MISMATCH', reasonCode: 'RUNTIME_IDENTITY_MISMATCH' }],
-    ['schema2 toolchain mismatch', async (root: string) => {
-      const path = resolve(root, 'tools/harness-rc6-declarations/input-manifest.json')
-      const value = JSON.parse(await readFile(path, 'utf8')); value.compilerToolchain.typescript.version = '0.0.0'
-      await writeFile(path, `${JSON.stringify(value)}\n`, 'utf8')
-    }, { status: 'FAIL_INPUT_MISMATCH', reasonCode: 'COMPILER_TOOLCHAIN_MISMATCH' }],
-    ['parse failure', async (root: string) => writeFile(resolve(root, 'tools/harness-rc6-declarations/input-manifest.json'), '{', 'utf8'), { status: 'FAIL_INPUT_SCHEMA', reasonCode: 'INVALID_JSON_OBJECT' }],
-  ])('maps CLI %s to stable path-free JSON', async (_label, mutate, expected) => {
-    const root = await createInspectorFixture()
-    try {
-      await mutate(root)
-      await expect(runFixtureCli(root)).rejects.toMatchObject({
-        code: 1,
-        stdout: `${JSON.stringify(expected, null, 2)}\n`,
-        stderr: '',
-      })
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
   test('maps unknown internal errors to an explicit stable fallback', () => {
     const error = Object.assign(new Error('untrusted internal detail'), { code: 'NOT_ALLOWLISTED' })
     expect(acceptance.mapPublicInputError(error)).toEqual({
@@ -685,6 +655,14 @@ describe('rc.6 accepted declaration input', () => {
     expect(acceptance.mapPublicInputError(error)).toEqual({
       status: 'FAIL_INPUT_MISMATCH',
       reasonCode: code,
+    })
+  })
+
+  test('maps the retired acceptance writer code to exact input-policy JSON', () => {
+    const error = Object.assign(new Error('untrusted detail'), { code: 'LEGACY_ACCEPT_DISABLED' })
+    expect(acceptance.mapPublicInputError(error)).toEqual({
+      status: 'FAIL_INPUT_POLICY',
+      reasonCode: 'LEGACY_ACCEPT_DISABLED',
     })
   })
 
@@ -753,63 +731,12 @@ describe('rc.6 accepted declaration input', () => {
     for (const code of ownedCodes) {
       const result = acceptance.mapPublicInputError(Object.assign(new Error('untrusted detail'), { code }))
       expect(result.reasonCode).toBe(code)
-      expect(['FAIL_INPUT_SCHEMA', 'FAIL_INPUT_MISMATCH', 'FAIL_INPUT_INTERNAL']).toContain(result.status)
+      expect(['FAIL_INPUT_SCHEMA', 'FAIL_INPUT_MISMATCH', 'FAIL_INPUT_INTERNAL', 'FAIL_INPUT_POLICY']).toContain(result.status)
       if (acceptance.publicInputOperationalCodes.includes(code)) {
         expect(result.status).toBe('FAIL_INPUT_INTERNAL')
+      } else if (code === 'LEGACY_ACCEPT_DISABLED') {
+        expect(result.status).toBe('FAIL_INPUT_POLICY')
       }
-    }
-  })
-
-  test('publishes a missing synthetic v2 candidate root as exact path-free CLI JSON before mutation', async () => {
-    const root = await createInspectorFixture()
-    try {
-      await expect(runFixtureCli(root)).rejects.toMatchObject({
-        code: 1,
-        stdout: `${JSON.stringify({ status: 'FAIL_INPUT_MISMATCH', reasonCode: 'INVALID_CANDIDATE_ROOT' }, null, 2)}\n`,
-        stderr: '',
-      })
-      await expect(stat(resolve(root, '.tmp/dsh-pm-workbench/declaration-input-cache'))).rejects.toMatchObject({ code: 'ENOENT' })
-      await expect(stat(resolve(root, '.tmp/dsh-pm-workbench/rc6-declarations/accepted'))).rejects.toMatchObject({ code: 'ENOENT' })
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  test.each(['missing', 'dangling'])('publishes source cache %s as exact path-free pre-mutation CLI JSON', async (kind) => {
-    const root = await createInspectorFixture()
-    try {
-      const absent = resolve(root, 'absent-source-cache')
-      const sourceCacheRoot = kind === 'dangling' ? resolve(root, 'dangling-source-cache') : absent
-      if (kind === 'dangling') await symlink(absent, sourceCacheRoot)
-      await writeSyntheticCandidate(root, { sourceCacheRoot, npmCliPath: process.execPath })
-      await expect(runFixtureCli(root)).rejects.toMatchObject({
-        code: 1,
-        stdout: `${JSON.stringify({ status: 'FAIL_INPUT_MISMATCH', reasonCode: 'INVALID_SOURCE_CACHE' }, null, 2)}\n`,
-        stderr: '',
-      })
-      await expectNoAcceptanceTargets(root)
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  test.each(['missing', 'dangling'])('publishes npm CLI %s as exact path-free pre-mutation CLI JSON', async (kind) => {
-    const root = await createInspectorFixture()
-    try {
-      const sourceCacheRoot = resolve(root, 'empty-source-cache')
-      await mkdir(sourceCacheRoot)
-      const absent = resolve(root, 'absent-npm-cli.js')
-      const npmCliPath = kind === 'dangling' ? resolve(root, 'dangling-npm-cli.js') : absent
-      if (kind === 'dangling') await symlink(absent, npmCliPath)
-      await writeSyntheticCandidate(root, { sourceCacheRoot, npmCliPath })
-      await expect(runFixtureCli(root)).rejects.toMatchObject({
-        code: 1,
-        stdout: `${JSON.stringify({ status: 'FAIL_INPUT_MISMATCH', reasonCode: 'INVALID_NPM_CLI' }, null, 2)}\n`,
-        stderr: '',
-      })
-      await expectNoAcceptanceTargets(root)
-    } finally {
-      await rm(root, { recursive: true, force: true })
     }
   })
 
@@ -1669,14 +1596,14 @@ describe('rc.6 accepted declaration input', () => {
     }
   })
 
-  test('gates v1 public acceptance before candidate/cache/root writes', async () => {
+  test('inspects v1 committed input before candidate/cache/root writes', async () => {
     const root = await createInspectorFixture()
     try {
       await copyFile(
         resolve(workspaceRoot, 'tools/harness-rc6-declarations/input-manifest.json'),
         resolve(root, 'tools/harness-rc6-declarations/input-manifest.json'),
       )
-      const result = await acceptance.acceptRc6DeclarationInput({ workspaceRoot: root })
+      const result = await acceptance.inspectCommittedDeclarationInput({ workspaceRoot: root })
       expect(result).toMatchObject({ status: 'CHANGES_REQUIRED_REVIEW', reason: 'INPUT_MANIFEST_V2_PENDING_B2' })
       await expect(stat(resolve(root, '.tmp/dsh-pm-workbench'))).rejects.toMatchObject({ code: 'ENOENT' })
     } finally {
@@ -2664,6 +2591,7 @@ describe('rc.6 accepted declaration input', () => {
 
   test('rejects the retired acceptance writer without observing caller input or creating a missing workspace temp path', async () => {
     const root = await mkdtemp(resolve(tmpdir(), 'rc6-retired-acceptance-writer-'))
+    const missingWorkspace = resolve(root, 'missing-workspace')
     const explosiveInput = new Proxy({}, {
       get() {
         throw new Error('caller input must remain unobserved')
@@ -2671,22 +2599,24 @@ describe('rc.6 accepted declaration input', () => {
     })
 
     try {
+      await expect(stat(missingWorkspace)).rejects.toMatchObject({ code: 'ENOENT' })
       const proxyOutcome = await acceptance.acceptRc6DeclarationInput(explosiveInput).then(
         () => 'RESOLVED',
         (error) => error,
       )
-      const missingWorkspaceOutcome = await acceptance.acceptRc6DeclarationInput({ workspaceRoot: root }).then(
+      const missingWorkspaceOutcome = await acceptance.acceptRc6DeclarationInput({ workspaceRoot: missingWorkspace }).then(
         () => 'RESOLVED',
         (error) => error,
       )
 
+      await expect(stat(missingWorkspace)).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(stat(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
       expect(proxyOutcome).toMatchObject({
         code: 'LEGACY_ACCEPT_DISABLED',
       })
       expect(missingWorkspaceOutcome).toMatchObject({
         code: 'LEGACY_ACCEPT_DISABLED',
       })
-      await expect(stat(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -2699,9 +2629,17 @@ describe('rc.6 accepted declaration input', () => {
     { label: 'help', argv: ['--help'] },
     { label: 'unknown', argv: ['--unknown'] },
   ])('rejects retired acceptance CLI argv $label with fixed policy JSON only', async ({ argv }) => {
-    const root = await mkdtemp(resolve(tmpdir(), 'rc6-retired-acceptance-cli-'))
+    const root = await createAcceptanceCliFixture()
     try {
-      await expect(runFixtureCli(root, argv)).rejects.toMatchObject({
+      const before = await fixtureFingerprint(root)
+      await expect(stat(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
+      const outcome = await runFixtureCli(root, argv).then(
+        () => 'RESOLVED',
+        (error) => error,
+      )
+      await expect(stat(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(await fixtureFingerprint(root)).toBe(before)
+      expect(outcome).toMatchObject({
         code: 1,
         stdout: `${JSON.stringify({
           status: 'FAIL_INPUT_POLICY',
