@@ -586,6 +586,42 @@ describe('Stage 2 browser and listener guards', () => {
     expect(stopRetained).toHaveBeenCalledOnce()
   })
 
+  it('stops retained Chrome while its DevTools listener witness is still available', async () => {
+    const order: string[] = []
+    let listenerAlive = true
+    const page = {
+      disposeNetwork: vi.fn(async () => { order.push('dispose-network') }),
+    }
+    const peer = {
+      close: vi.fn(() => {
+        order.push('peer-close')
+        listenerAlive = false
+      }),
+    }
+    const stopRetained = vi.fn(async () => {
+      order.push('stop-retained')
+      if (!listenerAlive) throw new Error('DevTools listener witness disappeared')
+    })
+
+    const cleanup = await cleanupBrowserPhaseResources({
+      page,
+      peer,
+      child: { exitCode: null, signalCode: null },
+      devtools: { port: 43_191 },
+      receipt: { pid: 123 },
+      run: {},
+      validated: {},
+      operations: {
+        stopRetained,
+        stopIncomplete: vi.fn(async () => undefined),
+        assertListenerAbsent: vi.fn(async () => undefined),
+      },
+    })
+
+    expect(cleanup).toEqual({ ok: true })
+    expect(order).toEqual(['dispose-network', 'stop-retained', 'peer-close'])
+  })
+
   it('requires main completion in every phase but requires the workbench client only when enabled', async () => {
     const origin = 'http://127.0.0.1:32001'
     const disabledPeer = fakePageNetworkPeer()

@@ -2334,7 +2334,6 @@ export async function cleanupBrowserPhaseResources({
   }
 
   if (page) await attempt(async () => page.disposeNetwork())
-  if (peer) await attempt(async () => peer.close())
   await attempt(async () => {
     if (child.exitCode === null && child.signalCode === null) {
       if (devtools) await stopRetained(receipt, { run, validated, listenerPort: devtools.port })
@@ -2344,6 +2343,7 @@ export async function cleanupBrowserPhaseResources({
       run.markChildStopped(receipt)
     }
   })
+  if (peer) await attempt(async () => peer.close())
   return Object.freeze({ ok })
 }
 
