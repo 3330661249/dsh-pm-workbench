@@ -1,4 +1,5 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { builtinModules } from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
@@ -9,16 +10,135 @@ const repositoryRoot = path.resolve(packageRoot, '../..')
 const demoTempRoot = path.join(repositoryRoot, '.tmp', 'dsh-pm-workbench')
 const defaultDemoOutdir = path.join(demoTempRoot, 'demo')
 
+const hostExternals = [...new Set([
+  '@deepseek-ai/*',
+  ...builtinModules,
+  ...builtinModules.map((name) => name.startsWith('node:') ? name : `node:${name}`),
+])]
+const clientExternals = [
+  'react',
+  'react/*',
+  'react-dom',
+  'react-dom/*',
+  '@deepseek-ai/*',
+]
+
+function normalized(value) {
+  return value.replaceAll('\\', '/')
+}
+
+function isHostExternal(specifier) {
+  return specifier.startsWith('@deepseek-ai/')
+    || specifier.startsWith('node:')
+    || builtinModules.includes(specifier)
+}
+
+function isClientExternal(specifier) {
+  return specifier === 'react'
+    || specifier.startsWith('react/')
+    || specifier === 'react-dom'
+    || specifier.startsWith('react-dom/')
+    || specifier.startsWith('@deepseek-ai/')
+}
+
+const hostSourceInputs = new Set([
+  'packages/workbench/src/config.ts',
+  'packages/workbench/src/index.ts',
+  'packages/workbench/src/integration/harness-rc6/probe-host.ts',
+  'packages/workbench/src/probe/protocol.ts',
+  'packages/workbench/src/probe/service.ts',
+])
+
+const clientSourceInputs = new Set([
+  'packages/workbench/src/client/index.tsx',
+  'packages/workbench/src/client/probe/ProbeView.tsx',
+  'packages/workbench/src/client/probe/store.ts',
+  'packages/workbench/src/client/probe/transport.ts',
+  'packages/workbench/src/probe/protocol.ts',
+])
+
+function isHostInput(input) {
+  return hostSourceInputs.has(input) || input.startsWith('node_modules/zod/')
+}
+
+function isClientInput(input) {
+  return clientSourceInputs.has(input) || input.startsWith('node_modules/zod/')
+}
+
+function assertBuildGraph(label, metafile, allowInput, allowExternal) {
+  const inputs = Object.keys(metafile.inputs).map(normalized)
+  if (!inputs.some((input) => input.includes('node_modules/zod/'))) {
+    throw new Error(`${label} build must bundle Zod`)
+  }
+  const forbiddenInput = inputs.find((input) => !allowInput(input))
+  if (forbiddenInput) {
+    throw new Error(`${label} build has a forbidden input: ${forbiddenInput}`)
+  }
+  if (inputs.some((input) => input.includes('node_modules/@deepseek-ai/'))) {
+    throw new Error(`${label} build bundled DeepSeek or Cordis runtime source`)
+  }
+  const imports = Object.values(metafile.outputs).flatMap((output) => output.imports)
+  for (const imported of imports) {
+    if (!imported.external || !allowExternal(imported.path) || imported.path === 'zod') {
+      throw new Error(`${label} build has an undeclared external: ${imported.path}`)
+    }
+  }
+}
+
+export function assertHostProbeBuildGraph(metafile) {
+  assertBuildGraph('Host', metafile, isHostInput, isHostExternal)
+}
+
+export function assertClientProbeBuildGraph(metafile) {
+  assertBuildGraph('Client', metafile, isClientInput, isClientExternal)
+}
+
 export async function buildWorkbench({ outdir = path.join(packageRoot, 'lib'), guard = assertWorkbenchWritePath } = {}) {
   const guarded = (target) => { guard(target); return target }
   const lib = path.resolve(outdir)
-  await rm(guarded(lib), { recursive: true, force: true })
-  await mkdir(guarded(lib), { recursive: true })
-  await build({ entryPoints: [path.join(packageRoot, 'src/index.ts')], outfile: guarded(path.join(lib, 'index.js')), bundle: true, format: 'esm', platform: 'node', sourcemap: false })
-  const client = await build({ entryPoints: [path.join(packageRoot, 'src/client/index.tsx')], bundle: true, write: false, format: 'cjs', platform: 'browser', external: ['react', 'react/*', 'react-dom', 'react-dom/*', '@deepseek-ai/*'], sourcemap: false })
+  const hostPath = path.join(lib, 'index.js')
+  const clientPath = path.join(lib, 'client.js')
+  const [host, client] = await Promise.all([
+    build({
+      absWorkingDir: repositoryRoot,
+      entryPoints: [path.relative(repositoryRoot, path.join(packageRoot, 'src/index.ts'))],
+      outfile: hostPath,
+      bundle: true,
+      write: false,
+      metafile: true,
+      format: 'esm',
+      platform: 'node',
+      external: hostExternals,
+      sourcemap: false,
+    }),
+    build({
+      absWorkingDir: repositoryRoot,
+      entryPoints: [path.relative(repositoryRoot, path.join(packageRoot, 'src/client/index.tsx'))],
+      outfile: clientPath,
+      bundle: true,
+      write: false,
+      metafile: true,
+      format: 'cjs',
+      platform: 'browser',
+      external: clientExternals,
+      sourcemap: false,
+    }),
+  ])
+  if (host.outputFiles.length !== 1 || client.outputFiles.length !== 1) {
+    throw new Error('Workbench build must produce exactly one Host and one Client output')
+  }
+  assertHostProbeBuildGraph(host.metafile)
+  assertClientProbeBuildGraph(client.metafile)
   const source = client.outputFiles[0].text
   const wrapped = `window.__ModuleLoader__.load({ id:'@knight/dsh-pm-workbench', factory(require) { const module={exports:{}}; const exports=module.exports; ${source}; return module.exports; } });\n`
-  await writeFile(guarded(path.join(lib, 'client.js')), wrapped)
+  if (/(?:from\s*['"]zod['"]|require\(\s*['"]zod['"]\s*\))/.test(`${host.outputFiles[0].text}\n${wrapped}`)) {
+    throw new Error('Workbench output retained a bare Zod runtime import')
+  }
+  await rm(guarded(lib), { recursive: true, force: true })
+  await mkdir(guarded(lib), { recursive: true })
+  await writeFile(guarded(hostPath), host.outputFiles[0].contents)
+  await writeFile(guarded(clientPath), wrapped)
+  return { hostMetafile: host.metafile, clientMetafile: client.metafile }
 }
 
 export async function buildDemo({ outdir = defaultDemoOutdir, guard = assertWorkbenchWritePath } = {}) {

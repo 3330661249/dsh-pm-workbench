@@ -1,5 +1,6 @@
-import { workbenchConfig } from './config.js'
-
-export function apply(_ctx: unknown): void {
-  void workbenchConfig
-}
+export { workbenchConfig } from './config.js'
+export {
+  apply,
+  inject,
+  probeDomainSpec,
+} from './integration/harness-rc6/probe-host.js'

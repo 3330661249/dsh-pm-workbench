@@ -1,5 +1,9 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "outDir": "packages/workbench/lib", "noEmit": true },
+  "compilerOptions": {
+    "outDir": "packages/workbench/lib",
+    "noEmit": true,
+    "types": ["node"]
+  },
   "include": ["packages/workbench/src/index.ts", "packages/workbench/src/config.ts"]
 }

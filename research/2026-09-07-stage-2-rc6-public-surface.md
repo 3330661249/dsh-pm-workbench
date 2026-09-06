@@ -115,3 +115,29 @@ occurrences representing exactly 56 canonical `@deepseek-ai/dsh-*` names; every
 occurrence is `0.1.0-rc.6`. It found no rc.8 records. Every canonical `zod`
 lock occurrence resolves to `4.4.3`. This verifies the compile-only public
 surface and locked dependency graph, not a Harness RPC/UI/storage runtime.
+
+## Task 2 dependency and bundling delta — source checkpoint
+
+This 2026-09-07 section is append-only and supersedes only the Task 1 packaging
+sentence that described Zod as a workbench runtime dependency. It does not
+rewrite or invalidate the Task 1 dependency-resolution and public-declaration
+evidence above.
+
+- The root development graph continues to pin exact `zod@4.4.3` for source,
+  type and build verification.
+- The workbench package manifest now has no runtime `dependencies`. Harness,
+  Cordis and React packages remain exact optional peers supplied by the target
+  environment.
+- The Host and Web Client builds are configured with explicit external
+  allowlists. Zod must be included in both bundle graphs, while DeepSeek/Cordis
+  runtime source must not be bundled; the Client also leaves React and React DOM
+  external.
+- Build graph checks reject a bare external `zod` import and require the full
+  Zod 4.4.3 MIT notice in the packed documentation.
+
+The Task 2 source also defines the strict synthetic `health` and
+`counter.increment` protocol used to keep Zod reachable in both graphs. Final
+Task 2 build/package verification and the separate real-tgz isolated Harness
+run are different checkpoints. This delta does not establish installation,
+Host/Client loading, a browser RPC round trip, observed restart persistence,
+Harness compatibility, or Gate A′.

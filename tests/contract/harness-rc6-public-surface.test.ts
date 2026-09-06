@@ -188,18 +188,20 @@ describe('rc.6 public smoke surface', () => {
     }
   })
 
-  test('keeps Zod runtime-owned and declares the ordered additive client injections', async () => {
+  test('keeps bundled Zod development-owned and declares the ordered additive client injections', async () => {
     const workbenchManifest = await readJson(
       resolve(workspaceRoot, 'packages/workbench/package.json'),
     )
-    const dependencies = (workbenchManifest.dependencies ?? {}) as Record<string, string>
+    const lockfile = await readJson(resolve(workspaceRoot, 'package-lock.json'))
+    const workspaceLock = (lockfile.packages as Record<string, Record<string, unknown>>)['packages/workbench']
     const peerDependencies = workbenchManifest.peerDependencies as Record<string, string>
     const peerDependenciesMeta = workbenchManifest.peerDependenciesMeta as Record<string, unknown>
     const dsh = workbenchManifest.dsh as {
       client: { inject: string[]; platform: string }
     }
 
-    expect(dependencies).toEqual({ zod: '4.4.3' })
+    expect(workbenchManifest).not.toHaveProperty('dependencies')
+    expect(workspaceLock).not.toHaveProperty('dependencies')
     expect(dsh.client).toEqual({
       platform: 'web',
       inject: [

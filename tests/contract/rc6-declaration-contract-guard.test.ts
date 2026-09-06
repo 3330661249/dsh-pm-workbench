@@ -303,7 +303,7 @@ describe('rc.6 declaration contracts cannot bypass public surfaces', () => {
     ])
   })
 
-  test('Client carries the rc.6 public Connection handle intersection and official sidebar slot augmentation', async () => {
+  test('Client carries the rc.6 public Connection handle intersection and both additive slot augmentations', async () => {
     const source = await readWorkspaceFile(clientContractPath)
     const specifiers = expectNoContractBypass(source, clientAllowedImports)
     const layoutImport = "import '@deepseek-ai/dsh-client-ui-layout/client'"
@@ -328,7 +328,9 @@ describe('rc.6 declaration contracts cannot bypass public surfaces', () => {
     )
     expect(source).toContain("ctx.slots.inject('sidebar.footer.action'")
     expect(source).toContain("name: 'sidebar.footer.action'")
-    expect(source).not.toContain("ctx.slots.inject('shell.overlay'")
+    expect(source).toContain("ctx.slots.inject('shell.overlay'")
+    expect(source).toContain("name: 'shell.overlay'")
+    expect(source).not.toContain("ctx.slots.register(\n    { name: 'root'")
   })
 
   test('Host alone loads the public Connection and storage augmentations', async () => {

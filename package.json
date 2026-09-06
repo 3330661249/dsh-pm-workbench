@@ -5,7 +5,7 @@
   "type": "module",
   "workspaces": ["packages/workbench"],
   "scripts": {
-    "typecheck": "tsc -p tsconfig.tests.json --noEmit && tsc -p tsconfig.host.json --noEmit",
+    "typecheck": "tsc -p tsconfig.tests.json --noEmit && tsc -p tsconfig.host.json --noEmit && tsc -p packages/workbench/tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "build": "node --experimental-strip-types packages/workbench/build.mjs",

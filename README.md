@@ -9,7 +9,29 @@ analysis, prioritization, and later POC planning inside a DeepSeek Harness
 extension.
 
 The long-term Harness workflow is a product direction. The standalone browser
-Demo described below is implemented; it does not establish Harness integration.
+Demo and a bounded synthetic Harness Probe now exist in source; neither by
+itself establishes real Harness runtime compatibility.
+
+## Current Harness source implementation: Stage 2 synthetic Probe
+
+The Harness package source now implements a bounded, synthetic integration
+Probe. Its Host graph owns a strict two-endpoint registry for `health` and
+`counter.increment`, a `storageDomain` aggregate for the synthetic counter and
+idempotency receipts, and the single `/dsh-pm-workbench-v1` Connection RPC
+channel configured with `authority: 'loopback'`. Its Web Client contributes one
+`sidebar.footer.action` launcher and one `shell.overlay`; it does not replace a
+Harness root. Requests and responses are validated against strict shared Zod
+schemas, and the Client keeps at most eight RPC calls in flight.
+
+This is a **source implementation checkpoint**. The package has not yet been
+installed from its real tgz into an isolated Harness profile, loaded by the
+Harness Host or Client, exercised in Chrome, restarted to observe persistence,
+or removed and reinstalled. Stage 2 runtime compatibility and Gate A′ therefore
+remain unverified and must not be inferred from source, type, unit, build, or
+package checks. The Probe uses only an empty health request and synthetic
+integer/UUID command metadata. It makes no model call and does not read or
+process interviews, transcripts, files, sessions, credentials, providers, or
+other user data.
 
 ## Current implementation: standalone four-step Demo
 
@@ -39,11 +61,12 @@ implemented through the
 That design supersedes the older complex rollout as the current implementation
 scope; the earlier documents remain research history.
 
-The separately packaged Harness Host/Web Client is still a no-op skeleton.
-Real Harness installation/mounting, model calls, Host-owned persistence, restart
-recovery, and the Alpha privacy/real-data capability remain unimplemented and
-unverified. The Demo is not an installed Harness plugin. The historical Typert
-**NO-GO** remains historical, and Connection RPC Gate A′ has **not run**.
+The standalone Demo and the synthetic Harness Probe are separate build graphs.
+The Demo is not an installed Harness plugin, and the Probe is not the AI product
+manager workflow. Real Harness installation/mounting, observed restart recovery,
+model calls, and the Alpha privacy/real-data capability remain unverified or out
+of scope. The historical Typert **NO-GO** remains historical, and Connection RPC
+Gate A′ has **not run**.
 
 ## Historical Harness investigation and gate status
 
@@ -72,17 +95,18 @@ path. The approved canonical specification is
 [`docs/superpowers/specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md`](docs/superpowers/specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md).
 Its historical gated implementation plan set is retained at
 [`docs/superpowers/plans/2026-09-02-dsh-pm-workbench-v0.1-rollout.md`](docs/superpowers/plans/2026-09-02-dsh-pm-workbench-v0.1-rollout.md).
-That Harness integration plan has not been executed. The later approved simple
-design governs the current standalone Demo scope. Gate A′ has **not run**;
-approving the architecture does not establish that Connection RPC works from
-this third-party tarball.
+That wider Harness integration plan has not been executed as a product Alpha.
+The later approved simple design governs the standalone Demo, while the current
+Stage 2 source implements only the bounded synthetic Connection RPC Probe
+described above. Gate A′ has **not run**; implementing the architecture does not
+establish that Connection RPC works from this third-party tarball.
 
 The source-free canonical result set is retained in
 [`docs/matrix-results/2026-09-02-darwin-arm64/`](docs/matrix-results/2026-09-02-darwin-arm64/).
 
 Alongside the implemented standalone Demo, the repository retains the private
-static Harness package skeleton and technical evidence. The canonical Harness
-ledger has **not** established that the package:
+Harness Probe source and technical evidence. The canonical Harness ledger has
+**not** established that the package:
 
 - can be installed into DeepSeek Harness;
 - can load or mount in a Harness profile;
@@ -107,14 +131,14 @@ are recorded alongside the results.
 
 No tested candidate is eligible for an isolated mount probe under the old
 strict generated-Remote architecture. The owner has approved Connection RPC as
-the next architecture boundary, not as a proved compatibility result. The older
-rollout proposed an F0 foundation and bounded Gate A′ using `health`, a synthetic
-persisted counter, an additive launcher/overlay, and a real tarball in an isolated
-profile. That proposal is retained as investigation history, not the current
-Demo task list. Any later Harness Alpha work needs its own approved implementation
-scope and observed integration evidence. The standalone Demo does not authorize
-a real model, real interviews, installation into the user's active Harness
-profile, merge, or public distribution.
+the architecture boundary, not as a proved compatibility result. The current
+Stage 2 source implements the bounded `health`/synthetic-counter service and
+additive launcher/overlay portion of that direction; the real-tarball isolated
+runtime observation remains a separate next step. Any later Harness Alpha work
+needs its own approved implementation scope and observed integration evidence.
+Neither the standalone Demo nor the Probe authorizes a real model, real
+interviews, installation into the user's active Harness profile, merge, or
+public distribution.
 
 ## Data boundary
 

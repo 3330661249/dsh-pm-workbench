@@ -24,6 +24,7 @@ describe('workbench bundle manifest', () => {
       ],
     })
     expect(manifest.exports['./package.json']).toBe('./package.json')
+    expect(manifest).not.toHaveProperty('dependencies')
     expect(manifest.files).toEqual(expect.arrayContaining([
       'lib',
       'cordis.patch.yml',
