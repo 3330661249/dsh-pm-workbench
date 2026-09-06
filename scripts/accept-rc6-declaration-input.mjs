@@ -75,7 +75,7 @@ const EXPECTED_ACCEPTED_PACKAGE_LOCK_CANONICAL_SHA256 = 'd99f9a20b594ca3bd825d33
 const EXPECTED_COMMITTED_V1_INPUT_RAW_SHA256 = 'eaa89753953535e0a231ac99d3053de75d8fb67c2d73f7b9bcae9a2997d7e489'
 const EXPECTED_COMPILER_SOURCE_AGGREGATE_SHA256 = '44535345dd7a3448bac9206c60ad352f67c265708d410c4c5e20dad0de83d943'
 const EXPECTED_VERIFIER_SOURCE_SHA256 = 'a0b9b11ad0ca1e8cf2fe79b7c127a5de1418329970ffca174d8b510e9b213329'
-const EXPECTED_ACCEPTANCE_SOURCE_NORMALIZED_SHA256 = 'fbe0fc9584762866f0daab302a03b6683157267e2dc6dc2a9f12d716f4d3be98'
+const EXPECTED_ACCEPTANCE_SOURCE_NORMALIZED_SHA256 = '6dab6f41bfda75795031e1fa9a2e9bbc41672884276d92f72fd6af2f2eb8a120'
 const CLIENT_COMPILER_OVERLAY_RELATIVE = 'tsconfig.surface.client.overlay.json'
 const EXPECTED_CLIENT_COMPILER_OVERLAY_SHA256 = 'ccc1578a3ed59a72264d3d468af7968b2a0771b693875d9ea9ee8fda4b1a2d24'
 const CLIENT_COMPILER_OVERLAY = {
@@ -5529,4 +5529,16 @@ async function main() {
   }
 }
 
-if (basename(process.argv[1] ?? '') === 'accept-rc6-declaration-input.mjs') void main()
+async function isDirectCliEntry() {
+  const entryPath = process.argv[1]
+  if (!entryPath) return false
+  try {
+    return await realpath(entryPath) === await realpath(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+
+if (await isDirectCliEntry()) {
+  void main()
+}

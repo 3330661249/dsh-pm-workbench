@@ -2671,6 +2671,56 @@ describe('rc.6 accepted declaration input', () => {
     }
   })
 
+  test.each([
+    { label: 'empty', argv: [] },
+    { label: 'verify-and-compile', argv: ['--verify-and-compile'] },
+    { label: 'replay-arbitrary-path', argv: ['--replay-arbitrary-path'] },
+    { label: 'help', argv: ['--help'] },
+    { label: 'unknown', argv: ['--unknown'] },
+  ])('runs retired acceptance CLI through a differently named symlink for argv $label', async ({ argv }) => {
+    const root = await createAcceptanceCliFixture()
+    const alias = resolve(root, 'scripts/retired-acceptance-alias.mjs')
+    try {
+      await symlink('accept-rc6-declaration-input.mjs', alias)
+      const before = await fixtureFingerprint(root)
+      await expect(stat(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
+      const outcome = await execFileAsync(process.execPath, [alias, ...argv], { cwd: root }).then(
+        () => 'RESOLVED',
+        (error) => error,
+      )
+      await expect(stat(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(await fixtureFingerprint(root)).toBe(before)
+      expect(outcome).toMatchObject({
+        code: 1,
+        stdout: `${JSON.stringify({
+          status: 'FAIL_INPUT_POLICY',
+          reasonCode: 'LEGACY_ACCEPT_DISABLED',
+        }, null, 2)}\n`,
+        stderr: '',
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('does not execute retired acceptance main when a same-basename driver imports the copied implementation', async () => {
+    const root = await createAcceptanceCliFixture()
+    const driver = resolve(root, 'scripts/accept-rc6-declaration-input.mjs')
+    const implementation = resolve(root, 'scripts/retired-acceptance-implementation.mjs')
+    try {
+      await rename(driver, implementation)
+      await writeFile(driver, "await import('./retired-acceptance-implementation.mjs')\n", 'utf8')
+      const before = await fixtureFingerprint(root)
+      await expect(stat(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
+      const outcome = await execFileAsync(process.execPath, [driver], { cwd: root })
+      await expect(stat(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(await fixtureFingerprint(root)).toBe(before)
+      expect(outcome).toEqual({ stdout: '', stderr: '' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('derives a complete ASCII/UTF-8 ordered lock projection and validates an exact staged-proposal v2 snapshot', async () => {
     const [currentInput, packageJson, packageLock, rootPackageLock] = await Promise.all([
       readJson('tools/harness-rc6-declarations/input-manifest.json'),
