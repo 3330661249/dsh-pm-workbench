@@ -251,11 +251,11 @@ async function createBootstrapFixture() {
   return root
 }
 
-async function runFixtureCli(root: string) {
+async function runFixtureCli(root: string, argv: string[] = []) {
   const script = resolve(root, 'scripts/accept-rc6-declaration-input.mjs')
   await mkdir(dirname(script), { recursive: true })
   await copyFile(resolve(workspaceRoot, 'scripts/accept-rc6-declaration-input.mjs'), script)
-  return execFileAsync(process.execPath, [script], { cwd: root })
+  return execFileAsync(process.execPath, [script, ...argv], { cwd: root })
 }
 
 async function writeSyntheticCandidate(root: string, {
@@ -2662,13 +2662,56 @@ describe('rc.6 accepted declaration input', () => {
     }, { verifierSourceTransform: transform, trustVerifierTransform: true })
   }, 30_000)
 
-  test('makes the current v1 CLI gate nonzero and path-free JSON only', async () => {
-    const script = resolve(workspaceRoot, 'scripts/accept-rc6-declaration-input.mjs')
-    await expect(execFileAsync(process.execPath, [script], { cwd: workspaceRoot })).rejects.toMatchObject({
-      code: 1,
-      stdout: `${JSON.stringify({ status: 'CHANGES_REQUIRED_REVIEW', reason: 'INPUT_MANIFEST_V2_PENDING_B2' }, null, 2)}\n`,
-      stderr: '',
+  test('rejects the retired acceptance writer without observing caller input or creating a missing workspace temp path', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'rc6-retired-acceptance-writer-'))
+    const explosiveInput = new Proxy({}, {
+      get() {
+        throw new Error('caller input must remain unobserved')
+      },
     })
+
+    try {
+      const proxyOutcome = await acceptance.acceptRc6DeclarationInput(explosiveInput).then(
+        () => 'RESOLVED',
+        (error) => error,
+      )
+      const missingWorkspaceOutcome = await acceptance.acceptRc6DeclarationInput({ workspaceRoot: root }).then(
+        () => 'RESOLVED',
+        (error) => error,
+      )
+
+      expect(proxyOutcome).toMatchObject({
+        code: 'LEGACY_ACCEPT_DISABLED',
+      })
+      expect(missingWorkspaceOutcome).toMatchObject({
+        code: 'LEGACY_ACCEPT_DISABLED',
+      })
+      await expect(stat(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test.each([
+    { label: 'empty', argv: [] },
+    { label: 'verify-and-compile', argv: ['--verify-and-compile'] },
+    { label: 'replay-arbitrary-path', argv: ['--replay-arbitrary-path'] },
+    { label: 'help', argv: ['--help'] },
+    { label: 'unknown', argv: ['--unknown'] },
+  ])('rejects retired acceptance CLI argv $label with fixed policy JSON only', async ({ argv }) => {
+    const root = await mkdtemp(resolve(tmpdir(), 'rc6-retired-acceptance-cli-'))
+    try {
+      await expect(runFixtureCli(root, argv)).rejects.toMatchObject({
+        code: 1,
+        stdout: `${JSON.stringify({
+          status: 'FAIL_INPUT_POLICY',
+          reasonCode: 'LEGACY_ACCEPT_DISABLED',
+        }, null, 2)}\n`,
+        stderr: '',
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   test('derives a complete ASCII/UTF-8 ordered lock projection and validates a synthetic v2 snapshot', async () => {
