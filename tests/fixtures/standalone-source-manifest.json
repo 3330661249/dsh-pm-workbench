@@ -45,6 +45,7 @@
     "scripts/verify-rc6-declaration-closure.mjs",
     "scripts/workspace-boundary.ts",
     "tests/contract/demo-boundary.test.ts",
+    "tests/contract/harness-rc6-public-surface.test.ts",
     "tests/contract/manual-matrix-workflow.test.ts",
     "tests/contract/package-manifest.test.ts",
     "tests/contract/rc6-declaration-contract-guard.test.ts",

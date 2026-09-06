@@ -658,6 +658,31 @@ async function writeExclusiveFile(path: string, bytes: string | Buffer, mode = 0
   await writeFile(path, bytes, { flag: 'wx', mode })
 }
 
+async function writeLegacyBoundaryFixtureFile(path: string, bytes: Buffer): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+  const handle = await open(
+    path,
+    fsConstants.O_CREAT
+      | fsConstants.O_EXCL
+      | fsConstants.O_WRONLY
+      | fsConstants.O_NOFOLLOW,
+    0o600,
+  )
+  try {
+    await handle.writeFile(bytes)
+    const stats = await handle.stat()
+    if (!stats.isFile() || stats.nlink !== 1) {
+      fail(`legacy boundary fixture destination is unsafe: ${path}`)
+    }
+    // The frozen production boundary requires regular source files to be
+    // exactly 0644. chmod after creation makes the fixture independent of the
+    // caller's process umask without changing the 0600 default used elsewhere.
+    await handle.chmod(0o644)
+  } finally {
+    await handle.close()
+  }
+}
+
 async function makeTreeExactlyReadOnly(path: string): Promise<void> {
   const entry = await lstat(path)
   if (entry.isSymbolicLink()) fail(`fixture tree contains a symlink: ${path}`)
@@ -2993,10 +3018,9 @@ export async function withSynthetic169BootstrapProductionPath<T>(
     }
 
     for (const boundary of legacyBoundaryFiles) {
-      await writeExclusiveFile(
+      await writeLegacyBoundaryFixtureFile(
         resolve(baseFixture.workspaceRoot, boundary.path),
         boundary.bytes,
-        0o644,
       )
     }
     await copyVerifiedFixtureFile({

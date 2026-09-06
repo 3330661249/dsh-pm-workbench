@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
-import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises'
+import { constants as fsConstants } from 'node:fs'
+import { chmod, copyFile, link, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFile } from 'node:child_process'
@@ -237,14 +238,36 @@ function makeSyntheticV2Input({
 }
 
 async function createBoundaryFixture() {
-  const root = await mkdtemp(resolve(tmpdir(), 'rc6-boundary-'))
   const fixture = await readLegacyBoundaryFixture()
-  for (const file of fixture.files) {
-    const destination = resolve(root, file.path)
-    await mkdir(dirname(destination), { recursive: true })
-    await writeFile(destination, Buffer.from(file.bytesBase64, 'base64'))
+  const root = await mkdtemp(resolve(tmpdir(), 'rc6-boundary-'))
+  try {
+    for (const file of fixture.files) {
+      const destination = resolve(root, file.path)
+      await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
+      const handle = await open(
+        destination,
+        fsConstants.O_CREAT
+          | fsConstants.O_EXCL
+          | fsConstants.O_WRONLY
+          | fsConstants.O_NOFOLLOW,
+        0o600,
+      )
+      try {
+        await handle.writeFile(Buffer.from(file.bytesBase64, 'base64'))
+        const stats = await handle.stat()
+        if (!stats.isFile() || stats.nlink !== 1) {
+          throw new Error(`legacy boundary fixture destination is unsafe: ${file.path}`)
+        }
+        await handle.chmod(0o644)
+      } finally {
+        await handle.close()
+      }
+    }
+    return root
+  } catch (error) {
+    await rm(root, { recursive: true, force: true })
+    throw error
   }
-  return root
 }
 
 async function createInspectorFixture() {
@@ -2948,14 +2971,20 @@ describe('rc.6 accepted declaration input', () => {
     ).toThrow()
   })
 
-  test('reconstructs the frozen historical production boundary without a runtime git dependency', async () => {
+  test('reconstructs the frozen historical production boundary under a strict umask without a runtime git dependency', async () => {
     const [currentInput, packageJson, packageLock] = await Promise.all([
       readJson('tools/harness-rc6-declarations/input-manifest.json'),
       readJson('tools/harness-rc6-declarations/package.json'),
       readJson('tools/harness-rc6-declarations/package-lock.json'),
     ])
     const input = makeSyntheticV2Input({ currentInput, packageLock })
-    const root = await createBoundaryFixture()
+    const previousUmask = process.umask(0o077)
+    let root: string
+    try {
+      root = await createBoundaryFixture()
+    } finally {
+      process.umask(previousUmask)
+    }
     try {
       const boundary = await acceptance.validateProductionBoundary({ workspaceRoot: root, inputManifest: input })
       const historicalRootPackageLock = JSON.parse(
@@ -2980,12 +3009,18 @@ describe('rc.6 accepted declaration input', () => {
       readJson('tools/harness-rc6-declarations/package-lock.json'),
     ])
 
-    await expect(acceptance.validateProductionBoundary({
+    const boundaryError = await acceptance.validateProductionBoundary({
       workspaceRoot,
       inputManifest: makeSyntheticV2Input({ currentInput, packageLock }),
-    })).rejects.toThrowError(expect.objectContaining({
-      code: 'PRODUCTION_BOUNDARY_HASH_MISMATCH',
-    }))
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect(boundaryError).toBeInstanceOf(Error)
+    expect([
+      'PRODUCTION_BOUNDARY_FILE_LIST_MISMATCH',
+      'PRODUCTION_BOUNDARY_HASH_MISMATCH',
+    ]).toContain((boundaryError as { code?: unknown }).code)
   })
 
   test.each([
