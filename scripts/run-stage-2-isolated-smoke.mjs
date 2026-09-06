@@ -245,6 +245,7 @@ export function buildChromeArgv(userDataDir) {
     '--remote-debugging-port=0',
     '--no-first-run',
     '--no-default-browser-check',
+    '--use-mock-keychain',
     '--disable-background-networking',
     '--disable-component-update',
     '--disable-domain-reliability',
@@ -1324,6 +1325,32 @@ async function waitForChildExit(child, milliseconds, timeoutCode) {
   }), milliseconds, timeoutCode)
 }
 
+async function waitForRetainedChildExit(child, milliseconds, timeoutCode) {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  await new Promise((resolve, reject) => {
+    let timer
+    const cleanup = () => {
+      clearTimeout(timer)
+      child.off('exit', exited)
+      child.off('error', failed)
+    }
+    const exited = () => {
+      cleanup()
+      resolve()
+    }
+    const failed = () => {
+      cleanup()
+      reject(timeoutError('STAGE2_CHILD_PROCESS_ERROR'))
+    }
+    timer = setTimeout(() => {
+      cleanup()
+      reject(timeoutError(timeoutCode))
+    }, milliseconds)
+    child.once('exit', exited)
+    child.once('error', failed)
+  })
+}
+
 async function lsofCwd(pid, expectedCwd, validated) {
   await validated.assert('lsof')
   const { stdout } = await boundedExec(LSOF_ENTRY, ['-nP', '-a', '-p', String(pid), '-d', 'cwd', '-Fpn'])
@@ -1401,26 +1428,83 @@ async function assertLiveChild(receipt, { run, validated, listenerPort }) {
   if (listenerPort !== undefined) await lsofListener(receipt.pid, listenerPort, validated)
 }
 
-async function stopRetainedChild(receipt, { run, validated, listenerPort }) {
+async function stopRetainedChild(receipt, {
+  run,
+  validated,
+  listenerPort,
+  waitForExit = waitForChildExit,
+}) {
   await assertLiveChild(receipt, { run, validated, listenerPort })
   if (!receipt.child.kill('SIGTERM')) fail('STAGE2_PROCESS_SIGNAL_FAILED', 'SAFETY_ABORT')
   try {
-    await waitForChildExit(receipt.child, 10_000, 'STAGE2_PROCESS_STOP_TIMEOUT')
+    await waitForExit(receipt.child, 10_000, 'STAGE2_PROCESS_STOP_TIMEOUT')
   } catch (error) {
     if (error?.stage2Code !== 'STAGE2_PROCESS_STOP_TIMEOUT') throw error
     await assertLiveChild(receipt, { run, validated, listenerPort })
     if (!receipt.child.kill('SIGKILL')) fail('STAGE2_PROCESS_SIGNAL_FAILED', 'SAFETY_ABORT')
-    await waitForChildExit(receipt.child, 10_000, 'STAGE2_PROCESS_KILL_TIMEOUT')
+    await waitForExit(receipt.child, 10_000, 'STAGE2_PROCESS_KILL_TIMEOUT')
   }
   if (listenerPort !== undefined) await assertListenerAbsent(listenerPort, validated)
   run.markChildStopped(receipt)
 }
 
-async function stopIncompleteChild(receipt, { run, validated }) {
+export async function stopRetainedChrome(receipt, {
+  run,
+  validated,
+  listenerPort,
+  peer,
+  operations = {},
+}) {
+  const assertLive = operations.assertLive ?? assertLiveChild
+  const waitForExit = operations.waitForExit ?? waitForRetainedChildExit
+  const listenerAbsent = operations.assertListenerAbsent ?? assertListenerAbsent
+  const stopRetained = operations.stopRetained ?? stopRetainedChild
+  await assertLive(receipt, { run, validated, listenerPort })
+
+  let closeCommand
+  try {
+    closeCommand = Promise.resolve(peer.send('Browser.close'))
+  } catch (error) {
+    closeCommand = Promise.reject(error)
+  }
+  const closeOutcome = closeCommand.then(
+    () => Object.freeze({ accepted: true }),
+    (error) => Object.freeze({ accepted: error?.stage2Code === 'STAGE2_CDP_CLOSED' }),
+  )
+
+  try {
+    await waitForExit(receipt.child, 10_000, 'STAGE2_CHROME_CLOSE_TIMEOUT')
+  } catch (error) {
+    if (error?.stage2Code !== 'STAGE2_CHROME_CLOSE_TIMEOUT') throw error
+    await peer.close()
+    if (receipt.child.exitCode !== null || receipt.child.signalCode !== null) {
+      await listenerAbsent(listenerPort, validated)
+      const command = await closeOutcome
+      run.markChildStopped(receipt)
+      if (!command.accepted) fail('STAGE2_CDP_CLOSE_FAILED', 'SAFETY_ABORT')
+      return
+    }
+    await assertLive(receipt, { run, validated, listenerPort })
+    await stopRetained(receipt, { run, validated, listenerPort, waitForExit })
+    return
+  }
+
+  await listenerAbsent(listenerPort, validated)
+  await peer.close()
+  const command = await closeOutcome
+  run.markChildStopped(receipt)
+  if (!command.accepted) fail('STAGE2_CDP_CLOSE_FAILED', 'SAFETY_ABORT')
+}
+
+async function stopIncompleteChild(receipt, {
+  run,
+  validated,
+  waitForExit = waitForChildExit,
+}) {
   if (receipt.child.exitCode !== null || receipt.child.signalCode !== null) return
   await assertLiveChild(receipt, { run, validated })
   if (!receipt.child.kill('SIGTERM')) fail('STAGE2_PROCESS_SIGNAL_FAILED', 'SAFETY_ABORT')
-  await waitForChildExit(receipt.child, 10_000, 'STAGE2_PROCESS_STOP_TIMEOUT')
+  await waitForExit(receipt.child, 10_000, 'STAGE2_PROCESS_STOP_TIMEOUT')
 }
 
 export function classifyProfileExit({ exitCode, signalCode, captureError, overflow }) {
@@ -2339,9 +2423,11 @@ export async function cleanupBrowserPhaseResources({
   validated,
   operations = {},
 }) {
+  const stopChrome = operations.stopChrome ?? stopRetainedChrome
   const stopRetained = operations.stopRetained ?? stopRetainedChild
   const stopIncomplete = operations.stopIncomplete ?? stopIncompleteChild
   const listenerAbsent = operations.assertListenerAbsent ?? assertListenerAbsent
+  const chromeWaitForExit = operations.waitForExit ?? waitForRetainedChildExit
   let ok = true
   const attempt = async (operation) => {
     try {
@@ -2354,10 +2440,20 @@ export async function cleanupBrowserPhaseResources({
   if (page) await attempt(async () => page.disposeNetwork())
   await attempt(async () => {
     if (child.exitCode === null && child.signalCode === null) {
-      if (devtools) await stopRetained(receipt, { run, validated, listenerPort: devtools.port })
-      else await stopIncomplete(receipt, { run, validated })
-    } else if (devtools) {
-      await listenerAbsent(devtools.port, validated)
+      if (devtools && peer) {
+        await stopChrome(receipt, { run, validated, listenerPort: devtools.port, peer })
+      } else if (devtools) {
+        await stopRetained(receipt, {
+          run, validated, listenerPort: devtools.port, waitForExit: chromeWaitForExit,
+        })
+      } else {
+        await stopIncomplete(receipt, { run, validated, waitForExit: chromeWaitForExit })
+        await run.assertOwned()
+        run.markChildStopped(receipt)
+      }
+    } else {
+      await run.assertOwned()
+      if (devtools) await listenerAbsent(devtools.port, validated)
       run.markChildStopped(receipt)
     }
   })

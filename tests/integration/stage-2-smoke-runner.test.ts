@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import { link, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import {
+  Stage2RunnerError,
   STAGE2_PHASES,
   assertPackToolProvenance,
   assertSameTreeInventory,
@@ -27,6 +29,7 @@ import {
   renderPnpmShim,
   runStage2Cli,
   stageVerifiedPackage,
+  stopRetainedChrome,
   proveNoOpenHandles,
   isStrictLsofNoMatch,
   isWorkbenchClientBundleUrl,
@@ -331,8 +334,280 @@ describe('Stage 2 browser and listener guards', () => {
     expect(argv).toContain('--remote-debugging-port=0')
     expect(argv).toContain('--user-data-dir=/owned/run/browser/initial-enabled')
     expect(argv).toContain('--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1')
+    expect(argv).toContain('--use-mock-keychain')
+    expect(argv).not.toContain('--disable-background-mode')
+    expect(argv).not.toContain('--disable-crashpad-for-testing')
     expect(argv).toContain('about:blank')
     expect(argv.join(' ')).not.toMatch(/3080|remote-allow-origins=\*|no-sandbox/)
+  })
+
+  it('closes an identity-witnessed Chrome through browser-scope CDP before marking it stopped', async () => {
+    const order: string[] = []
+    class FakeChild extends EventEmitter {
+      pid = 741
+      exitCode: number | null = null
+      signalCode: string | null = null
+    }
+    const child = new FakeChild()
+    const receipt = { pid: child.pid, child }
+    const run = {
+      markChildStopped: vi.fn(() => { order.push('mark-stopped') }),
+    }
+    const peer = {
+      send: vi.fn(() => {
+        order.push('browser-close')
+        queueMicrotask(() => {
+          child.exitCode = 0
+          child.emit('exit', 0, null)
+        })
+        return Promise.resolve({})
+      }),
+      close: vi.fn(() => { order.push('peer-close') }),
+    }
+    const assertLive = vi.fn(async () => { order.push('identity-witness') })
+    const listenerAbsent = vi.fn(async () => { order.push('listener-absent') })
+
+    await stopRetainedChrome(receipt, {
+      run,
+      validated: {},
+      listenerPort: 43_191,
+      peer,
+      operations: {
+        assertLive,
+        assertListenerAbsent: listenerAbsent,
+        stopRetained: vi.fn(),
+      },
+    })
+
+    expect(peer.send).toHaveBeenCalledWith('Browser.close')
+    expect(peer.close).toHaveBeenCalledOnce()
+    expect(order).toEqual([
+      'identity-witness',
+      'browser-close',
+      'listener-absent',
+      'peer-close',
+      'mark-stopped',
+    ])
+    expect(run.markChildStopped).toHaveBeenCalledWith(receipt)
+  })
+
+  it('closes the peer and revalidates the full witness before a signal fallback that still waits for exit', async () => {
+    const order: string[] = []
+    const child = { pid: 741, exitCode: null, signalCode: null }
+    const receipt = { pid: child.pid, child }
+    const run = { markChildStopped: vi.fn() }
+    const peer = {
+      send: vi.fn(() => new Promise(() => {})),
+      close: vi.fn(() => { order.push('peer-close') }),
+    }
+    const assertLive = vi.fn(async () => { order.push('identity-witness') })
+    const waitForExit = vi.fn(async () => {
+      order.push('grace-timeout')
+      throw new Stage2RunnerError('STAGE2_CHROME_CLOSE_TIMEOUT')
+    })
+    const stopRetained = vi.fn(async (_receipt, options) => {
+      order.push('signal-fallback')
+      expect(options.waitForExit).toBe(waitForExit)
+    })
+
+    await stopRetainedChrome(receipt, {
+      run,
+      validated: {},
+      listenerPort: 43_191,
+      peer,
+      operations: {
+        assertLive,
+        waitForExit,
+        assertListenerAbsent: vi.fn(),
+        stopRetained,
+      },
+    })
+
+    expect(order).toEqual([
+      'identity-witness',
+      'grace-timeout',
+      'peer-close',
+      'identity-witness',
+      'signal-fallback',
+    ])
+    expect(peer.send).toHaveBeenCalledWith('Browser.close')
+    expect(assertLive).toHaveBeenCalledTimes(2)
+    expect(run.markChildStopped).not.toHaveBeenCalled()
+  })
+
+  it('accepts an expected CDP command rejection only after child exit and listener absence', async () => {
+    const child = { pid: 741, exitCode: null as number | null, signalCode: null as string | null }
+    const receipt = { pid: child.pid, child }
+    const run = { markChildStopped: vi.fn() }
+    const peer = {
+      send: vi.fn(() => Promise.reject(new Stage2RunnerError('STAGE2_CDP_CLOSED'))),
+      close: vi.fn(),
+    }
+    const listenerAbsent = vi.fn(async () => undefined)
+
+    await stopRetainedChrome(receipt, {
+      run,
+      validated: {},
+      listenerPort: 43_191,
+      peer,
+      operations: {
+        assertLive: vi.fn(async () => undefined),
+        waitForExit: vi.fn(async () => { child.exitCode = 0 }),
+        assertListenerAbsent: listenerAbsent,
+        stopRetained: vi.fn(),
+      },
+    })
+    await Promise.resolve()
+
+    expect(listenerAbsent).toHaveBeenCalledWith(43_191, {})
+    expect(run.markChildStopped).toHaveBeenCalledWith(receipt)
+  })
+
+  it.each([
+    ['an unexpected asynchronous rejection', () => Promise.reject(
+      new Stage2RunnerError('STAGE2_CDP_PROTOCOL_FAILED'),
+    )],
+    ['a synchronous send failure', () => { throw new Error('socket write failed') }],
+  ])('fails closed after %s even when process closure is independently proved', async (_label, send) => {
+    const child = { pid: 741, exitCode: null as number | null, signalCode: null as string | null }
+    const receipt = { pid: child.pid, child }
+    const run = { markChildStopped: vi.fn() }
+    const peer = { send: vi.fn(send), close: vi.fn() }
+
+    await expect(stopRetainedChrome(receipt, {
+      run,
+      validated: {},
+      listenerPort: 43_191,
+      peer,
+      operations: {
+        assertLive: vi.fn(async () => undefined),
+        waitForExit: vi.fn(async () => { child.exitCode = 0 }),
+        assertListenerAbsent: vi.fn(async () => undefined),
+        stopRetained: vi.fn(),
+      },
+    })).rejects.toMatchObject({
+      stage2Code: 'STAGE2_CDP_CLOSE_FAILED',
+      stage2Outcome: 'SAFETY_ABORT',
+    })
+
+    expect(peer.close).toHaveBeenCalledOnce()
+    expect(run.markChildStopped).toHaveBeenCalledWith(receipt)
+  })
+
+  it('does not hide an unexpected close rejection when peer shutdown wins the timeout race', async () => {
+    const child = { pid: 741, exitCode: null as number | null, signalCode: null as string | null }
+    const receipt = { pid: child.pid, child }
+    const run = { markChildStopped: vi.fn() }
+    const peer = {
+      send: vi.fn(() => Promise.reject(new Stage2RunnerError('STAGE2_CDP_PROTOCOL_FAILED'))),
+      close: vi.fn(() => { child.exitCode = 0 }),
+    }
+
+    await expect(stopRetainedChrome(receipt, {
+      run,
+      validated: {},
+      listenerPort: 43_191,
+      peer,
+      operations: {
+        assertLive: vi.fn(async () => undefined),
+        waitForExit: vi.fn(async () => {
+          throw new Stage2RunnerError('STAGE2_CHROME_CLOSE_TIMEOUT')
+        }),
+        assertListenerAbsent: vi.fn(async () => undefined),
+        stopRetained: vi.fn(),
+      },
+    })).rejects.toMatchObject({
+      stage2Code: 'STAGE2_CDP_CLOSE_FAILED',
+      stage2Outcome: 'SAFETY_ABORT',
+    })
+
+    expect(run.markChildStopped).toHaveBeenCalledWith(receipt)
+  })
+
+  it('refuses every signal and retains the child receipt when the listener witness disappears after peer close', async () => {
+    const child = { pid: 741, exitCode: null, signalCode: null }
+    const receipt = { pid: child.pid, child }
+    const run = { markChildStopped: vi.fn() }
+    const peer = { send: vi.fn(() => new Promise(() => {})), close: vi.fn() }
+    const assertLive = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Stage2RunnerError('STAGE2_LISTENER_MISMATCH', 'SAFETY_ABORT'))
+    const stopRetained = vi.fn()
+
+    await expect(stopRetainedChrome(receipt, {
+      run,
+      validated: {},
+      listenerPort: 43_191,
+      peer,
+      operations: {
+        assertLive,
+        waitForExit: vi.fn(async () => {
+          throw new Stage2RunnerError('STAGE2_CHROME_CLOSE_TIMEOUT')
+        }),
+        assertListenerAbsent: vi.fn(),
+        stopRetained,
+      },
+    })).rejects.toMatchObject({
+      stage2Code: 'STAGE2_LISTENER_MISMATCH',
+      stage2Outcome: 'SAFETY_ABORT',
+    })
+
+    expect(peer.close).toHaveBeenCalledOnce()
+    expect(assertLive).toHaveBeenCalledTimes(2)
+    expect(stopRetained).not.toHaveBeenCalled()
+    expect(run.markChildStopped).not.toHaveBeenCalled()
+  })
+
+  it('does not mark Chrome stopped when strict listener absence is unproved after exit', async () => {
+    const child = { pid: 741, exitCode: null as number | null, signalCode: null as string | null }
+    const receipt = { pid: child.pid, child }
+    const run = { markChildStopped: vi.fn() }
+
+    await expect(stopRetainedChrome(receipt, {
+      run,
+      validated: {},
+      listenerPort: 43_191,
+      peer: { send: vi.fn(() => Promise.resolve({})), close: vi.fn() },
+      operations: {
+        assertLive: vi.fn(async () => undefined),
+        waitForExit: vi.fn(async () => { child.exitCode = 0 }),
+        assertListenerAbsent: vi.fn(async () => {
+          throw new Stage2RunnerError('STAGE2_LISTENER_ABSENCE_UNPROVED', 'SAFETY_ABORT')
+        }),
+        stopRetained: vi.fn(),
+      },
+    })).rejects.toMatchObject({
+      stage2Code: 'STAGE2_LISTENER_ABSENCE_UNPROVED',
+      stage2Outcome: 'SAFETY_ABORT',
+    })
+
+    expect(run.markChildStopped).not.toHaveBeenCalled()
+  })
+
+  it('does not send Browser.close when the fresh Chrome identity witness fails', async () => {
+    const peer = { send: vi.fn(), close: vi.fn() }
+    const run = { markChildStopped: vi.fn() }
+
+    await expect(stopRetainedChrome(
+      { pid: 741, child: { pid: 741, exitCode: null, signalCode: null } },
+      {
+        run,
+        validated: {},
+        listenerPort: 43_191,
+        peer,
+        operations: {
+          assertLive: vi.fn(async () => {
+            throw new Stage2RunnerError('STAGE2_PROCESS_CWD_MISMATCH', 'SAFETY_ABORT')
+          }),
+        },
+      },
+    )).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PROCESS_CWD_MISMATCH',
+      stage2Outcome: 'SAFETY_ABORT',
+    })
+
+    expect(peer.send).not.toHaveBeenCalled()
+    expect(run.markChildStopped).not.toHaveBeenCalled()
   })
 
   it('drives CDP through an injected WebSocket without starting a browser', async () => {
@@ -698,7 +973,7 @@ describe('Stage 2 browser and listener guards', () => {
   it('continues peer close and retained-child stop when an earlier browser cleanup step fails', async () => {
     const page = { disposeNetwork: vi.fn(async () => { throw new Error('cached gate rejection') }) }
     const peer = { close: vi.fn(() => undefined) }
-    const stopRetained = vi.fn(async () => undefined)
+    const stopChrome = vi.fn(async () => undefined)
 
     const cleanup = await cleanupBrowserPhaseResources({
       page,
@@ -709,7 +984,8 @@ describe('Stage 2 browser and listener guards', () => {
       run: {},
       validated: {},
       operations: {
-        stopRetained,
+        stopChrome,
+        stopRetained: vi.fn(async () => undefined),
         stopIncomplete: vi.fn(async () => undefined),
         assertListenerAbsent: vi.fn(async () => undefined),
       },
@@ -718,7 +994,7 @@ describe('Stage 2 browser and listener guards', () => {
     expect(cleanup).toEqual({ ok: false })
     expect(page.disposeNetwork).toHaveBeenCalledOnce()
     expect(peer.close).toHaveBeenCalledOnce()
-    expect(stopRetained).toHaveBeenCalledOnce()
+    expect(stopChrome).toHaveBeenCalledOnce()
   })
 
   it('stops retained Chrome while its DevTools listener witness is still available', async () => {
@@ -733,8 +1009,8 @@ describe('Stage 2 browser and listener guards', () => {
         listenerAlive = false
       }),
     }
-    const stopRetained = vi.fn(async () => {
-      order.push('stop-retained')
+    const stopChrome = vi.fn(async () => {
+      order.push('stop-chrome')
       if (!listenerAlive) throw new Error('DevTools listener witness disappeared')
     })
 
@@ -747,14 +1023,143 @@ describe('Stage 2 browser and listener guards', () => {
       run: {},
       validated: {},
       operations: {
-        stopRetained,
+        stopChrome,
+        stopRetained: vi.fn(async () => undefined),
         stopIncomplete: vi.fn(async () => undefined),
         assertListenerAbsent: vi.fn(async () => undefined),
       },
     })
 
     expect(cleanup).toEqual({ ok: true })
-    expect(order).toEqual(['dispose-network', 'stop-retained', 'peer-close'])
+    expect(order).toEqual(['dispose-network', 'stop-chrome', 'peer-close'])
+  })
+
+  it('still closes the CDP peer last when Chrome shutdown fails closed', async () => {
+    const order: string[] = []
+    const peer = { close: vi.fn(() => { order.push('peer-close') }) }
+
+    const cleanup = await cleanupBrowserPhaseResources({
+      page: { disposeNetwork: vi.fn(async () => { order.push('dispose-network') }) },
+      peer,
+      child: { exitCode: null, signalCode: null },
+      devtools: { port: 43_191 },
+      receipt: { pid: 123 },
+      run: {},
+      validated: {},
+      operations: {
+        stopChrome: vi.fn(async () => {
+          order.push('stop-chrome')
+          throw new Stage2RunnerError('STAGE2_LISTENER_MISMATCH', 'SAFETY_ABORT')
+        }),
+        stopRetained: vi.fn(),
+        stopIncomplete: vi.fn(),
+        assertListenerAbsent: vi.fn(),
+      },
+    })
+
+    expect(cleanup).toEqual({ ok: false })
+    expect(order).toEqual(['dispose-network', 'stop-chrome', 'peer-close'])
+    expect(peer.close).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the witnessed signal cleanup for a partial Chrome start without a CDP peer', async () => {
+    const stopChrome = vi.fn()
+    const stopRetained = vi.fn(async () => undefined)
+    const chromeWaitForExit = vi.fn()
+
+    const cleanup = await cleanupBrowserPhaseResources({
+      page: undefined,
+      peer: undefined,
+      child: { exitCode: null, signalCode: null },
+      devtools: { port: 43_191 },
+      receipt: { pid: 123 },
+      run: {},
+      validated: {},
+      operations: {
+        stopChrome,
+        stopRetained,
+        stopIncomplete: vi.fn(async () => undefined),
+        assertListenerAbsent: vi.fn(async () => undefined),
+        waitForExit: chromeWaitForExit,
+      },
+    })
+
+    expect(cleanup).toEqual({ ok: true })
+    expect(stopChrome).not.toHaveBeenCalled()
+    expect(stopRetained).toHaveBeenCalledWith(
+      { pid: 123 },
+      { run: {}, validated: {}, listenerPort: 43_191, waitForExit: chromeWaitForExit },
+    )
+  })
+
+  it('uses exit semantics and retires a live Chrome stopped before DevTools discovery', async () => {
+    const child = { exitCode: null as number | null, signalCode: null as string | null }
+    const receipt = { pid: 123, child }
+    const chromeWaitForExit = vi.fn()
+    const stopIncomplete = vi.fn(async () => { child.exitCode = 0 })
+    const run = {
+      assertOwned: vi.fn(async () => undefined),
+      markChildStopped: vi.fn(),
+    }
+
+    const cleanup = await cleanupBrowserPhaseResources({
+      page: undefined,
+      peer: undefined,
+      child,
+      devtools: undefined,
+      receipt,
+      run,
+      validated: {},
+      operations: {
+        stopChrome: vi.fn(),
+        stopRetained: vi.fn(),
+        stopIncomplete,
+        assertListenerAbsent: vi.fn(),
+        waitForExit: chromeWaitForExit,
+      },
+    })
+
+    expect(cleanup).toEqual({ ok: true })
+    expect(stopIncomplete).toHaveBeenCalledWith(
+      receipt,
+      { run, validated: {}, waitForExit: chromeWaitForExit },
+    )
+    expect(run.assertOwned).toHaveBeenCalledOnce()
+    expect(run.markChildStopped).toHaveBeenCalledWith(receipt)
+  })
+
+  it.each([
+    ['before DevTools discovery', undefined],
+    ['after DevTools discovery', { port: 43_191 }],
+  ])('retires Chrome already exited %s using every available closure witness', async (_label, devtools) => {
+    const child = { exitCode: 1, signalCode: null }
+    const receipt = { pid: 123, child }
+    const listenerAbsent = vi.fn(async () => undefined)
+    const run = {
+      assertOwned: vi.fn(async () => undefined),
+      markChildStopped: vi.fn(),
+    }
+
+    const cleanup = await cleanupBrowserPhaseResources({
+      page: undefined,
+      peer: undefined,
+      child,
+      devtools,
+      receipt,
+      run,
+      validated: {},
+      operations: {
+        stopChrome: vi.fn(),
+        stopRetained: vi.fn(),
+        stopIncomplete: vi.fn(),
+        assertListenerAbsent: listenerAbsent,
+      },
+    })
+
+    expect(cleanup).toEqual({ ok: true })
+    expect(run.assertOwned).toHaveBeenCalledOnce()
+    expect(listenerAbsent).toHaveBeenCalledTimes(devtools ? 1 : 0)
+    expect(run.markChildStopped).toHaveBeenCalledWith(receipt)
   })
 
   it('requires main completion in every phase but requires the workbench client only when enabled', async () => {
