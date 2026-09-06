@@ -37,6 +37,8 @@ declaration packages `0.1.0-rc.6`.
 - Do not read `~/.dsh`, port `3080`, user sessions, credentials, browser profiles, real interview data, model configuration, or provider environment variables.
 - A missing-package RED is setup evidence only. It is not RPC, slot, lifecycle, loader, browser, or compatibility evidence.
 
+> **Historical correction (2026-09-06).** The owner’s simple-version decision retires both legacy writer CLIs shown below; they now fail closed and must not be used. The sole working proposal entry is `stageRc6DeclarationInputV2({ workspaceRoot })`.
+
 ## Permitted report
 
 A′-P1a may report only:
