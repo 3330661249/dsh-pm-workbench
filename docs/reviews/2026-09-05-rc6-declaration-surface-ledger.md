@@ -1163,3 +1163,30 @@ the network, promotion, push, or a pull request.
 These two PASS results approve only the planned local ledger commit. They do
 not approve schema-v2 promotion, installation, a Harness action, or any remote
 operation. The local commit remains pending.
+
+### Stage 2 boundary separation — legacy evidence retained
+
+The declaration acceptance boundary above remains immutable historical evidence.
+Its 33 production paths and exact hashes in
+`scripts/accept-rc6-declaration-input.mjs` were not changed, and the historical
+`tsconfig.surface.host.json` and `tsconfig.surface.client.json` bytes were restored
+to the recorded hashes. Earlier sections of this ledger retain their original
+meaning and have not been rewritten as Stage 2 evidence.
+
+Stage 2 intentionally changes the current root manifest, root lock, and Workbench
+package manifest. The current workspace is therefore expected to fail the frozen
+legacy production-boundary comparison. That rejection records separation between
+historical acceptance evidence and present development; it is not a regression in
+the legacy fixture.
+
+Tests reconstruct the historical boundary from the committed, path-free
+`tests/fixtures/rc6-legacy-production-boundary.json`. Before writing any temporary
+fixture file, they require the exact 33-path set, each recorded SHA-256, canonical
+base64 bytes, and source commit `7044c6d3a342954fce9469473421b27b1ce91575`.
+They require no Git process at test runtime. Stage 2 public-surface compilation now
+uses the separately named `tsconfig.stage2.surface.host.json` and
+`tsconfig.stage2.surface.client.json`.
+
+This separation does not prove a Harness installation, runtime, RPC, storage,
+visible UI, disable/remove/reinstall cycle, external-network behavior, push, or
+pull request.

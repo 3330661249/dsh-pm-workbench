@@ -1,7 +1,9 @@
-# Stage 2 public rc.6 surface — dependency-freeze draft
+# Stage 2 public rc.6 surface — verified dependency freeze
 
-**Status:** Task 1 dependency/type-contract verification passed. This note is not
-a Harness runtime result, a profile install, or a general compatibility claim.
+**Current observed status:** Task 1 dependency/type-contract verification passed
+against the final exact rc.6 graph. The earlier mixed-lock hydration failures below
+are retained only as superseded diagnostic history. This note is not a Harness
+runtime result, a profile install, or a general compatibility claim.
 
 ## Required public surfaces
 
@@ -49,32 +51,28 @@ The workbench package keeps `zod@4.4.3` as a normal runtime dependency. Cordis,
 all selected Harness Host/Client peers, React, and React DOM remain exact optional
 peers supplied by the Harness host.
 
-## Current diagnostic boundary
+## Superseded hydration diagnostics
 
-The hydrated lock available during this edit is mixed and contains rc.8 DSH
-entries. Its strict compiler errors are diagnostic only: they establish that a
-normal exact lock rebuild is still required; they do not identify a passing rc.6
-surface. The Task 1 contract requires every lockfile
-`node_modules/@deepseek-ai/dsh-*` record to resolve at `0.1.0-rc.6` before either
-surface compilation can be called GREEN.
+An earlier hydration attempt selected mixed rc.8 DSH entries. Its strict compiler
+errors were diagnostic only and were never treated as a passing rc.6 surface. That
+state was superseded by the final normal exact resolution recorded under **Fresh
+Task 1 verification**, where every lockfile DSH occurrence is rc.6.
 
-## Next verification sequence
+## Verification sequence used
 
-From this isolated worktree, after the controller authorizes a normal dependency
-resolution, run:
+The isolated worktree was resolved and checked with:
 
 ```bash
 npm install --ignore-scripts --no-audit --no-fund
 npm test -- tests/contract/harness-rc6-public-surface.test.ts tests/contract/package-manifest.test.ts tests/contract/rc6-declaration-contract-guard.test.ts
-./node_modules/.bin/tsc -p tsconfig.surface.host.json --noEmit
-./node_modules/.bin/tsc -p tsconfig.surface.client.json --noEmit
+./node_modules/.bin/tsc -p tsconfig.stage2.surface.host.json --noEmit
+./node_modules/.bin/tsc -p tsconfig.stage2.surface.client.json --noEmit
 npm run typecheck
 ```
 
-The installation command is intentionally ordinary npm resolution: exact direct
-pins plus the closed override map replace the earlier `--legacy-peer-deps`
-workaround. Network execution and a resulting successful run are outside this
-draft's observed evidence.
+The installation command used ordinary npm resolution: exact direct pins plus the
+closed override map replaced the earlier `--legacy-peer-deps` diagnostic attempt.
+The passing commands below are the current evidence.
 
 ## Cordis compatibility cohort
 
@@ -95,9 +93,9 @@ The root development graph and the workbench runtime dependency both pin
 of canonical package name `zod` and requires all of them to resolve at `4.4.3`.
 This is separate from the DSH 56-package and four-package Cordis cohorts.
 
-The prior normal install left root-level `zod@4.5.4` while the workbench carried
-nested `4.4.3`; that mixed tree cannot be used for a Task 1 GREEN claim. A new
-ordinary npm resolution is required after adding the root exact pin.
+A prior normal install left root-level `zod@4.5.4` while the workbench carried
+nested `4.4.3`; that historical mixed tree was not used for the Task 1 GREEN
+claim. The final ordinary npm resolution after the root exact pin superseded it.
 
 ## Fresh Task 1 verification
 
@@ -106,8 +104,8 @@ exit code 0 in the isolated worktree:
 
 ```bash
 npm test -- tests/contract/harness-rc6-public-surface.test.ts tests/contract/package-manifest.test.ts tests/contract/rc6-declaration-contract-guard.test.ts
-./node_modules/.bin/tsc -p tsconfig.surface.host.json --noEmit
-./node_modules/.bin/tsc -p tsconfig.surface.client.json --noEmit
+./node_modules/.bin/tsc -p tsconfig.stage2.surface.host.json --noEmit
+./node_modules/.bin/tsc -p tsconfig.stage2.surface.client.json --noEmit
 npm run typecheck
 npm ls --all
 ```

@@ -289,13 +289,13 @@ describe('rc.6 declaration contracts cannot bypass public surfaces', () => {
   test('surface compilers are strict and each names only its own contract', async () => {
     await Promise.all([
       expectStrictSurfaceConfig(
-        'tsconfig.surface.host.json',
+        'tsconfig.stage2.surface.host.json',
         hostContractPath,
         ['ES2022', 'DOM'],
         ['node'],
       ),
       expectStrictSurfaceConfig(
-        'tsconfig.surface.client.json',
+        'tsconfig.stage2.surface.client.json',
         clientContractPath,
         ['ES2022', 'DOM', 'DOM.Iterable'],
         [],

@@ -15,6 +15,8 @@ import {
 } from './helpers/rc6-169-production-path.js'
 
 const workspaceRoot = resolve(import.meta.dirname, '../..')
+const legacyBoundaryFixtureRelativePath =
+  'tests/fixtures/rc6-legacy-production-boundary.json'
 
 const acceptance = await import('../../scripts/accept-rc6-declaration-input.mjs')
 const execFileAsync = promisify(execFile)
@@ -22,6 +24,39 @@ const require = createRequire(import.meta.url)
 
 async function readJson(relativePath: string) {
   return JSON.parse(await readFile(resolve(workspaceRoot, relativePath), 'utf8'))
+}
+
+type LegacyBoundaryFixture = {
+  schemaVersion: 1
+  sourceCommit: string
+  files: Array<{ path: string; sha256: string; bytesBase64: string }>
+}
+
+async function readLegacyBoundaryFixture(): Promise<LegacyBoundaryFixture> {
+  const fixture = await readJson(legacyBoundaryFixtureRelativePath) as LegacyBoundaryFixture
+  expect(Object.keys(fixture).sort()).toEqual(['files', 'schemaVersion', 'sourceCommit'])
+  expect(fixture.schemaVersion).toBe(1)
+  expect(fixture.sourceCommit).toBe('7044c6d3a342954fce9469473421b27b1ce91575')
+  expect(fixture.files).toHaveLength(33)
+
+  const expectedFiles = acceptance.expectedProductionBoundary.files as Array<{
+    path: string
+    sha256: string
+  }>
+  expect(fixture.files.map(({ path, sha256 }) => ({ path, sha256 }))).toEqual(expectedFiles)
+  expect(new Set(fixture.files.map(({ path }) => path)).size).toBe(fixture.files.length)
+
+  for (const file of fixture.files) {
+    expect(Object.keys(file).sort()).toEqual(['bytesBase64', 'path', 'sha256'])
+    expect(file.path.startsWith('/')).toBe(false)
+    expect(file.path.includes('\\')).toBe(false)
+    expect(file.path.split('/')).not.toContain('..')
+    const bytes = Buffer.from(file.bytesBase64, 'base64')
+    expect(bytes.toString('base64')).toBe(file.bytesBase64)
+    expect(createHash('sha256').update(bytes).digest('hex')).toBe(file.sha256)
+  }
+
+  return fixture
 }
 
 async function withProposalReceiptBuilderForTest<T>(
@@ -203,10 +238,11 @@ function makeSyntheticV2Input({
 
 async function createBoundaryFixture() {
   const root = await mkdtemp(resolve(tmpdir(), 'rc6-boundary-'))
-  for (const file of acceptance.expectedProductionBoundary.files as Array<{ path: string }>) {
+  const fixture = await readLegacyBoundaryFixture()
+  for (const file of fixture.files) {
     const destination = resolve(root, file.path)
     await mkdir(dirname(destination), { recursive: true })
-    await copyFile(resolve(workspaceRoot, file.path), destination)
+    await writeFile(destination, Buffer.from(file.bytesBase64, 'base64'))
   }
   return root
 }
@@ -2912,20 +2948,44 @@ describe('rc.6 accepted declaration input', () => {
     ).toThrow()
   })
 
-  test('binds the whole tracked Workbench production boundary without a runtime git dependency', async () => {
-    const [currentInput, packageJson, packageLock, rootPackageLock] = await Promise.all([
+  test('reconstructs the frozen historical production boundary without a runtime git dependency', async () => {
+    const [currentInput, packageJson, packageLock] = await Promise.all([
       readJson('tools/harness-rc6-declarations/input-manifest.json'),
       readJson('tools/harness-rc6-declarations/package.json'),
       readJson('tools/harness-rc6-declarations/package-lock.json'),
-      readJson('package-lock.json'),
     ])
     const input = makeSyntheticV2Input({ currentInput, packageLock })
-    const boundary = await acceptance.validateProductionBoundary({ workspaceRoot, inputManifest: input })
+    const root = await createBoundaryFixture()
+    try {
+      const boundary = await acceptance.validateProductionBoundary({ workspaceRoot: root, inputManifest: input })
+      const historicalRootPackageLock = JSON.parse(
+        await readFile(resolve(root, 'package-lock.json'), 'utf8'),
+      )
 
-    expect(boundary.files).toHaveLength(33)
-    expect(() =>
-      acceptance.validateInputManifest({ inputManifest: input, packageJson, packageLock, rootPackageLock }),
-    ).not.toThrow()
+      expect(boundary.files).toHaveLength(33)
+      expect(() => acceptance.validateInputManifest({
+        inputManifest: input,
+        packageJson,
+        packageLock,
+        rootPackageLock: historicalRootPackageLock,
+      })).not.toThrow()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps the current Stage 2 workspace outside the frozen historical boundary', async () => {
+    const [currentInput, packageLock] = await Promise.all([
+      readJson('tools/harness-rc6-declarations/input-manifest.json'),
+      readJson('tools/harness-rc6-declarations/package-lock.json'),
+    ])
+
+    await expect(acceptance.validateProductionBoundary({
+      workspaceRoot,
+      inputManifest: makeSyntheticV2Input({ currentInput, packageLock }),
+    })).rejects.toThrowError(expect.objectContaining({
+      code: 'PRODUCTION_BOUNDARY_HASH_MISMATCH',
+    }))
   })
 
   test.each([

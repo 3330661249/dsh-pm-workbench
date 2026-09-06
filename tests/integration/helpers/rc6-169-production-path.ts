@@ -42,6 +42,10 @@ import { pathToFileURL } from 'node:url'
 const PACKAGE_JSON_RELATIVE_PATH = 'tools/harness-rc6-declarations/package.json'
 const PACKAGE_LOCK_RELATIVE_PATH = 'tools/harness-rc6-declarations/package-lock.json'
 const PRODUCTION_SCRIPT_RELATIVE_PATH = 'scripts/accept-rc6-declaration-input.mjs'
+const LEGACY_BOUNDARY_FIXTURE_RELATIVE_PATH =
+  'tests/fixtures/rc6-legacy-production-boundary.json'
+const LEGACY_BOUNDARY_SOURCE_COMMIT =
+  '7044c6d3a342954fce9469473421b27b1ce91575'
 const CANDIDATE_RELATIVE_PATH = '.tmp/dsh-pm-workbench/declaration-input-candidate'
 const POINTER_RELATIVE_PATH = '.tmp/dsh-pm-workbench/declaration-input-source.json'
 const BUNDLE_PARENT_RELATIVE_PATH = '.tmp/dsh-pm-workbench/declaration-input-source-bundles'
@@ -2444,6 +2448,53 @@ function parseProductionBoundaryFiles(source: string): Array<{ path: string; sha
   return records
 }
 
+async function readLegacyProductionBoundaryFixture({
+  repositoryRoot,
+  expectedFiles,
+}: {
+  repositoryRoot: string
+  expectedFiles: Array<{ path: string; sha256: string }>
+}): Promise<Array<{ path: string; sha256: string; bytes: Buffer }>> {
+  const source = await readStableRegularFile(
+    resolve(repositoryRoot, LEGACY_BOUNDARY_FIXTURE_RELATIVE_PATH),
+  )
+  const fixture = parseJsonObject(source.bytes, 'legacy production-boundary fixture')
+  exactKeys(fixture, ['schemaVersion', 'sourceCommit', 'files'], 'legacy production-boundary fixture')
+  if (fixture.schemaVersion !== 1 || fixture.sourceCommit !== LEGACY_BOUNDARY_SOURCE_COMMIT) {
+    fail('legacy production-boundary fixture identity changed')
+  }
+  if (!Array.isArray(fixture.files) || fixture.files.length !== expectedFiles.length) {
+    fail('legacy production-boundary fixture file count changed')
+  }
+
+  const decoded = fixture.files.map((value, index) => {
+    if (!isRecord(value)) fail(`legacy production-boundary fixture file ${index} is invalid`)
+    exactKeys(value, ['path', 'sha256', 'bytesBase64'], `legacy production-boundary fixture file ${index}`)
+    const { path, sha256: expectedSha256, bytesBase64 } = value
+    if (typeof path !== 'string'
+      || path.startsWith('/')
+      || path.includes('\\')
+      || path.split('/').includes('..')
+      || typeof expectedSha256 !== 'string'
+      || !/^[a-f0-9]{64}$/.test(expectedSha256)
+      || typeof bytesBase64 !== 'string') {
+      fail(`legacy production-boundary fixture file ${index} is unsafe`)
+    }
+    const bytes = Buffer.from(bytesBase64, 'base64')
+    if (bytes.toString('base64') !== bytesBase64 || sha256(bytes) !== expectedSha256) {
+      fail(`legacy production-boundary fixture file ${index} bytes changed`)
+    }
+    return { path, sha256: expectedSha256, bytes }
+  })
+
+  const pathHashes = decoded.map(({ path, sha256: digest }) => ({ path, sha256: digest }))
+  if (canonicalJsonBytes(pathHashes) !== canonicalJsonBytes(expectedFiles)
+    || new Set(decoded.map(({ path }) => path)).size !== decoded.length) {
+    fail('legacy production-boundary fixture path/hash set changed')
+  }
+  return decoded
+}
+
 async function copyVerifiedFixtureFile({
   repositoryRoot,
   workspaceRoot,
@@ -2895,6 +2946,10 @@ export async function withSynthetic169BootstrapProductionPath<T>(
   const boundaryFiles = parseProductionBoundaryFiles(
     productionSource.bytes.toString('utf8'),
   )
+  const legacyBoundaryFiles = await readLegacyProductionBoundaryFixture({
+    repositoryRoot,
+    expectedFiles: boundaryFiles,
+  })
   const copiedCommittedPaths = [
     ...boundaryFiles.map(({ path }) => path),
     'tools/harness-rc6-declarations/input-manifest.json',
@@ -2937,13 +2992,12 @@ export async function withSynthetic169BootstrapProductionPath<T>(
       fail('bootstrap fixture did not reuse the verified 169-entry synthetic preparation')
     }
 
-    for (const boundary of boundaryFiles) {
-      await copyVerifiedFixtureFile({
-        repositoryRoot,
-        workspaceRoot: baseFixture.workspaceRoot,
-        relativePath: boundary.path,
-        expectedSha256: boundary.sha256,
-      })
+    for (const boundary of legacyBoundaryFiles) {
+      await writeExclusiveFile(
+        resolve(baseFixture.workspaceRoot, boundary.path),
+        boundary.bytes,
+        0o644,
+      )
     }
     await copyVerifiedFixtureFile({
       repositoryRoot,

@@ -11,6 +11,6 @@
     "types": []
   },
   "files": [
-    "tools/harness-rc6-declarations/contracts/harness-client-rc6-surface.ts"
+    "tests/types/harness-client-rc6-surface.ts"
   ]
 }

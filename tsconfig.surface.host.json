@@ -7,10 +7,10 @@
     "noImplicitAny": true,
     "skipLibCheck": false,
     "noEmit": true,
-    "lib": ["ES2022", "DOM"],
-    "types": ["node"]
+    "lib": ["ES2022"],
+    "types": []
   },
   "files": [
-    "tests/types/harness-host-rc6-surface.ts"
+    "tools/harness-rc6-declarations/contracts/harness-host-rc6-surface.ts"
   ]
 }

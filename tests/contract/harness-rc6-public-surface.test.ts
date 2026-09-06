@@ -109,8 +109,12 @@ describe('rc.6 public smoke surface', () => {
         entry.name?.startsWith('@deepseek-ai/dsh-') ?? false,
       )
     const uniqueLockDshNames = [...new Set(lockDshOccurrences.map((entry) => entry.name))]
+    const rootDshDevDependencyKeys = Object.keys(rootDevDependencies)
+      .filter((packageName) => packageName.startsWith('@deepseek-ai/dsh-'))
+      .sort()
 
     expect(rootDevDependencies['@deepseek-ai/cordis']).toBe('4.0.1')
+    expect(rootDshDevDependencyKeys).toEqual([...rc6DirectPackages].sort())
     for (const packageName of rc6DirectPackages) {
       expect(rootDevDependencies[packageName]).toBe('0.1.0-rc.6')
     }
@@ -122,6 +126,9 @@ describe('rc.6 public smoke surface', () => {
     })
     for (const packageName of rc6DirectPackages) {
       expect(overrides).not.toHaveProperty(packageName)
+    }
+    for (const packageName of rc6OverridePackages) {
+      expect(rootDevDependencies).not.toHaveProperty(packageName)
     }
     expect(uniqueLockDshNames.sort()).toEqual(
       [...rc6DirectPackages, ...rc6OverridePackages].sort(),
