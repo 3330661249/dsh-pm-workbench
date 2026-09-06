@@ -57,6 +57,84 @@ function closedSafetyAbortResult() {
   }
 }
 
+function safetyAbortWithNetworkEvidence(code: 'STAGE2_CLEANUP_FAILED' | 'STAGE2_RUNTIME_STOP_FAILED') {
+  const result = closedSafetyAbortResult()
+  return {
+    ...result,
+    process: {
+      ...result.process,
+      allStopped: false,
+    },
+    network: {
+      ...result.network,
+      externalAttempts: 1,
+    },
+    failure: { code },
+  }
+}
+
+function observationMismatchWithNetworkEvidence() {
+  const result = closedSafetyAbortResult()
+  return {
+    ...result,
+    outcome: 'FAIL',
+    network: {
+      ...result.network,
+      externalAttempts: 1,
+    },
+    failure: { code: 'STAGE2_OBSERVATION_MISMATCH' },
+  }
+}
+
+function passingResultWithNetworkEvidence() {
+  const hash = 'a'.repeat(64)
+  const phases = [
+    { id: 'initial-enabled', markerState: 'present', counters: [0, 1], focusRestored: true, configWitness: 'none', inventoryWitness: 'installed' },
+    { id: 'restart-enabled', markerState: 'present', counters: [1], focusRestored: true, configWitness: 'none', inventoryWitness: 'installed' },
+    { id: 'disabled', markerState: 'absent', counters: [], focusRestored: false, configWitness: 'disabled-patch', inventoryWitness: 'installed-disabled' },
+    { id: 'removed', markerState: 'absent', counters: [], focusRestored: false, configWitness: 'none', inventoryWitness: 'removed' },
+    { id: 'readded', markerState: 'present', counters: [1, 2], focusRestored: true, configWitness: 'none', inventoryWitness: 'installed' },
+  ].map((phase, index) => ({
+    ...phase,
+    externalNetworkAttempts: 0,
+    harnessSpawnReceiptSha256: hash,
+    harnessListenerWitnessSha256: hash,
+    chromeSpawnReceiptSha256: hash,
+    chromeListenerWitnessSha256: hash,
+    loopback: true,
+    stopped: true,
+    browserProfileOrdinal: index + 1,
+  }))
+  return {
+    schemaVersion: '1',
+    outcome: 'PASS',
+    harnessTarget: '0.1.0-rc.6',
+    plugin: {
+      name: '@knight/dsh-pm-workbench',
+      version: '0.1.0',
+      tgzSha256: hash,
+    },
+    phases,
+    process: {
+      spawnReceipts: 10,
+      listenerWitnesses: 10,
+      allLoopback: true,
+      allStopped: true,
+      freshBrowserProfiles: 5,
+    },
+    network: {
+      scope: 'browser-page-target',
+      externalAttempts: 1,
+    },
+    cleanup: {
+      renamed: true,
+      revalidated: true,
+      removed: true,
+    },
+    failure: null,
+  }
+}
+
 async function makeTemporaryRoot() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'stage-2-result-boundary-'))
   const canonicalRoot = await realpath(root)
@@ -192,4 +270,21 @@ test('the verifier CLI rejects valid data serialized with noncanonical bytes', a
     stdout: '',
     stderr: 'STAGE2_RESULT_INVALID\n',
   })
+})
+
+test.each([
+  'STAGE2_CLEANUP_FAILED',
+  'STAGE2_RUNTIME_STOP_FAILED',
+] as const)('a %s safety abort preserves one observed external attempt', (code) => {
+  expect(() => canonicalStage2Result(safetyAbortWithNetworkEvidence(code))).not.toThrow()
+})
+
+test('an ordinary observation mismatch cannot retain unexplained external attempts', () => {
+  expect(() => canonicalStage2Result(observationMismatchWithNetworkEvidence()))
+    .toThrow(/STAGE2_RESULT_INVALID/u)
+})
+
+test('a passing result cannot retain an external attempt', () => {
+  expect(() => canonicalStage2Result(passingResultWithNetworkEvidence()))
+    .toThrow(/STAGE2_RESULT_INVALID/u)
 })

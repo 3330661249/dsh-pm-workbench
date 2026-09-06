@@ -362,7 +362,7 @@ export function validateStage2SmokeResult(value) {
   ) invalid()
   if (value.failure?.code === 'STAGE2_EXTERNAL_NETWORK_ATTEMPT') {
     if (value.network.externalAttempts <= 0) invalid()
-  } else if (value.network.externalAttempts !== 0) invalid()
+  } else if (value.outcome !== 'SAFETY_ABORT' && value.network.externalAttempts !== 0) invalid()
   if (completedPhases > 0 && !HASH_PATTERN.test(value.plugin.tgzSha256 ?? '')) invalid()
   const cleanupValues = [value.cleanup.renamed, value.cleanup.revalidated, value.cleanup.removed]
   if (!cleanupValues.every((entry) => entry === cleanupValues[0])) invalid()
