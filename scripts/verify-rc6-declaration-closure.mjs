@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
 import { lstat, open, readdir, realpath } from 'node:fs/promises'
 import { basename, dirname, relative, resolve, sep } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import {
   inspectCommittedDeclarationInput,
   validateInputManifest,
@@ -687,6 +687,16 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+async function isDirectCliEntry() {
+  const entryPath = process.argv[1]
+  if (!entryPath) return false
+  try {
+    return await realpath(entryPath) === await realpath(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+
+if (await isDirectCliEntry()) {
   void main()
 }

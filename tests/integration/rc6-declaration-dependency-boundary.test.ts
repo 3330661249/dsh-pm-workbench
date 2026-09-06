@@ -37,7 +37,7 @@ async function createClosureCliFixture() {
 
 async function runClosureFixtureCli(root: string, argv: string[]) {
   const script = resolve(root, 'scripts/verify-rc6-declaration-closure.mjs')
-  return execFileAsync(process.execPath, [await realpath(script), ...argv], { cwd: root })
+  return execFileAsync(process.execPath, [script, ...argv], { cwd: root })
 }
 
 async function fixtureFingerprint(root: string) {
