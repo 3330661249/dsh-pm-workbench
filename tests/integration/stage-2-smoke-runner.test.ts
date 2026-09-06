@@ -417,6 +417,7 @@ describe('Stage 2 browser and listener guards', () => {
     markerBackendDOMNodeId = () => 100,
     boxModel,
     viewport = () => ({ clientWidth: 1_200, clientHeight: 800 }),
+    onCommand = () => undefined,
     onMove = () => undefined,
     onPress = () => undefined,
     onRelease = () => undefined,
@@ -440,7 +441,16 @@ describe('Stage 2 browser and listener guards', () => {
       clock: number
     }) => number[]
     viewport?: () => { clientWidth: number; clientHeight: number }
-    onMove?: (context: { emit: (method: string, params?: Record<string, unknown>) => void }) => void
+    onCommand?: (context: {
+      method: string
+      params: Record<string, unknown>
+      emit: (method: string, params?: Record<string, unknown>) => void
+      advance: (milliseconds: number) => void
+    }) => void
+    onMove?: (context: {
+      emit: (method: string, params?: Record<string, unknown>) => void
+      advance: (milliseconds: number) => void
+    }) => void
     onPress?: (backendDOMNodeId: number | undefined) => void
     onRelease?: (backendDOMNodeId: number | undefined) => void
   }) {
@@ -455,7 +465,9 @@ describe('Stage 2 browser and listener guards', () => {
     const emit = (method: string, params: Record<string, unknown> = {}) => {
       eventHandler?.({ method, params, sessionId: 'session-1' })
     }
+    const advance = (milliseconds: number) => { clock += milliseconds }
     const send = vi.fn(async (method: string, params: Record<string, unknown> = {}) => {
+      onCommand({ method, params, emit, advance })
       if (method === 'Accessibility.getFullAXTree') {
         readCount += 1
         lastNodes = readAx({ clock, readCount })
@@ -534,7 +546,7 @@ describe('Stage 2 browser and listener guards', () => {
         return hit
       }
       if (method === 'Input.dispatchMouseEvent') {
-        if (params.type === 'mouseMoved') onMove({ emit })
+        if (params.type === 'mouseMoved') onMove({ emit, advance })
         if (params.type === 'mousePressed') onPress(targetBackendDOMNodeId)
         if (params.type === 'mouseReleased') onRelease(targetBackendDOMNodeId)
         return {}
@@ -554,6 +566,7 @@ describe('Stage 2 browser and listener guards', () => {
       sleep,
       now: () => clock,
       clock: () => clock,
+      advance,
       emit,
     }
   }
@@ -1074,6 +1087,105 @@ describe('Stage 2 browser and listener guards', () => {
     )).rejects.toMatchObject({ stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED' })
   })
 
+  it('stops page-session setup immediately when navigation opens a new window', async () => {
+    const origin = 'http://127.0.0.1:32001'
+    const handlers = new Set<(event: {
+      method: string
+      params: Record<string, unknown>
+      sessionId: string
+    }) => void>()
+    const waitForEvent = vi.fn(async () => {
+      throw new Error('no event wait is allowed after Page.windowOpen')
+    })
+    const send = vi.fn(async (method: string) => {
+      if (method === 'Target.createTarget') return { targetId: 'target-1' }
+      if (method === 'Target.attachToTarget') return { sessionId: 'session-1' }
+      if (method === 'Page.navigate') {
+        for (const handler of handlers) {
+          handler({
+            method: 'Page.windowOpen',
+            params: {
+              url: 'about:blank', windowName: '', windowFeatures: [], userGesture: true,
+            },
+            sessionId: 'session-1',
+          })
+        }
+        return { frameId: 'frame-1', loaderId: 'loader-1' }
+      }
+      if (method === 'DOM.getDocument') return { root: { documentURL: origin } }
+      return {}
+    })
+    const peer = {
+      send,
+      waitForEvent,
+      onEvent: vi.fn((handler: (typeof handlers extends Set<infer T> ? T : never)) => {
+        handlers.add(handler)
+        return () => { handlers.delete(handler) }
+      }),
+    }
+
+    await expect(createPageSession(
+      peer,
+      origin,
+      { externalAttempts: 0, controlFailed: false },
+      'initial-enabled',
+    )).rejects.toMatchObject({ stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED' })
+    expect(waitForEvent).not.toHaveBeenCalled()
+    expect(send.mock.calls.some(([method]) => method === 'DOM.getDocument')).toBe(false)
+  })
+
+  it('stops an event-wait loop immediately when the first response wait opens a new window', async () => {
+    const origin = 'http://127.0.0.1:32001'
+    const handlers = new Set<(event: {
+      method: string
+      params: Record<string, unknown>
+      sessionId: string
+    }) => void>()
+    let waitCount = 0
+    const waitForEvent = vi.fn(async () => {
+      waitCount += 1
+      if (waitCount > 1) throw new Error('continued event observation after Page.windowOpen')
+      for (const handler of handlers) {
+        handler({
+          method: 'Page.windowOpen',
+          params: {
+            url: 'about:blank', windowName: '', windowFeatures: [], userGesture: true,
+          },
+          sessionId: 'session-1',
+        })
+      }
+      return {
+        type: 'XHR',
+        loaderId: 'other-loader',
+        response: { status: 200, url: origin },
+      }
+    })
+    const send = vi.fn(async (method: string) => {
+      if (method === 'Target.createTarget') return { targetId: 'target-1' }
+      if (method === 'Target.attachToTarget') return { sessionId: 'session-1' }
+      if (method === 'Page.navigate') return { frameId: 'frame-1', loaderId: 'loader-1' }
+      if (method === 'DOM.getDocument') return { root: { documentURL: origin } }
+      return {}
+    })
+    const peer = {
+      send,
+      waitForEvent,
+      onEvent: vi.fn((handler: (typeof handlers extends Set<infer T> ? T : never)) => {
+        handlers.add(handler)
+        return () => { handlers.delete(handler) }
+      }),
+    }
+
+    await expect(createPageSession(
+      peer,
+      origin,
+      { externalAttempts: 0, controlFailed: false },
+      'initial-enabled',
+    )).rejects.toMatchObject({ stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED' })
+    expect(waitForEvent).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls.some(([method]) => method === 'DOM.getDocument')).toBe(false)
+  })
+
   it('dismisses both rc.6 onboarding dialogs in order and waits for each to disappear', async () => {
     let stage = 0
     const fixture = onboardingFixture({
@@ -1375,6 +1487,84 @@ describe('Stage 2 browser and listener guards', () => {
     expect(fixture.send.mock.calls
       .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
         && params?.type === 'mousePressed')).toHaveLength(0)
+  })
+
+  it('does not press when the post-move target recapture crosses the absolute deadline', async () => {
+    let moved = false
+    let expired = false
+    const fixture = onboardingFixture({
+      readAx: () => axTree(),
+      onMove: () => { moved = true },
+      onCommand: ({ method, advance }) => {
+        if (moved && !expired && method === 'Accessibility.getFullAXTree') {
+          expired = true
+          advance(500)
+        }
+      },
+    })
+
+    await expect(clickMarkerSafely(fixture, 'launcher', {
+      quietMs: 100,
+      timeoutMs: 500,
+    })).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(0)
+  })
+
+  it('stops a readiness query before its second DOM read when the first read crosses the deadline', async () => {
+    let expired = false
+    const fixture = onboardingFixture({
+      readAx: () => axTree(),
+      onCommand: ({ method, advance }) => {
+        if (!expired && method === 'DOM.getDocument') {
+          expired = true
+          advance(500)
+        }
+      },
+    })
+
+    await expect(clickMarkerSafely(fixture, 'launcher', {
+      quietMs: 100,
+      timeoutMs: 500,
+    })).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'DOM.querySelectorAll')).toHaveLength(0)
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
+  })
+
+  it('stops all later CDP observation when Page.windowOpen arrives during a target capture', async () => {
+    let emitted = false
+    const fixture = onboardingFixture({
+      readAx: () => axTree(),
+      onCommand: ({ method, emit }) => {
+        if (!emitted && method === 'DOM.getBoxModel') {
+          emitted = true
+          emit('Page.windowOpen', {
+            url: 'about:blank',
+            windowName: '',
+            windowFeatures: [],
+            userGesture: true,
+          })
+        }
+      },
+    })
+
+    await expect(clickMarkerSafely(fixture)).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    const methods = fixture.send.mock.calls.map(([method]) => method)
+    const boxIndex = methods.indexOf('DOM.getBoxModel')
+    expect(boxIndex).toBeGreaterThanOrEqual(0)
+    expect(methods.slice(boxIndex + 1)).not.toContain('Page.getLayoutMetrics')
+    expect(methods.slice(boxIndex + 1)).not.toContain('DOM.getNodeForLocation')
+    expect(methods.slice(boxIndex + 1)).not.toContain('Accessibility.getAXNodeAndAncestors')
+    expect(methods.slice(boxIndex + 1)).not.toContain('Input.dispatchMouseEvent')
   })
 
   it('does not retry after a press command fails or a clicked dialog never disappears', async () => {
@@ -2189,11 +2379,31 @@ describe('Stage 2 five-phase state machine', () => {
     expect(events.at(-1)).toBe('workspace.cleanup')
   })
 
+  it.each([0, 1])(
+    'preserves %i external attempts while a failed network control takes SAFETY_ABORT priority',
+    async (externalAttempts) => {
+      const { adapters } = fakeAdapters()
+      adapters.browser.observePhase.mockImplementationOnce(async ({ networkState }) => {
+        if (!networkState) throw new Error('missing shared network state')
+        networkState.externalAttempts = externalAttempts
+        networkState.controlFailed = true
+        throw new Stage2RunnerError('STAGE2_PAGE_NAVIGATION_FAILED', 'INCONCLUSIVE')
+      })
+
+      const result = await executeStage2Smoke({ inputs, adapters })
+
+      expect(result.outcome).toBe('SAFETY_ABORT')
+      expect(result.failure).toEqual({ code: 'STAGE2_NETWORK_CONTROL_FAILED' })
+      expect(result.network).toEqual({ scope: 'browser-page-target', externalAttempts })
+    },
+  )
+
   it('retains a page-target external attempt while preserving a browser SAFETY_ABORT', async () => {
     const { adapters } = fakeAdapters()
     adapters.browser.observePhase.mockImplementationOnce(async ({ networkState }) => {
       if (!networkState) throw new Error('missing shared network state')
       networkState.externalAttempts = 1
+      networkState.controlFailed = true
       throw new Stage2RunnerError('STAGE2_CDP_PROTOCOL_FAILED', 'SAFETY_ABORT')
     })
 
@@ -2202,6 +2412,22 @@ describe('Stage 2 five-phase state machine', () => {
     expect(result.outcome).toBe('SAFETY_ABORT')
     expect(result.failure).toEqual({ code: 'STAGE2_CDP_PROTOCOL_FAILED' })
     expect(result.network).toEqual({ scope: 'browser-page-target', externalAttempts: 1 })
+  })
+
+  it('turns a returned observation into SAFETY_ABORT when page-target network control failed', async () => {
+    const { adapters } = fakeAdapters()
+    adapters.browser.observePhase.mockImplementationOnce(async ({ networkState }) => {
+      if (!networkState) throw new Error('missing shared network state')
+      networkState.controlFailed = true
+      return expectedObservation('initial-enabled')
+    })
+
+    const result = await executeStage2Smoke({ inputs, adapters })
+
+    expect(result.outcome).toBe('SAFETY_ABORT')
+    expect(result.failure).toEqual({ code: 'STAGE2_NETWORK_CONTROL_FAILED' })
+    expect(result.network).toEqual({ scope: 'browser-page-target', externalAttempts: 0 })
+    expect(result.phases).toHaveLength(0)
   })
 
   it('retains external attempts when runtime shutdown raises the higher-priority SAFETY_ABORT', async () => {

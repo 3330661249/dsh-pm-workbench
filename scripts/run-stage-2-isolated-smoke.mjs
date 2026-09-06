@@ -364,6 +364,9 @@ async function observeRuntimePhase({ phase, run, inputs, adapters, result, inven
       || !Number.isSafeInteger(result.network.externalAttempts + networkState.externalAttempts)
     ) fail('STAGE2_BROWSER_WITNESS_INVALID', 'SAFETY_ABORT')
     result.network.externalAttempts += networkState.externalAttempts
+    if (networkState.controlFailed && safeOutcome(observationError) !== 'SAFETY_ABORT') {
+      fail('STAGE2_NETWORK_CONTROL_FAILED', 'SAFETY_ABORT')
+    }
     if (observationError) {
       if (networkState.externalAttempts > 0 && safeOutcome(observationError) !== 'SAFETY_ABORT') {
         fail('STAGE2_EXTERNAL_NETWORK_ATTEMPT', 'FAIL')
@@ -2019,15 +2022,29 @@ function allowedPageUrl(rawUrl, origin) {
   return false
 }
 
-async function queryMarker(peer, sessionId, marker) {
+function assertPageObservationSafe(guard, clock = undefined) {
+  if (guard !== undefined) {
+    if (typeof guard?.assertSafe !== 'function') fail('STAGE2_CDP_PROTOCOL_FAILED')
+    guard.assertSafe()
+  }
+  if (clock !== undefined) {
+    if (typeof clock?.assertBeforeDeadline !== 'function') fail('STAGE2_CDP_PROTOCOL_FAILED')
+    clock.assertBeforeDeadline()
+  }
+}
+
+async function queryMarker(peer, sessionId, marker, guard = undefined, clock = undefined) {
   if (!Object.hasOwn(PLUGIN_MARKERS, marker)) fail('STAGE2_MARKER_INVALID', 'SAFETY_ABORT')
+  assertPageObservationSafe(guard, clock)
   const document = await peer.send('DOM.getDocument', { depth: -1, pierce: true }, sessionId)
+  assertPageObservationSafe(guard, clock)
   const rootNodeId = document?.root?.nodeId
   if (!Number.isSafeInteger(rootNodeId) || rootNodeId < 1) fail('STAGE2_DOM_RESULT_INVALID')
   const queried = await peer.send('DOM.querySelectorAll', {
     nodeId: rootNodeId,
     selector: PLUGIN_MARKERS[marker],
   }, sessionId)
+  assertPageObservationSafe(guard, clock)
   if (
     !Array.isArray(queried?.nodeIds)
     || queried.nodeIds.some((nodeId) => !Number.isSafeInteger(nodeId) || nodeId < 1)
@@ -2036,12 +2053,18 @@ async function queryMarker(peer, sessionId, marker) {
   return queried.nodeIds[0] ?? 0
 }
 
-async function waitForMarker(peer, sessionId, marker, { present = true, milliseconds = CDP_TIMEOUT_MS } = {}) {
+async function waitForMarker(peer, sessionId, marker, {
+  present = true,
+  milliseconds = CDP_TIMEOUT_MS,
+  guard = undefined,
+} = {}) {
   const deadline = Date.now() + milliseconds
   while (Date.now() < deadline) {
-    const nodeId = await queryMarker(peer, sessionId, marker)
+    assertPageObservationSafe(guard)
+    const nodeId = await queryMarker(peer, sessionId, marker, guard)
     if ((present && nodeId > 0) || (!present && nodeId === 0)) return nodeId
     await delay(50)
+    assertPageObservationSafe(guard)
   }
   fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
 }
@@ -2055,31 +2078,37 @@ function attributeMap(attributes) {
   return result
 }
 
-async function waitForCounter(peer, sessionId, expected) {
+async function waitForCounter(peer, sessionId, expected, guard = undefined) {
   const deadline = Date.now() + CDP_TIMEOUT_MS
   while (Date.now() < deadline) {
-    const nodeId = await queryMarker(peer, sessionId, 'counter')
+    assertPageObservationSafe(guard)
+    const nodeId = await queryMarker(peer, sessionId, 'counter', guard)
     if (nodeId > 0) {
       const response = await peer.send('DOM.getAttributes', { nodeId }, sessionId)
+      assertPageObservationSafe(guard)
       const attributes = attributeMap(response.attributes)
       if (attributes.get('data-counter') === String(expected) && attributes.get('data-version') === String(expected)) {
         return expected
       }
     }
     await delay(50)
+    assertPageObservationSafe(guard)
   }
   fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
 }
 
-async function waitForEnabledMarker(peer, sessionId, marker) {
+async function waitForEnabledMarker(peer, sessionId, marker, guard = undefined) {
   const deadline = Date.now() + CDP_TIMEOUT_MS
   while (Date.now() < deadline) {
-    const nodeId = await queryMarker(peer, sessionId, marker)
+    assertPageObservationSafe(guard)
+    const nodeId = await queryMarker(peer, sessionId, marker, guard)
     if (nodeId > 0) {
       const response = await peer.send('DOM.getAttributes', { nodeId }, sessionId)
+      assertPageObservationSafe(guard)
       if (!attributeMap(response.attributes).has('disabled')) return nodeId
     }
     await delay(50)
+    assertPageObservationSafe(guard)
   }
   fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
 }
@@ -2315,11 +2344,19 @@ export function createPageWindowOpenGuard(peer, sessionId) {
   })
 }
 
-async function readOnboardingState(peer, sessionId, mainFrameId) {
-  return inspectRc6OnboardingTree(
-    await peer.send('Accessibility.getFullAXTree', { frameId: mainFrameId }, sessionId),
-    mainFrameId,
+function assertReadinessBoundary(guard, clock) {
+  assertPageObservationSafe(guard, clock)
+}
+
+async function readOnboardingState(peer, sessionId, mainFrameId, guard, clock) {
+  assertReadinessBoundary(guard, clock)
+  const response = await peer.send(
+    'Accessibility.getFullAXTree',
+    { frameId: mainFrameId },
+    sessionId,
   )
+  assertReadinessBoundary(guard, clock)
+  return inspectRc6OnboardingTree(response, mainFrameId)
 }
 
 function validateHitAxChain(response, targetBackendNodeId, dialogBackendNodeId, mainFrameId) {
@@ -2348,7 +2385,10 @@ function validateHitAxChain(response, targetBackendNodeId, dialogBackendNodeId, 
 async function captureReadyTarget(peer, sessionId, mainFrameId, onboarding, {
   marker,
   requireEnabled = false,
+  guard,
+  clock,
 } = {}) {
+  assertReadinessBoundary(guard, clock)
   const dialog = onboarding.dialog
   let nodeId
   let targetBackendNodeId
@@ -2364,23 +2404,27 @@ async function captureReadyTarget(peer, sessionId, mainFrameId, onboarding, {
   } else {
     if (typeof marker !== 'string') fail('STAGE2_CDP_PROTOCOL_FAILED')
     kind = 'marker'
-    nodeId = await queryMarker(peer, sessionId, marker)
+    nodeId = await queryMarker(peer, sessionId, marker, guard, clock)
+    assertReadinessBoundary(guard, clock)
     if (nodeId === 0) return undefined
     if (requireEnabled) {
       const attributes = await peer.send('DOM.getAttributes', { nodeId }, sessionId)
+      assertReadinessBoundary(guard, clock)
       if (attributeMap(attributes?.attributes).has('disabled')) return undefined
     }
     const described = await peer.send('DOM.describeNode', { nodeId }, sessionId)
+    assertReadinessBoundary(guard, clock)
     if (described?.node?.nodeId !== nodeId) fail('STAGE2_DOM_RESULT_INVALID')
     targetBackendNodeId = positiveBackendNodeId(described?.node?.backendNodeId)
     if (targetBackendNodeId === undefined) fail('STAGE2_DOM_RESULT_INVALID')
   }
 
   await peer.send('DOM.scrollIntoViewIfNeeded', { backendNodeId: targetBackendNodeId }, sessionId)
-  const [box, metrics] = await Promise.all([
-    peer.send('DOM.getBoxModel', { backendNodeId: targetBackendNodeId }, sessionId),
-    peer.send('Page.getLayoutMetrics', {}, sessionId),
-  ])
+  assertReadinessBoundary(guard, clock)
+  const box = await peer.send('DOM.getBoxModel', { backendNodeId: targetBackendNodeId }, sessionId)
+  assertReadinessBoundary(guard, clock)
+  const metrics = await peer.send('Page.getLayoutMetrics', {}, sessionId)
+  assertReadinessBoundary(guard, clock)
   const point = safeBoxModelPoint(box, metrics)
   const hit = await peer.send('DOM.getNodeForLocation', {
     x: point.x,
@@ -2388,12 +2432,14 @@ async function captureReadyTarget(peer, sessionId, mainFrameId, onboarding, {
     includeUserAgentShadowDOM: false,
     ignorePointerEventsNone: false,
   }, sessionId)
+  assertReadinessBoundary(guard, clock)
   const hitBackendNodeId = positiveBackendNodeId(hit?.backendNodeId)
   if (hitBackendNodeId === undefined) fail('STAGE2_DOM_RESULT_INVALID')
   if (hit?.frameId !== mainFrameId) fail('STAGE2_PAGE_NAVIGATION_FAILED')
   const hitAx = await peer.send('Accessibility.getAXNodeAndAncestors', {
     backendNodeId: hitBackendNodeId,
   }, sessionId)
+  assertReadinessBoundary(guard, clock)
   if (!validateHitAxChain(hitAx, targetBackendNodeId, dialogBackendNodeId, mainFrameId)) return undefined
 
   return Object.freeze({
@@ -2416,8 +2462,8 @@ async function captureReadyTarget(peer, sessionId, mainFrameId, onboarding, {
   })
 }
 
-async function dispatchVerifiedPointerClick(peer, sessionId, guard, snapshot, recapture) {
-  guard.assertSafe()
+async function dispatchVerifiedPointerClick(peer, sessionId, guard, clock, snapshot, recapture) {
+  assertReadinessBoundary(guard, clock)
   await peer.send('Input.dispatchMouseEvent', {
     type: 'mouseMoved',
     ...snapshot.point,
@@ -2425,11 +2471,12 @@ async function dispatchVerifiedPointerClick(peer, sessionId, guard, snapshot, re
     buttons: 0,
     pointerType: 'mouse',
   }, sessionId)
-  guard.assertSafe()
+  assertReadinessBoundary(guard, clock)
   const fresh = await recapture()
-  guard.assertSafe()
+  assertReadinessBoundary(guard, clock)
   if (!fresh || fresh.signature !== snapshot.signature) fail('STAGE2_PAGE_NAVIGATION_FAILED')
 
+  assertReadinessBoundary(guard, clock)
   await peer.send('Input.dispatchMouseEvent', {
     type: 'mousePressed',
     ...snapshot.point,
@@ -2438,7 +2485,7 @@ async function dispatchVerifiedPointerClick(peer, sessionId, guard, snapshot, re
     clickCount: 1,
     pointerType: 'mouse',
   }, sessionId)
-  guard.assertSafe()
+  assertReadinessBoundary(guard, clock)
   await peer.send('Input.dispatchMouseEvent', {
     type: 'mouseReleased',
     ...snapshot.point,
@@ -2447,7 +2494,7 @@ async function dispatchVerifiedPointerClick(peer, sessionId, guard, snapshot, re
     clickCount: 1,
     pointerType: 'mouse',
   }, sessionId)
-  guard.assertSafe()
+  assertReadinessBoundary(guard, clock)
 }
 
 /**
@@ -2494,8 +2541,8 @@ export async function prepareRc6PageForPluginInteraction(peer, sessionId, {
     while (true) {
       guard.assertSafe()
       clock.assertBeforeDeadline()
-      const onboarding = await readOnboardingState(peer, sessionId, mainFrameId)
-      guard.assertSafe()
+      const onboarding = await readOnboardingState(peer, sessionId, mainFrameId, guard, clock)
+      assertReadinessBoundary(guard, clock)
 
       if (waitingForDialog !== undefined) {
         if (onboarding.dialog?.index === waitingForDialog.index) {
@@ -2516,8 +2563,10 @@ export async function prepareRc6PageForPluginInteraction(peer, sessionId, {
 
       const snapshot = await captureReadyTarget(peer, sessionId, mainFrameId, onboarding, {
         marker: 'launcher',
+        guard,
+        clock,
       })
-      guard.assertSafe()
+      assertReadinessBoundary(guard, clock)
       const observedAt = clock.current()
       if (!snapshot) {
         stableSignature = undefined
@@ -2527,10 +2576,14 @@ export async function prepareRc6PageForPluginInteraction(peer, sessionId, {
         stableSince = observedAt
       } else if (observedAt - stableSince >= clock.quietMs) {
         if (snapshot.kind === 'marker') return
-        await dispatchVerifiedPointerClick(peer, sessionId, guard, snapshot, async () => {
-          const freshOnboarding = await readOnboardingState(peer, sessionId, mainFrameId)
+        await dispatchVerifiedPointerClick(peer, sessionId, guard, clock, snapshot, async () => {
+          const freshOnboarding = await readOnboardingState(peer, sessionId, mainFrameId, guard, clock)
           if (freshOnboarding.dialog?.index !== snapshot.dialogIndex) return undefined
-          return captureReadyTarget(peer, sessionId, mainFrameId, freshOnboarding, { marker: 'launcher' })
+          return captureReadyTarget(peer, sessionId, mainFrameId, freshOnboarding, {
+            marker: 'launcher',
+            guard,
+            clock,
+          })
         })
         highestHandledDialog = snapshot.dialogIndex
         waitingForDialog = Object.freeze({
@@ -2589,13 +2642,15 @@ export async function clickMarker(peer, sessionId, marker, {
     while (true) {
       guard.assertSafe()
       clock.assertBeforeDeadline()
-      const onboarding = await readOnboardingState(peer, sessionId, mainFrameId)
+      const onboarding = await readOnboardingState(peer, sessionId, mainFrameId, guard, clock)
       if (onboarding.dialog) fail('STAGE2_PAGE_NAVIGATION_FAILED')
       const snapshot = await captureReadyTarget(peer, sessionId, mainFrameId, onboarding, {
         marker,
         requireEnabled,
+        guard,
+        clock,
       })
-      guard.assertSafe()
+      assertReadinessBoundary(guard, clock)
       const observedAt = clock.current()
       if (!snapshot) {
         stableSignature = undefined
@@ -2604,12 +2659,14 @@ export async function clickMarker(peer, sessionId, marker, {
         stableSignature = snapshot.signature
         stableSince = observedAt
       } else if (observedAt - stableSince >= clock.quietMs) {
-        await dispatchVerifiedPointerClick(peer, sessionId, guard, snapshot, async () => {
-          const freshOnboarding = await readOnboardingState(peer, sessionId, mainFrameId)
+        await dispatchVerifiedPointerClick(peer, sessionId, guard, clock, snapshot, async () => {
+          const freshOnboarding = await readOnboardingState(peer, sessionId, mainFrameId, guard, clock)
           if (freshOnboarding.dialog) return undefined
           return captureReadyTarget(peer, sessionId, mainFrameId, freshOnboarding, {
             marker,
             requireEnabled,
+            guard,
+            clock,
           })
         })
         return
@@ -2621,18 +2678,21 @@ export async function clickMarker(peer, sessionId, marker, {
   }
 }
 
-async function waitForLauncherFocus(peer, sessionId) {
+async function waitForLauncherFocus(peer, sessionId, guard = undefined) {
   const deadline = Date.now() + CDP_TIMEOUT_MS
   while (Date.now() < deadline) {
-    const nodeId = await queryMarker(peer, sessionId, 'launcher')
+    assertPageObservationSafe(guard)
+    const nodeId = await queryMarker(peer, sessionId, 'launcher', guard)
     if (nodeId > 0) {
       const described = await peer.send('DOM.describeNode', { nodeId }, sessionId)
+      assertPageObservationSafe(guard)
       const backendNodeId = described?.node?.backendNodeId
       if (Number.isSafeInteger(backendNodeId) && backendNodeId > 0) {
         const tree = await peer.send('Accessibility.getPartialAXTree', {
           backendNodeId,
           fetchRelatives: false,
         }, sessionId)
+        assertPageObservationSafe(guard)
         const focused = tree.nodes?.some((node) =>
           node?.backendDOMNodeId === backendNodeId
           && node?.properties?.some((property) => property?.name === 'focused' && property?.value?.value === true),
@@ -2641,6 +2701,7 @@ async function waitForLauncherFocus(peer, sessionId) {
       }
     }
     await delay(50)
+    assertPageObservationSafe(guard)
   }
   return false
 }
@@ -2649,12 +2710,18 @@ async function observeMarkers(peer, sessionId, mainFrameId, windowGuard, phase) 
   if (phase === 'disabled' || phase === 'removed') {
     windowGuard.assertSafe()
     await delay(QUIET_PERIOD_MS)
+    windowGuard.assertSafe()
     for (const marker of Object.keys(PLUGIN_MARKERS)) {
-      if (await queryMarker(peer, sessionId, marker) !== 0) fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
+      if (await queryMarker(peer, sessionId, marker, windowGuard) !== 0) {
+        fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
+      }
     }
     await delay(QUIET_PERIOD_MS)
+    windowGuard.assertSafe()
     for (const marker of Object.keys(PLUGIN_MARKERS)) {
-      if (await queryMarker(peer, sessionId, marker) !== 0) fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
+      if (await queryMarker(peer, sessionId, marker, windowGuard) !== 0) {
+        fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
+      }
     }
     windowGuard.assertSafe()
     return { markerState: 'absent', counters: [], focusRestored: false }
@@ -2663,29 +2730,43 @@ async function observeMarkers(peer, sessionId, mainFrameId, windowGuard, phase) 
   await prepareRc6PageForPluginInteraction(peer, sessionId, { mainFrameId, windowGuard })
   const start = phase === 'initial-enabled' ? 0 : 1
   const increment = phase === 'initial-enabled' || phase === 'readded'
-  await waitForMarker(peer, sessionId, 'launcher')
+  await waitForMarker(peer, sessionId, 'launcher', { guard: windowGuard })
   await clickMarker(peer, sessionId, 'launcher', { mainFrameId, windowGuard })
-  await waitForMarker(peer, sessionId, 'overlay')
-  await waitForCounter(peer, sessionId, start)
+  await waitForMarker(peer, sessionId, 'overlay', { guard: windowGuard })
+  await waitForCounter(peer, sessionId, start, windowGuard)
   const counters = [start]
   if (increment) {
     await clickMarker(peer, sessionId, 'increment', { requireEnabled: true, mainFrameId, windowGuard })
-    counters.push(await waitForCounter(peer, sessionId, start + 1))
+    counters.push(await waitForCounter(peer, sessionId, start + 1, windowGuard))
   }
   await clickMarker(peer, sessionId, 'close', { mainFrameId, windowGuard })
-  await waitForMarker(peer, sessionId, 'overlay', { present: false })
-  const focusRestored = await waitForLauncherFocus(peer, sessionId)
+  await waitForMarker(peer, sessionId, 'overlay', { present: false, guard: windowGuard })
+  const focusRestored = await waitForLauncherFocus(peer, sessionId, windowGuard)
   windowGuard.assertSafe()
   return { markerState: 'present', counters, focusRestored }
 }
 
-async function waitForMatchingEvent(peer, method, sessionId, predicate, milliseconds = START_TIMEOUT_MS) {
+async function waitForMatchingEvent(
+  peer,
+  method,
+  sessionId,
+  predicate,
+  guard = undefined,
+  milliseconds = START_TIMEOUT_MS,
+) {
   const deadline = Date.now() + milliseconds
   while (Date.now() < deadline) {
+    assertPageObservationSafe(guard)
     const remaining = Math.max(1, deadline - Date.now())
-    const event = await peer.waitForEvent(method, sessionId, remaining)
+    let event
+    try {
+      event = await peer.waitForEvent(method, sessionId, remaining)
+    } finally {
+      assertPageObservationSafe(guard)
+    }
     if (predicate(event)) return event
   }
+  assertPageObservationSafe(guard)
   fail('STAGE2_CDP_EVENT_TIMEOUT')
 }
 
@@ -2945,6 +3026,7 @@ export async function createPageSession(peer, origin, networkState, phase) {
   ])
   const networkGate = createPageNetworkGate(peer, sessionId, origin, networkState)
   const windowGuard = createPageWindowOpenGuard(peer, sessionId)
+  windowGuard.assertSafe()
 
   const navigation = await peer.send(
     'Page.navigate',
@@ -2952,6 +3034,7 @@ export async function createPageSession(peer, origin, networkState, phase) {
     sessionId,
     { timeoutMs: START_TIMEOUT_MS },
   )
+  windowGuard.assertSafe()
   if (
     navigation?.errorText !== undefined
     || typeof navigation?.loaderId !== 'string'
@@ -2967,7 +3050,9 @@ export async function createPageSession(peer, origin, networkState, phase) {
     'Network.responseReceived',
     sessionId,
     (event) => event?.type === 'Document' && event?.loaderId === navigation.loaderId,
+    windowGuard,
   )
+  windowGuard.assertSafe()
   if (
     typeof response?.response?.status !== 'number'
     || response.response.status < 200
@@ -2979,9 +3064,13 @@ export async function createPageSession(peer, origin, networkState, phase) {
     'Page.lifecycleEvent',
     sessionId,
     (event) => event?.loaderId === navigation.loaderId && event?.name === 'load',
+    windowGuard,
   )
+  windowGuard.assertSafe()
   const document = await peer.send('DOM.getDocument', { depth: 0, pierce: false }, sessionId)
+  windowGuard.assertSafe()
   if (new URL(document?.root?.documentURL).origin !== origin) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+  windowGuard.assertSafe()
   return Object.freeze({
     sessionId,
     frameId: navigation.frameId,
