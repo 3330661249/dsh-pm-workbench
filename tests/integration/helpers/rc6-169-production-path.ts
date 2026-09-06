@@ -1103,10 +1103,10 @@ function patchBootstrapProductionScript({
       after: `const EXPECTED_COMPILER_SOURCE_AGGREGATE_SHA256 = '${compilerSourceAggregateSha256}'`,
     },
     ...(verifierSourceSha256
-      && verifierSourceSha256 !== '1cd80842bb5b1d8b6b74d9a818bdd827d85a3e0e1e63003e665864ce28096a37'
+      && verifierSourceSha256 !== '7e28949d1899df9dda79e765f342c559254ab67e45a77dca1b2abe329c5d9f8e'
       ? [{
           label: 'verifier source hash',
-          before: "const EXPECTED_VERIFIER_SOURCE_SHA256 = '1cd80842bb5b1d8b6b74d9a818bdd827d85a3e0e1e63003e665864ce28096a37'",
+          before: "const EXPECTED_VERIFIER_SOURCE_SHA256 = '7e28949d1899df9dda79e765f342c559254ab67e45a77dca1b2abe329c5d9f8e'",
           after: `const EXPECTED_VERIFIER_SOURCE_SHA256 = '${verifierSourceSha256}'`,
         }]
       : []),
