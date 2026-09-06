@@ -5,12 +5,13 @@ import { describe, expect, test } from 'vitest'
 
 const workspaceRoot = resolve(import.meta.dirname, '../..')
 const hostContractPath =
-  'tools/harness-rc6-declarations/contracts/harness-host-rc6-surface.ts'
+  'tests/types/harness-host-rc6-surface.ts'
 const clientContractPath =
-  'tools/harness-rc6-declarations/contracts/harness-client-rc6-surface.ts'
+  'tests/types/harness-client-rc6-surface.ts'
 const hostAllowedImports = new Set([
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-connection',
+  '@deepseek-ai/dsh-storage-domain',
 ])
 const clientAllowedImports = new Set([
   '@deepseek-ai/dsh-client-ui-layout/client',
@@ -162,6 +163,7 @@ function expectNoContractBypass(
 function expectStrictCompilerOptions(
   compilerOptions: JsonObject,
   expectedLib: readonly string[],
+  expectedTypes: readonly string[],
 ) {
   expect(Object.keys(compilerOptions).sort()).toEqual(
     [
@@ -184,7 +186,7 @@ function expectStrictCompilerOptions(
   expect(compilerOptions.skipLibCheck).toBe(false)
   expect(compilerOptions.noEmit).toBe(true)
   expect(compilerOptions.lib).toEqual(expectedLib)
-  expect(compilerOptions.types).toEqual([])
+  expect(compilerOptions.types).toEqual(expectedTypes)
   expect(compilerOptions).not.toHaveProperty('paths')
   expect(compilerOptions).not.toHaveProperty('typeRoots')
 }
@@ -193,6 +195,7 @@ async function expectStrictSurfaceConfig(
   configPath: string,
   contractPath: string,
   expectedLib: readonly string[],
+  expectedTypes: readonly string[],
 ) {
   const config = await readJsonObject(configPath)
   expect(Object.keys(config).sort()).toEqual(['compilerOptions', 'files'])
@@ -203,7 +206,7 @@ async function expectStrictSurfaceConfig(
   if (!isJsonObject(compilerOptions)) {
     throw new Error(`${configPath} must define compilerOptions`)
   }
-  expectStrictCompilerOptions(compilerOptions, expectedLib)
+  expectStrictCompilerOptions(compilerOptions, expectedLib, expectedTypes)
 }
 
 describe('rc.6 declaration contracts cannot bypass public surfaces', () => {
@@ -269,7 +272,7 @@ describe('rc.6 declaration contracts cannot bypass public surfaces', () => {
         lib: ['ES2022'],
         types: [],
         noCheck: true,
-      }, ['ES2022']),
+      }, ['ES2022'], []),
     ).toThrow()
   })
 
@@ -288,64 +291,57 @@ describe('rc.6 declaration contracts cannot bypass public surfaces', () => {
       expectStrictSurfaceConfig(
         'tsconfig.surface.host.json',
         hostContractPath,
-        ['ES2022'],
+        ['ES2022', 'DOM'],
+        ['node'],
       ),
       expectStrictSurfaceConfig(
         'tsconfig.surface.client.json',
         clientContractPath,
         ['ES2022', 'DOM', 'DOM.Iterable'],
+        [],
       ),
     ])
   })
 
-  test('Client uses direct public Connection types and official Client slot augmentations', async () => {
+  test('Client carries the rc.6 public Connection handle intersection and official sidebar slot augmentation', async () => {
     const source = await readWorkspaceFile(clientContractPath)
     const specifiers = expectNoContractBypass(source, clientAllowedImports)
     const layoutImport = "import '@deepseek-ai/dsh-client-ui-layout/client'"
     const sidebarImport = "import '@deepseek-ai/dsh-client-ui-sidebar/client'"
 
-    expect(source).toMatch(
-      /import\s+type\s*\{[\s\S]*?\bClientConnectionRpc\b[\s\S]*?\bConnectionHandle\b[\s\S]*?\}\s*from\s*['"]@deepseek-ai\/dsh-client-connection\/client['"]/,
+    expect(source).toContain(
+      "import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'",
     )
     expect(source).toContain(
       "import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'",
     )
     expect(specifiers).not.toContain('@deepseek-ai/dsh-client-connection')
-    expect(source).not.toContain('ctx.connection')
-    expect(source).toContain('const rpc: ClientConnectionRpc = connection.rpc')
-    expect(source).toMatch(/\brpc\.call\(\s*['"]\/dsh-pm-workbench-v1['"]/)
+    expect(source).toContain(
+      'declare const ctx: ClientContext & { readonly connection: ConnectionHandle }',
+    )
+    expect(source).toMatch(/\bctx\.connection\.rpc\.call\(\s*['"]\/dsh-pm-workbench-v1['"]/)
 
     expect(source).toContain(layoutImport)
     expect(source).toContain(sidebarImport)
-    expect(source.indexOf(layoutImport)).toBeLessThan(
-      source.indexOf("ctx.slots.inject('shell.overlay'"),
-    )
     expect(source.indexOf(sidebarImport)).toBeLessThan(
       source.indexOf("ctx.slots.inject('sidebar.footer.action'"),
     )
     expect(source).toContain("ctx.slots.inject('sidebar.footer.action'")
     expect(source).toContain("name: 'sidebar.footer.action'")
-    expect(source).toContain("ctx.slots.inject('shell.overlay'")
-    expect(source).toContain("name: 'shell.overlay'")
+    expect(source).not.toContain("ctx.slots.inject('shell.overlay'")
   })
 
-  test('Host alone loads the root augmentation and wires its async disposer into Cordis', async () => {
+  test('Host alone loads the public Connection and storage augmentations', async () => {
     const source = await readWorkspaceFile(hostContractPath)
     const specifiers = expectNoContractBypass(source, hostAllowedImports)
 
     expect(specifiers).toContain('@deepseek-ai/dsh-client-connection')
+    expect(specifiers).toContain('@deepseek-ai/dsh-storage-domain')
     expect(specifiers).not.toContain('@deepseek-ai/dsh-client-connection/client')
-    expect(source).toContain(
-      'const connection: HostConnectionHandle = ctx.connection',
-    )
-    expect(source).toMatch(/\bconnection\.rpc\.handle\(\s*['"]\/dsh-pm-workbench-v1['"]/)
+    expect(source).toMatch(/\bctx\.connection\.rpc\.handle\(\s*['"]\/dsh-pm-workbench-v1['"]/)
     expect(source).toContain("{ authority: 'loopback' }")
-    expect(source).toContain(
-      'const disposeEffect: () => Promise<void> = ctx.effect(() => disposeChannel)',
-    )
-    expect(source).not.toMatch(
-      /ctx\.effect\(\(\)\s*=>\s*disposeChannel\s*\(\s*\)\s*\)/,
-    )
-    expect(source).toContain('void disposeEffect')
+    expect(source).toContain('const domain = await ctx.storageDomain.open(probeDomainSpec)')
+    expect(source).toContain('void dispose')
+    expect(source).toContain('void domain')
   })
 })
