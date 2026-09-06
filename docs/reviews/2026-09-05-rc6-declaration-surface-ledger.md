@@ -727,3 +727,439 @@ proposal reported zero P0 and zero P1 findings. The evidence review also found
 no remaining overstatement. Their PASS closes this B2b review gate only; it
 does not approve the separate legacy branch or perform the explicit schema-v2
 promotion.
+
+## Task 2 B2c — legacy writer retirement and regenerated current local proposal
+
+As of repository HEAD
+`14180b8f5b1a9c7deb0b6f03d6d2ca8c97b594cc`, the preceding section titled
+“Task 2 B2b — final P1 correction and current proposal” is preserved byte for
+byte as historical evidence, but its use of “current” is now superseded. This
+section records the replacement local proposal after both legacy writer entry
+points were disabled. It does not supersede the earlier evidence by deletion
+or rewrite.
+
+The retirement was developed through explicit RED/GREEN gates. The corrected
+legacy-policy RED produced 13 intended failures, 227 existing passes, and one
+conditional skip. After the production retirement and the separately reviewed
+verifier-pin fixture update, the focused two-file GREEN produced 240 passes and
+one conditional skip. The `proposalStage` schema change first produced four
+intended failures and three passes, then its full input-file GREEN produced 234
+passes. The macOS alias-path regression first made all five direct closure-CLI
+argv cases resolve incorrectly with blank output; after the canonical-entry
+guard fix, the same filter produced five passes and eight unrelated skips. Its
+fresh companion checks also produced 23 file-safety passes, 234 input passes,
+and 12 dependency-boundary passes with one conditional skip.
+
+Independent read-only reviews passed the final Task 1 policy tests, Task 2
+production retirement, Task 3 schema semantics, Task 4 source identities, and
+Task 4a alias-path correction. The updated cumulative pre-publication review at
+`14180b8` reported no P0, P1, or P2 findings and explicitly closed the earlier
+alias-path P2 before the real stage. These reviews approve the reviewed code
+and the decision to use the explicit stage API; they are not a promotion or a
+Harness-runtime result.
+
+The two retained legacy API names are now argument-blind rejecting
+compatibility shims with stable errors:
+
+- `acceptRc6DeclarationInput(_options)` throws
+  `LEGACY_ACCEPT_DISABLED` before reading its argument or filesystem;
+- `writeCommittedDeclarationClosure(_options)` throws
+  `LEGACY_CLOSURE_WRITE_DISABLED` before reading its argument or filesystem.
+
+For an intended direct invocation, every argv variant of the first legacy CLI
+emits the pretty JSON serialization, plus one final newline, of
+`{"status":"FAIL_INPUT_POLICY","reasonCode":"LEGACY_ACCEPT_DISABLED"}`;
+every argv variant of the second emits the corresponding fixed object
+`{"status":"FAIL_CLOSURE_POLICY","reasonCode":"LEGACY_CLOSURE_WRITE_DISABLED"}`.
+Both policies exit `1`, leave stderr empty, contain no caller-supplied path or
+error detail, and preserve the surrounding fixture bytes. Neither legacy API
+or CLI writes proposal evidence, writes a committed closure, or forwards into
+`stageRc6DeclarationInputV2`.
+
+Before replacement staging, the prior pointer and bundle parent were moved by
+reversible filesystem renames to fixed, previously absent destinations:
+
+- `.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.superseded-pre-legacy-disable-20260906.json`;
+- `.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal-bundles.superseded-pre-legacy-disable-20260906`.
+
+The independent audit found the archived pointer and archived bundle distinct
+from the replacement objects. The archived bundle remains
+`bundle-70f3488f0d24bf62341f7e46270f3e0b`; its directory was mode `0555`, link
+count 6, and its four expected files were regular, non-symlink, mode `0444`,
+link count 1. The archived pointer was mode `0444`, link count 1. Its four
+historical hashes remain exactly unchanged:
+
+| Archived object | SHA-256 |
+| --- | --- |
+| pointer | `3041c72f98fca0360677819894e02eab3ff323adc6314a3aeea6ab5041a24409` |
+| receipt | `e7262509100cf9360d55412ad45a03f1f6b5b342a5fc6e08ba2e65faf41419d0` |
+| input manifest | `e898299fd2b19f1195bc6402b6c00c95aa7bcdc52ee3d3dd513a0f4d1ba5eaa7` |
+| closure | `19bfda32be5b62ea7097704015ff8640b420c36b65682de85e77914ae819c8a0` |
+
+The stage implementer then invoked only
+`stageRc6DeclarationInputV2({ workspaceRoot })` twice. The first returned
+`PASS_STAGED_RC6_DECLARATION_INPUT_V2`, `PASS_STAGED_REPLAY`, and `PUBLISHED`;
+the second returned the same two PASS statuses and `ADOPTED_EXISTING`. The two
+returned path triples were byte-for-byte identical and named:
+
+`rc6-declaration-v2-proposal-bundles/bundle-0f5e4867db1a4a9d9aa806b43d10d8f7`.
+
+Those two transient publication statuses are implementer-observed facts from
+the stage report. The independent auditor did not rerun or claim to witness the
+two calls; it instead reconstructed the immutable state they left behind and
+reported `TASK 5 EVIDENCE AUDIT PASS` with no P0, P1, or P2 findings.
+
+The current pointer is
+`.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json`, and the current bundle
+is
+`.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal-bundles/bundle-0f5e4867db1a4a9d9aa806b43d10d8f7`.
+The independent reconstruction found the replacement pointer canonical, with
+exactly four keys and one final newline, as a regular non-symlink file of mode
+`0444`, link count 1. The current bundle parent was a non-symlink directory of
+mode `0700`, link count 3; the bundle itself was a non-symlink directory of mode
+`0555`, link count 6, with exactly four entries and no extra file:
+
+| Current object | Size | Mode | Links | SHA-256 |
+| --- | ---: | ---: | ---: | --- |
+| pointer | 317 | `0444` | 1 | `339bb78040d2c4b189388f6f05d32459d88dd697cdcf00efb7f3facd230640b5` |
+| `.owner` | 32 | `0444` | 1 | `fae3f964d7634d1a89bc633fe8e61f71ca1c0f0df26c62d4bf424a050aed95eb` |
+| `input-manifest.v2.json` | 86,226 | `0444` | 1 | `5bd085fd661cb6888c347927b1796a3d488dcf55e8d0b17f57a7b54d0407af65` |
+| `rc6-declaration-closure.v2.json` | 32,540 | `0444` | 1 | `c65c5fc8afbfd7e8a4c949d6c6a4b9b88297daa4f01178bea802949a1a8ef0c4` |
+| `receipt.json` | 2,723 | `0444` | 1 | `c5ee85f114aa0c3254420c6cf0f3ebfba743886b5f453671b1c604dbd7e50422` |
+
+The pointer's `receiptSha256` equals the exact receipt bytes; the receipt binds
+the exact input and closure hashes in the table. The `.owner` bytes are
+`ae2b3dbf146b009fcc58529b997772e8`, equal to the receipt owner marker. The
+actual payload inventory equals the receipt payload, and its independently
+recomputed identity is
+`4f14cc3d1ca3ff6c88e41e1457e9b8bbe7fc43cbce02e3a24a980a67eca7876b`.
+The receipt result is exactly `PASS_RC6_DECLARATION_V2_PROPOSAL`.
+
+The independently reconstructed source, compiler, verifier, and policy
+identities are:
+
+| Identity | SHA-256 |
+| --- | --- |
+| raw acceptance source | `8fe7c0d2fdf05912d8b6ddcac812462c3c9bd59e255bdedc283f6a4b94c5a6a5` |
+| normalized acceptance self-hash | `fbe0fc9584762866f0daab302a03b6683157267e2dc6dc2a9f12d716f4d3be98` |
+| raw verifier source | `a0b9b11ad0ca1e8cf2fe79b7c127a5de1418329970ffca174d8b510e9b213329` |
+| compiler source aggregate | `44535345dd7a3448bac9206c60ad352f67c265708d410c4c5e20dad0de83d943` |
+| sealed compiler aggregate | `ddf98666210bbd9325c3902b7ab0718543ee4a37bc0c8a376e71bede4d3fe14a` |
+| canonical compiler-result object | `96ef092029819624f0a4a62510bd03f3c7a56cfb1498fa751b64872451b48bc7` |
+| verifier result | `1d3c401ea2a7207927d159178b7b54a504eae2d562bb2a812d091fe381dc59bb` |
+| npm policy | `d25abf25f3cf9206bc6ad3da9c02392dee5a4565ae022fd1f44f9ad91c48944e` |
+| compile policy | `30acc54a153ee1ed016f6b79becb3b1fddd011dd27d7f2fab33ef0aeef207700` |
+
+The input manifest has no top-level `acceptance` key. Its exact top-level stage
+claim is limited to:
+
+```json
+{
+  "command": "stageRc6DeclarationInputV2({ workspaceRoot })",
+  "result": "PASS_STAGED_RC6_DECLARATION_INPUT_V2"
+}
+```
+
+The serialized input contains none of `PASS_ACCEPTED_INPUT`,
+`PASS_OFFLINE_INSTALL`, or `--verify-and-compile`.
+
+The selected-source publication was also independently rebound rather than
+accepted from the proposal receipt. Its current bundle is
+`declaration-input-source-bundles/bundle-4d20027b7b3fb8d8093979d83e6ad553`;
+its pointer SHA-256 is
+`f69456bcf8ab1d10726244d9c4bd3399ca8bf39998d5e577412e5e65f9c4bc4f`,
+its receipt SHA-256 is
+`984a8a417df4b7a4349ee306304ae90266c58cd25876d22b0fcba04f551cfb1d`,
+its owner marker is `3c797d9ab85d6ebcc1ff5f2b207deb12`, and its independently recomputed
+924-record payload identity is
+`02aee7170134447b46777e1f5d923ad6a99500bc4d39313779c858412f079a7d`.
+The bound selection remains 169 packages and 9,590,214 content bytes.
+
+A recursive scan visited 1,797 structured string values across the current
+pointer, receipt, input manifest, and closure. It found zero `/Users/`,
+`/private/`, `file:` URI, Windows drive-absolute, or UNC-path hits.
+
+The canonical persisted `compileResults` object and its top-level hash are
+independently reconstructible. Its receipt records a Host summary of 314
+replay-relative files with list hash
+`87d56f0335888cc23448e38faf98b5b016f39279814cb9b9b6c92ba91d88874c`
+and a Client summary of 388 with list hash
+`71086ce76394f560d5e1819d74442d5df0337bac5489e97cbe3f2f745ea26d35`.
+However, the full `tsc --listFiles` arrays were not persisted. Their semantic
+truth, the associated execution booleans, and those exact counts/list hashes
+remain stage-bound observations unless the compiles are rerun. Likewise, the
+first-run `PUBLISHED` and second-run `ADOPTED_EXISTING` events are transient
+stage-report observations rather than two events reconstructible from the
+final bundle.
+
+This B2c artifact is still a local, pending-review proposal. Task 6 full-suite
+verification and final reviews remain separate gates, and an explicit future
+promotion remains required. Nothing in this section is a promoted or committed
+schema-v2 input, a DeepSeek Harness runtime/load/unload check, an installation,
+a packet-level network observation, a push, or a pull request.
+
+### Task 2 B2c — final verification
+
+The first `npm test -- --maxWorkers=1` run inside the restricted sandbox
+reported 18 passing and two failing test files, with 377 tests passed and one
+conditional skip. The two failures were the Demo server's loopback
+`listen EPERM` and the standalone relocation suite encountering that same
+restricted test in its nested run. The complete errors confirmed that both
+failures came from the sandbox denying a listener on `127.0.0.1`, rather than
+from a product assertion.
+
+After explicit approval, the identical command was rerun outside that sandbox
+restriction and exited `0`: all 20 test files passed, 379 tests passed, and one
+conditional test was skipped. Total duration was 464.49 seconds; the standalone
+relocation test passed in 237.942 seconds, and the Demo loopback test passed.
+
+Fresh checks after that suite also passed:
+
+- `npm run typecheck`;
+- Node syntax checks for the acceptance script, verifier, and
+  `rc6-strict-umask` child helper;
+- `npm run build`;
+- `npm run verify:package`, which returned `status: verified` with nine files;
+- `npm run pack:dry`, which reported 2.5 kB packed, 5.2 kB unpacked, and nine
+  files without writing a tarball;
+- `git diff --check`.
+
+The two final independent reviews and the local commit remain pending. These
+verification results do not perform or prove a DeepSeek Harness action, an
+external-network operation or packet-level observation, schema-v2 promotion,
+a push, or a pull request.
+
+## Task 2 B2d — acceptance entry correction and regenerated current local proposal
+
+The first final B2c code review found a P1 in the acceptance CLI entry guard:
+its basename-only comparison allowed a different-basename symlink invocation
+to skip `main()`, while an unrelated same-basename importer could trigger it.
+The matching evidence review found the resulting P1 overstatement in the B2c
+ledger at lines 769–777, beginning with “every argv variant of the first legacy
+CLI.” No other actionable code or evidence finding was reported. The complete
+B2c text remains unchanged as historical evidence, but B2c is superseded by
+this section and that sentence must no longer be read as the current contract.
+
+Task 4b added six focused regressions before the production fix. Against
+`14180b8f5b1a9c7deb0b6f03d6d2ca8c97b594cc`, the exact filter exited `1` with
+six failures and 234 skips: five differently named symlink invocations silently
+resolved without output, and one same-basename importer wrongly executed
+`main()`, emitted the disabled policy, and exited `1`. This is the actual RED,
+not a synthetic reconstruction.
+
+The corrected entry guard compares the canonical real path of
+`process.argv[1]` with the canonical real path of the module URL. Missing,
+unresolvable, or different paths return false without throwing. After the fix,
+the six new cases passed with 234 skips. The six existing argument-blind API
+and legacy acceptance CLI policy cases also passed with 234 skips; the
+file-safety suite produced 23 passes; acceptance syntax, typecheck, and diff
+checks passed. The tracked correction is commit
+`8fd628e988f2c5dee87610c91282445d07e5fc17` (`Fix retired acceptance CLI entry
+guard`).
+
+The corrected observable contract is precise: each of the five tested argv
+variants invoked through a different-basename symlink emits the fixed,
+path-free `{"status":"FAIL_INPUT_POLICY","reasonCode":"LEGACY_ACCEPT_DISABLED"}`
+JSON with one final newline, exits `1`, and leaves stderr empty. A same-basename
+driver that merely imports the implementation remains silent and successful.
+Missing, unresolvable, and unrelated argv entry paths are import-safe.
+The legacy API remains an argument-blind rejecting shim; no case writes
+evidence or forwards into the stage API. An independent Task 4b review
+reproduced these behaviors, rechecked the source identities and scope, and
+reported PASS with no P0, P1, or P2 findings.
+
+Before B2d staging, the B2c current pointer and bundle parent were reversibly
+renamed to fixed destinations that had first been confirmed absent:
+
+- `.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.superseded-pre-acceptance-entry-guard-20260906.json`;
+- `.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal-bundles.superseded-pre-acceptance-entry-guard-20260906`.
+
+The archived B2c bundle remains
+`bundle-0f5e4867db1a4a9d9aa806b43d10d8f7`. Its parent is a distinct non-symlink
+directory, mode `0700`, link count 3; its bundle is mode `0555`, link count 6;
+the archived pointer and all four bundle files are regular, non-symlink, mode
+`0444`, link count 1. The B2c owner marker remains
+`ae2b3dbf146b009fcc58529b997772e8`, with owner-file SHA-256
+`fae3f964d7634d1a89bc633fe8e61f71ca1c0f0df26c62d4bf424a050aed95eb`.
+Its four B2c hashes remain unchanged:
+
+| B2c archived object | SHA-256 |
+| --- | --- |
+| pointer | `339bb78040d2c4b189388f6f05d32459d88dd697cdcf00efb7f3facd230640b5` |
+| receipt | `c5ee85f114aa0c3254420c6cf0f3ebfba743886b5f453671b1c604dbd7e50422` |
+| input manifest | `5bd085fd661cb6888c347927b1796a3d488dcf55e8d0b17f57a7b54d0407af65` |
+| closure | `c65c5fc8afbfd7e8a4c949d6c6a4b9b88297daa4f01178bea802949a1a8ef0c4` |
+
+The stage implementer then invoked only
+`stageRc6DeclarationInputV2({ workspaceRoot })` twice at `8fd628e`. The first
+call returned `PASS_STAGED_RC6_DECLARATION_INPUT_V2`, `PASS_STAGED_REPLAY`, and
+`PUBLISHED`; the second returned the same two PASS statuses and
+`ADOPTED_EXISTING`. Both returned exactly the same three paths under the new
+current bundle:
+
+`.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal-bundles/bundle-7d2ca3aadeb78d26238260889726effc`.
+
+Those two publication statuses are implementer-observed stage-report facts.
+The independent Task 5b auditor did not rerun the API; it reconstructed the
+resulting B2d bytes and filesystem closure and reported
+`TASK 5B EVIDENCE AUDIT PASS` with no P0, P1, or P2 findings.
+
+The B2d current pointer is
+`.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json`. It is canonical JSON
+with exactly four validator-owned keys and one final newline. The current
+bundle parent and bundle are distinct non-symlink directories: the parent is
+mode `0700`, link count 3, and the bundle is mode `0555`, link count 6, with
+exactly four expected entries and no extra file. The independently reconstructed
+objects are:
+
+| B2d current object | Size | Mode | Links | SHA-256 |
+| --- | ---: | ---: | ---: | --- |
+| pointer | 317 | `0444` | 1 | `0ef8ee0979e99e179a6831d8d7bc3558e2402b831c6586a14d9fcefcb966845e` |
+| `.owner` | 32 | `0444` | 1 | `a07e29434ffa2f53a2f0dec12a855d5fb3422b618f09fcb161d8b79cc209801a` |
+| `input-manifest.v2.json` | 86,226 | `0444` | 1 | `5bd085fd661cb6888c347927b1796a3d488dcf55e8d0b17f57a7b54d0407af65` |
+| `rc6-declaration-closure.v2.json` | 32,540 | `0444` | 1 | `c65c5fc8afbfd7e8a4c949d6c6a4b9b88297daa4f01178bea802949a1a8ef0c4` |
+| `receipt.json` | 2,723 | `0444` | 1 | `6de405c0ca373fdefa6e41eaff147532449914305788c7025105660687c08c66` |
+
+All five table entries are regular, non-symlink files. The pointer binds the
+exact receipt bytes; the receipt binds the exact input and closure bytes; and
+the closure binds the same input digest. The `.owner` bytes are
+`89d455fab167f69738f10d47788edb1d`, exactly equal to the receipt owner marker.
+The actual proposal payload equals the receipt payload, and its independently
+recomputed identity is
+`4f14cc3d1ca3ff6c88e41e1457e9b8bbe7fc43cbce02e3a24a980a67eca7876b`.
+The receipt result is exactly `PASS_RC6_DECLARATION_V2_PROPOSAL`.
+
+The B2d source, compiler, verifier, runtime, and policy identities were
+independently reconstructed as follows:
+
+| Identity | SHA-256 |
+| --- | --- |
+| raw acceptance source | `b4ef83fa3d7e1e0f43241268a3db2277b3addd565e59e98ebfe4095c30370934` |
+| normalized acceptance self-hash | `6dab6f41bfda75795031e1fa9a2e9bbc41672884276d92f72fd6af2f2eb8a120` |
+| raw verifier source | `a0b9b11ad0ca1e8cf2fe79b7c127a5de1418329970ffca174d8b510e9b213329` |
+| compiler source aggregate | `44535345dd7a3448bac9206c60ad352f67c265708d410c4c5e20dad0de83d943` |
+| client compiler overlay | `ccc1578a3ed59a72264d3d468af7968b2a0771b693875d9ea9ee8fda4b1a2d24` |
+| sealed compiler aggregate | `ddf98666210bbd9325c3902b7ab0718543ee4a37bc0c8a376e71bede4d3fe14a` |
+| canonical compiler-result object | `96ef092029819624f0a4a62510bd03f3c7a56cfb1498fa751b64872451b48bc7` |
+| verifier result | `1d3c401ea2a7207927d159178b7b54a504eae2d562bb2a812d091fe381dc59bb` |
+| npm policy | `d25abf25f3cf9206bc6ad3da9c02392dee5a4565ae022fd1f44f9ad91c48944e` |
+| compile policy | `30acc54a153ee1ed016f6b79becb3b1fddd011dd27d7f2fab33ef0aeef207700` |
+
+The verifier reconstruction contains 59 full-cohort packages and five selected
+declarations. Its derived closure SHA-256 is
+`8aa0be0b2803af71b0fb3f9f85d9cf5f04789f98332630a307188c3cf7e4c6af`,
+and its selected-manifests SHA-256 is
+`f8318087aa8642b7610e2fd0df7c504e2826a0026523be244fe3aa748df41a0c`.
+The runtime bound across input, closure, and receipt matches the current Node
+`v24.14.0` binary, basename `node`, SHA-256
+`9e831e9b13aa47c5e5eaa3904d232aa527124e8abba7ca5d72b67b46cfb10ae8`,
+and npm `11.9.0`, CLI basename `npm-cli.js`, SHA-256
+`8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7`.
+The committed replay `package.json` and `package-lock.json` hashes are
+`208bae9d2b2c0d67b2fa6b985d394cc1ce483e3a5cd226e391ca0a6b7f261cd1`
+and `dde74c404cfbf8e7b1ec7cabece36d2aa2061f256770570f69c15f3064061ad1`.
+
+The selected-source publication was independently inventoried rather than
+accepted from the B2d receipt. Its exact identities are:
+
+| Selected-source identity | Value |
+| --- | --- |
+| bundle | `declaration-input-source-bundles/bundle-4d20027b7b3fb8d8093979d83e6ad553` |
+| pointer SHA-256 | `f69456bcf8ab1d10726244d9c4bd3399ca8bf39998d5e577412e5e65f9c4bc4f` |
+| receipt SHA-256 | `984a8a417df4b7a4349ee306304ae90266c58cd25876d22b0fcba04f551cfb1d` |
+| owner marker | `3c797d9ab85d6ebcc1ff5f2b207deb12` |
+| owner-file SHA-256 | `7b92607196687aa994ee4d62c4dda14aebec1fc8fb9ea1753de5b24aea3a42d2` |
+| descriptor SHA-256 | `995d0dca284ce38ddc28d4bdcc7f020c4d6b4ced06cd64587efdac59e9338011` |
+| payload identity SHA-256 | `02aee7170134447b46777e1f5d923ad6a99500bc4d39313779c858412f079a7d` |
+| selected-cache index SHA-256 | `73e76d127ab8188d8005e4becb750bbe9cfec30988e501185b13558f4c6cd3f6` |
+| selected-content aggregate SHA-256 | `3a8c2e3ba2bb7e07d3cc51212e9ae3dd4925e522d9c9c87acac16fee122757dc` |
+
+The selected-source payload has 924 records: 585 directories and 339 files.
+It binds 169 packages and 9,590,214 selected content bytes. Its pointer was
+mode `0444`, link count 1; parent mode `0700`, link count 3; bundle mode
+`0555`, link count 6; and all payload files were mode `0444`, link count 1.
+
+The current input has no top-level `acceptance` key. Its `proposalStage` has
+exactly these two fields and values:
+
+```json
+{
+  "command": "stageRc6DeclarationInputV2({ workspaceRoot })",
+  "result": "PASS_STAGED_RC6_DECLARATION_INPUT_V2"
+}
+```
+
+The serialized input contains none of `PASS_ACCEPTED_INPUT`,
+`PASS_OFFLINE_INSTALL`, or `--verify-and-compile`. A recursive audit visited
+1,797 parsed string values across the B2d pointer, receipt, input, and closure;
+it found zero `/Users/`, `/private/`, `file:` URI, Windows drive-absolute, or
+UNC-path hits.
+
+The canonical persisted `compileResults` object and its top-level hash are
+independently reconstructible. The receipt records a Host summary of 314
+replay-relative files with list SHA-256
+`87d56f0335888cc23448e38faf98b5b016f39279814cb9b9b6c92ba91d88874c`
+and a Client summary of 388 with list SHA-256
+`71086ce76394f560d5e1819d74442d5df0337bac5489e97cbe3f2f745ea26d35`.
+The full `tsc --listFiles` arrays were not persisted, so their semantic truth,
+the execution booleans, and the exact counts/list hashes remain stage-bound
+unless the compiles are rerun. The first-call `PUBLISHED` and second-call
+`ADOPTED_EXISTING` values are likewise transient stage-report observations,
+not two historical events independently recoverable from the final bundle.
+
+The full-suite PASS and associated final checks recorded in the B2c verification
+subsection were run before commit `8fd628e` changed production source and tests.
+They remain valid B2c historical evidence only and cannot be reused as B2d
+completion evidence. The final serial suite, fresh repository checks as needed,
+and both independent final reviews must be rerun against B2d before any final
+local commit.
+
+This B2d object remains a local proposal. Nothing here is schema-v2 promotion,
+a committed schema-v2 input, an installation, a DeepSeek Harness runtime or
+load/unload result, an external-network action or packet-level observation, a
+push, or a pull request.
+
+### Task 2 B2d — final verification
+
+Fresh verification was run after commit
+`8fd628e988f2c5dee87610c91282445d07e5fc17` and with the B2d ledger state
+present. Using the already approved local-loopback permission,
+`npm test -- --maxWorkers=1` exited `0`: all 20 test files passed, with 385
+tests passed and one conditional skip, 386 total, in 464.09 seconds. The
+standalone relocation test passed in 237.874 seconds, and the Demo loopback test
+passed.
+
+Fresh checks after that suite also passed:
+
+- `npm run typecheck`;
+- Node syntax checks for the acceptance script, verifier, and
+  `rc6-strict-umask` child helper;
+- `npm run build`;
+- `npm run verify:package`, which returned `status: verified` with nine files;
+- `npm run pack:dry`, which reported 2.5 kB packed, 5.2 kB unpacked, and nine
+  files without writing a tarball;
+- `git diff --check`.
+
+Two new final independent reviews and the local ledger commit remain pending.
+These results do not perform or prove schema-v2 promotion, a committed
+schema-v2 input, installation, a DeepSeek Harness runtime or load/unload
+result, an external-network action or packet-level observation, a push, or a
+pull request.
+
+### Task 2 B2d — final independent reviews
+
+`FINAL CODE REVIEW B2D PASS` and `FINAL EVIDENCE REVIEW B2D PASS` each reported
+zero P0, zero P1, and zero P2 findings. The code reviewer directly exercised 27
+focused tests and checked both realpath entry guards, both rejecting legacy
+shims, reachability, exact `proposalStage` semantics, source binding, and the
+exact final review package.
+
+The evidence reviewer independently reconstructed the B2c archive and complete
+B2d current pointer/bundle chain, the selected-source publication, all 1,797
+structured-string scan results, append-only history, and the stated stage-bound
+and verification boundaries. Neither review invoked stage, DeepSeek Harness,
+the network, promotion, push, or a pull request.
+
+These two PASS results approve only the planned local ledger commit. They do
+not approve schema-v2 promotion, installation, a Harness action, or any remote
+operation. The local commit remains pending.
