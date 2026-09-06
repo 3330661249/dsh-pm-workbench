@@ -1823,8 +1823,21 @@ export async function createCdpPeer(webSocketUrl, {
   })
 
   return Object.freeze({
-    send(method, params = {}, sessionId = undefined) {
-      if (closed || terminalError || typeof method !== 'string' || !isPlainObject(params)) {
+    send(method, params = {}, sessionId = undefined, commandOptions = {}) {
+      const commandTimeoutMs = isPlainObject(commandOptions)
+        ? (commandOptions.timeoutMs ?? timeoutMs)
+        : undefined
+      if (
+        closed
+        || terminalError
+        || typeof method !== 'string'
+        || !isPlainObject(params)
+        || !isPlainObject(commandOptions)
+        || Object.keys(commandOptions).some((key) => key !== 'timeoutMs')
+        || !Number.isSafeInteger(commandTimeoutMs)
+        || commandTimeoutMs < 1
+        || commandTimeoutMs > COMMAND_TIMEOUT_MS
+      ) {
         return Promise.reject(terminalError ?? cdpFailure())
       }
       const id = nextId
@@ -1833,7 +1846,7 @@ export async function createCdpPeer(webSocketUrl, {
         const timer = setTimeout(() => {
           pending.delete(id)
           reject(cdpFailure('STAGE2_CDP_COMMAND_TIMEOUT'))
-        }, timeoutMs)
+        }, commandTimeoutMs)
         pending.set(id, { resolve, reject, timer })
         try {
           socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
@@ -2257,7 +2270,7 @@ export function createPageNetworkGate(peer, sessionId, origin, networkState, {
   })
 }
 
-async function createPageSession(peer, origin, networkState, phase) {
+export async function createPageSession(peer, origin, networkState, phase) {
   await peer.send('Browser.getVersion')
   const target = await peer.send('Target.createTarget', { url: 'about:blank' })
   if (typeof target?.targetId !== 'string') fail('STAGE2_CDP_PROTOCOL_FAILED')
@@ -2275,7 +2288,12 @@ async function createPageSession(peer, origin, networkState, phase) {
   ])
   const networkGate = createPageNetworkGate(peer, sessionId, origin, networkState)
 
-  const navigation = await peer.send('Page.navigate', { url: origin }, sessionId)
+  const navigation = await peer.send(
+    'Page.navigate',
+    { url: origin },
+    sessionId,
+    { timeoutMs: START_TIMEOUT_MS },
+  )
   if (navigation?.errorText !== undefined || typeof navigation?.loaderId !== 'string') {
     fail('STAGE2_PAGE_NAVIGATION_FAILED')
   }

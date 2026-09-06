@@ -14,6 +14,7 @@ import {
   cleanupBrowserPhaseResources,
   cleanupOwnedRunRoot,
   createCdpPeer,
+  createPageSession,
   createPageNetworkGate,
   createIsolatedChildEnvironment,
   createProductionAdapters,
@@ -260,6 +261,46 @@ describe('Stage 2 runner closed inputs and command grammar', () => {
 })
 
 describe('Stage 2 browser and listener guards', () => {
+  class ControlledCdpWebSocket {
+    static instance: ControlledCdpWebSocket
+    listeners = new Map<string, Set<(event: { data?: string }) => void>>()
+    sent: Array<Record<string, unknown>> = []
+
+    constructor(readonly url: string) {
+      ControlledCdpWebSocket.instance = this
+      Promise.resolve().then(() => { this.dispatch('open', {}) })
+    }
+
+    addEventListener(name: string, listener: (event: { data?: string }) => void) {
+      const listeners = this.listeners.get(name) ?? new Set()
+      listeners.add(listener)
+      this.listeners.set(name, listeners)
+    }
+
+    removeEventListener(name: string, listener: (event: { data?: string }) => void) {
+      this.listeners.get(name)?.delete(listener)
+    }
+
+    dispatch(name: string, event: { data?: string }) {
+      for (const listener of this.listeners.get(name) ?? []) listener(event)
+    }
+
+    send(bytes: string) {
+      const request = JSON.parse(bytes)
+      this.sent.push(request)
+      if (request.method !== 'Page.navigate') return
+      setTimeout(() => {
+        this.dispatch('message', {
+          data: JSON.stringify({ id: request.id, result: { frameId: 'frame-1', loaderId: 'loader-1' } }),
+        })
+      }, 20)
+    }
+
+    close() {
+      this.dispatch('close', {})
+    }
+  }
+
   it('parses only a loopback DevToolsActivePort and rejects 3080', () => {
     expect(parseDevToolsActivePort(Buffer.from('43191\n/devtools/browser/123e4567-e89b-42d3-a456-426614174000\n'))).toEqual({
       port: 43_191,
@@ -356,6 +397,100 @@ describe('Stage 2 browser and listener guards', () => {
     expect(observedEvents).toEqual(['Network.responseReceived', 'Page.lifecycleEvent'])
     unsubscribe()
     peer.close()
+  })
+
+  it('applies an explicit command timeout without widening the peer default', async () => {
+    vi.useFakeTimers()
+    try {
+      const endpoint = 'ws://127.0.0.1:43191/devtools/browser/123e4567-e89b-42d3-a456-426614174000'
+      const peer = await createCdpPeer(endpoint, { WebSocketImpl: ControlledCdpWebSocket, timeoutMs: 10 })
+      const navigation = peer.send(
+        'Page.navigate',
+        { url: 'http://127.0.0.1:32001' },
+        'session-1',
+        { timeoutMs: 30 },
+      )
+      const navigationExpectation = expect(navigation).resolves.toEqual({
+        frameId: 'frame-1',
+        loaderId: 'loader-1',
+      })
+
+      await vi.advanceTimersByTimeAsync(20)
+      await navigationExpectation
+
+      const ordinaryCommand = peer.send('Runtime.evaluate', { expression: '1' }, 'session-1')
+      const ordinaryExpectation = expect(ordinaryCommand).rejects.toMatchObject({
+        stage2Code: 'STAGE2_CDP_COMMAND_TIMEOUT',
+        stage2Outcome: 'INCONCLUSIVE',
+      })
+      await vi.advanceTimersByTimeAsync(10)
+      await ordinaryExpectation
+      peer.close()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rejects an invalid explicit command timeout before writing to the socket', async () => {
+    const endpoint = 'ws://127.0.0.1:43191/devtools/browser/123e4567-e89b-42d3-a456-426614174000'
+    const peer = await createCdpPeer(endpoint, { WebSocketImpl: ControlledCdpWebSocket, timeoutMs: 10 })
+    await expect(peer.send(
+      'Runtime.evaluate',
+      { expression: '1' },
+      'session-1',
+      { timeoutMs: 0 },
+    )).rejects.toMatchObject({
+      stage2Code: 'STAGE2_CDP_PROTOCOL_FAILED',
+      stage2Outcome: 'INCONCLUSIVE',
+    })
+    expect(ControlledCdpWebSocket.instance.sent).toHaveLength(0)
+    peer.close()
+  })
+
+  it('gives only Page.navigate the startup timeout budget', async () => {
+    const origin = 'http://127.0.0.1:32001'
+    const send = vi.fn(async (
+      method: string,
+      _params?: unknown,
+      _sessionId?: unknown,
+      _commandOptions?: unknown,
+    ) => {
+      if (method === 'Target.createTarget') return { targetId: 'target-1' }
+      if (method === 'Target.attachToTarget') return { sessionId: 'session-1' }
+      if (method === 'Page.navigate') return { frameId: 'frame-1', loaderId: 'loader-1' }
+      if (method === 'DOM.getDocument') return { root: { documentURL: origin } }
+      return {}
+    })
+    const peer = {
+      send,
+      onEvent: vi.fn(() => () => undefined),
+      waitForEvent: vi.fn(async (method: string) => method === 'Network.responseReceived'
+        ? {
+            type: 'Document',
+            loaderId: 'loader-1',
+            response: { status: 200, url: origin },
+          }
+        : { loaderId: 'loader-1', name: 'load' }),
+    }
+
+    const page = await createPageSession(
+      peer,
+      origin,
+      { externalAttempts: 0, controlFailed: false },
+      'initial-enabled',
+    )
+
+    const navigationCall = send.mock.calls.find(([method]) => method === 'Page.navigate')
+    expect(navigationCall).toEqual([
+      'Page.navigate',
+      { url: origin },
+      'session-1',
+      { timeoutMs: 30_000 },
+    ])
+    expect(send.mock.calls
+      .filter(([method]) => method !== 'Page.navigate')
+      .every((call) => call[3] === undefined)).toBe(true)
+    await page.disposeNetwork()
   })
 
   function fakePageNetworkPeer() {
