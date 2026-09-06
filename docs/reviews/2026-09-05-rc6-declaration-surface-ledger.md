@@ -20,9 +20,19 @@ plugin loading, browser behavior, persistence, or Harness compatibility.
 ### Task 2: static and local historical observations
 
 - Stage: A′-P1a, Task 2.
-- Current result: `CHANGES_REQUIRED_REVIEW`.
-- The prior accepted-input and local-replay observations are historical only;
-  they do not approve Task 2 pending the fresh B2 acceptance snapshot.
+- Committed result: `CHANGES_REQUIRED_REVIEW` /
+  `INPUT_MANIFEST_V2_PENDING_B2` because the committed input is schema v1.
+- Latest B2b stage output: `PASS_STAGED_RC6_DECLARATION_INPUT_V2`.
+- Latest replay output: `PASS_STAGED_REPLAY`.
+- Publication outputs: first `PUBLISHED`, then `ADOPTED_EXISTING`; these are
+  execution results, not persistent status fields.
+- Promotion: `PENDING_LEGACY_BRANCH_DECISION_AND_EXPLICIT_PROMOTION` (ledger
+  label). Before promotion, the separate legacy branch must be reviewed and
+  then hardened, replaced, or disabled.
+- The committed input remains schema v1. A schema-v2 real local proposal has
+  been staged and the final code/diff reviews passed, but it is not accepted
+  until the legacy-branch decision and an explicit promotion step; the
+  historical observations alone do not approve Task 2.
 
 ## Immutable contract bytes
 
@@ -149,7 +159,11 @@ uses a direct `ConnectionHandle` value and does not claim `ctx.connection` on
 `ClientContext`. This fact is recorded from the reviewed public declaration
 entries; the missing-package RED is not itself proof of their installed bytes.
 
-## Safety boundary
+## Task 1 historical safety boundary
+
+This paragraph applies only to the Task 1 RED commands above. The later B2b
+section records its own different boundary, including an owned disposable
+offline npm replay, a Demo-test loopback listener, and regenerated build output.
 
 No Harness process, profile, browser, listener or port, workbench tgz,
 production manifest, storage package, model, credential, user session, or real
@@ -161,8 +175,9 @@ source, build output, and package contents were not modified.
 
 - Stage: A′-P1a, Task 2.
 - Result: `CHANGES_REQUIRED_REVIEW`.
-- The prior accepted-input and local-replay observations remain recorded below,
-  but they are pending the other Task 2 review fixes and are not final approval.
+- The committed input remains schema v1. The prior observations remain below,
+  and the later B2b section records a staged schema-v2 proposal; neither is an
+  accepted Task 2 result without final review and explicit promotion.
 - Input label: `local-2026-09-05-rc6-declaration-lock-v1`.
 - The accepted metadata contains no candidate or source-cache absolute path.
   It records only path-free lock identities, public registry URLs, package
@@ -190,12 +205,16 @@ source, build output, and package contents were not modified.
   `9e831e9b13aa47c5e5eaa3904d232aa527124e8abba7ca5d72b67b46cfb10ae8`)
   and npm `11.9.0` (`npm-cli.js`, SHA-256
   `8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7`).
+  These values bind the Node executable and npm CLI entry file; they do not
+  recursively seal every additional JavaScript file loaded from the npm
+  installation.
 
 ### Acceptance and replay commands
 
 The command below completed with exit code `0`. It copies only the selected
 cache records, makes that `_cacache` read-only, writes separate log/temp
-directories, and invokes the exact npm CLI with empty user/global npm config:
+directories, and invokes the pinned npm CLI entry with empty user/global npm
+config:
 
 ```bash
 node scripts/accept-rc6-declaration-input.mjs
@@ -411,7 +430,7 @@ tests, build, package verification, and dry packing.
 This auxiliary result is deliberately narrower than Task 3. It uses a copied
 preinstalled dependency tree and `npm` resolved through the explicit child
 `PATH`; it does not run `npm ci`, consume the accepted selected cache, invoke a
-frozen accepted npm CLI identity, or materialize only the separate compiler
+fixed accepted npm CLI entry identity, or materialize only the separate compiler
 toolchain. It is therefore not clean-clone evidence, accepted frozen-input
 offline replay, dependency installation evidence, cross-platform portability,
 or Task 3 PASS. Its ordinary-file inventory uses pathname pre/post checks, not
@@ -434,3 +453,277 @@ Task 2 as a whole still remains `CHANGES_REQUIRED_REVIEW`: this review closes
 the synthetic B2a implementation slice only. It does not create a v2 accepted
 real input, satisfy Task 3, perform accepted-cache replay, or establish Harness
 runtime/plugin compatibility. No later stage starts automatically.
+
+## Task 2 B2b — initial real local offline proposal staging (superseded)
+
+This section preserves the first real B2b run and its diagnostic trail. Later
+P1 review found that its receipt did not bind the actual TypeScript file lists
+and that several verifier reads could block on pre-existing special files. The
+proposal and verification counts in this section are therefore historical and
+were superseded by the final P1 correction below.
+
+Task 2 B2b now has a real, workspace-local proposal, but it is still a proposal
+and not an accepted input or a Harness compatibility result. This run did not
+start DeepSeek Harness, load or install a plugin, access a profile, account,
+model, conversation, credential, browser, or real user document, push a remote
+branch, create a pull request, or merge. The npm invocation was constructed with
+the exact `--offline` policy and an isolated selected-cache bundle; there was no
+packet-level network observation, so this evidence does not claim observed zero
+network traffic.
+
+The earlier pre-v2 source pointer and bundle were reversibly moved to
+`declaration-input-source.superseded-pre-v2-20260906.json` and
+`declaration-input-source-bundles.superseded-pre-v2-20260906` before the
+no-overwrite publisher created the complete current 169-record source. The live
+bundle is
+`declaration-input-source-bundles/bundle-4d20027b7b3fb8d8093979d83e6ad553`.
+Its receipt SHA-256 is
+`984a8a417df4b7a4349ee306304ae90266c58cd25876d22b0fcba04f551cfb1d`;
+the selected index SHA-256 is
+`73e76d127ab8188d8005e4becb750bbe9cfec30988e501185b13558f4c6cd3f6`;
+the selected content aggregate SHA-256 is
+`3a8c2e3ba2bb7e07d3cc51212e9ae3dd4925e522d9c9c87acac16fee122757dc`.
+Independent inventory counted 169 minimal index files, 169 content files, 341
+ordinary files in total, and 9,590,214 selected content bytes. A second source
+preparation adopted the same stable pointer instead of overwriting it.
+
+The first real stage attempt failed closed with `COMPILER_OUTPUT_ESCAPE` during
+the client declaration compile and published no proposal. The compiler had
+resolved four declaration files from the workspace ancestor: React global and
+index declarations, PropTypes, and `csstype`. The failed replay was isolated as
+`.cleanup-replay-1abbcb8cf5014438cf575faa1593da44-f661c9e50b2953c1`.
+That replay was later changed manually only for diagnosis, so it is not final
+PASS evidence.
+
+The correction expands the sealed compiler input from three to six exact local
+package trees: TypeScript, Node types, `undici-types`, React types, PropTypes,
+and `csstype`. Its independently recomputed source aggregate is
+`44535345dd7a3448bac9206c60ad352f67c265708d410c4c5e20dad0de83d943`.
+The client compile now uses a replay-local canonical overlay containing only
+relative mappings for `react`, `prop-types`, and `csstype`; its SHA-256 is
+`ccc1578a3ed59a72264d3d468af7968b2a0771b693875d9ea9ee8fda4b1a2d24`.
+A separate diagnostic TypeScript 6.0.3 replay reported zero diagnostics, 388
+listed files, zero files outside the replay, and all four formerly escaping
+declarations beneath its `.compiler` tree. That manually amended diagnostic
+tree was not sealed; the later real stage separately passed the production
+compiler seal and locality checks.
+
+After the final production-source self-hash was recomputed and stamped, the
+three-file focused command passed 247 tests with one conditional skip. The
+first real `stageRc6DeclarationInputV2({ workspaceRoot })` then returned
+`PASS_STAGED_RC6_DECLARATION_INPUT_V2`, `PASS_STAGED_REPLAY`, and `PUBLISHED`.
+The second identical invocation returned the same two PASS statuses and
+`ADOPTED_EXISTING`, pointing to the same bundle:
+`rc6-declaration-v2-proposal-bundles/bundle-71f0e6586bdba7ffd4c7c04912c0621c`.
+
+Independent post-publication inspection, separate from the publisher, found:
+
+- stable proposal pointer SHA-256
+  `3b54b34d9843f9859f7c89957292b4b3e14f32a8e45efdfb4f2877a361639e0`,
+  mode `0444`, and link count 1;
+- receipt SHA-256
+  `af979f8398e2906a34d10ba9f9434f1f7a31546ff7a5c65173d6a83cd6c7d8df`,
+  exactly matching the pointer;
+- input manifest SHA-256
+  `e898299fd2b19f1195bc6402b6c00c95aa7bcdc52ee3d3dd513a0f4d1ba5eaa7`
+  and closure SHA-256
+  `19bfda32be5b62ea7097704015ff8640b420c36b65682de85e77914ae819c8a0`,
+  both exactly matching the receipt;
+- sealed compiler aggregate
+  `ddf98666210bbd9325c3902b7ab0718543ee4a37bc0c8a376e71bede4d3fe14a`
+  and verifier-result SHA-256
+  `1d3c401ea2a7207927d159178b7b54a504eae2d562bb2a812d091fe381dc59bb`;
+- receipt owner and payload identity recomputation matched; the bundle directory
+  was mode `0555`, all four bundle files were mode `0444` with link count 1,
+  and recursive JSON-value inspection found no local absolute-path or file-URI
+  string;
+- the input and closure agreed on 169 registry packages, 59 DeepSeek packages,
+  and 54 DSH packages; `input-manifest.v2.json.compilerToolchain` contained
+  exactly six source package lock-path/version/integrity identities, while the
+  sealed copies were persistently bound by their aggregate hash.
+
+One initial full-suite attempt in the restricted sandbox produced 355 passes,
+one conditional skip, and two non-product failures: the sandbox denied a
+loopback listener with `EPERM`, and the relocation test's 120-second outer
+timeout expired while its relocated child was itself running the enlarged full
+suite. The loopback test passed when rerun with local loopback permission. The
+relocation test timeout was raised to 600 seconds without removing or weakening
+any assertion because its nested full suite alone now takes more than 200
+seconds. The final full-suite result is recorded below after the clean rerun.
+
+This evidence supports the two frozen Host/Client rc.6 declaration contracts,
+the selected local cache cohort, exact offline npm policy, declaration compiler
+locality, verifier result gating, and recoverable cooperative POSIX proposal
+publication. It does not establish clean-clone installation, arbitrary future
+declarations,
+cross-platform behavior, hostile same-UID pathname-race resistance, network
+filesystem or power-loss durability, or DeepSeek Harness runtime/plugin
+compatibility. Task 2 is ready for final code review only after the clean full
+suite, build/package checks, and final diff review below pass.
+
+### B2b pre-final verification (superseded by P1 corrections)
+
+The clean serial rerun used `npm test -- --maxWorkers=1`; the elevated rerun was
+authorized for the Demo test's loopback-listener need. It exited `0`: all 20
+test files passed, with 357 tests passed and one conditional
+`SKIP_ACCEPTED_CACHE_OR_ROOT_ABSENT` local-input skip. The
+arbitrary-path relocation test passed in 224.839 seconds; its fixed manifest
+now contains 77 unique sorted source files, including the new filesystem-safety
+test and strict-umask child helper. The relocated child completed its own
+typecheck, no-cache test suite, build, package verification, dry pack, source
+and dependency identity rechecks, environment/output leak checks, and
+containment checks.
+
+After that full run, the main workspace also passed `npm run typecheck`, Node
+syntax checks for the acceptance script, verifier, and strict-umask child,
+`npm run build`, `npm run verify:package`, `npm run pack:dry`, and
+`git diff --check`. Package verification returned `status: verified` and
+reported a nine-file package inventory. Dry packing reported the filename
+`knight-dsh-pm-workbench-0.1.0.tgz`, 2.5 kB package metadata, and 5.2 kB of
+unpacked content; because this was `npm pack --dry-run`, no archive was written.
+The final normalized acceptance-source stamp is
+`e6d7171a0c15a68623a5e83e0c05351abb12307fe48e5ab9c701f32226f36abd`
+and independently recomputed to the same value before the real stage.
+
+The deterministic write-fault review also identified one non-blocking P2 for
+future hardening: an exclusive internal pointer temporary can be left behind
+if its writer fails after `open(O_EXCL)` but before it returns the temporary
+identity to its caller. A safe future correction must retain the original file
+handle, delete only a still-single-linked path with matching `dev`/`ino` under
+the bound parent, and distinguish an unprovable cleanup from the original write
+failure. This does not affect the successful real proposal or the tested
+cooperative-producer convergence paths, and it is not being presented as
+hostile same-UID race resistance.
+
+## Task 2 B2b — final P1 correction and current proposal
+
+The initial proposal pointer and bundle parent were reversibly moved to
+`.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.superseded-pre-storage-proof-20260906.json`
+and
+`.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal-bundles.superseded-pre-storage-proof-20260906`.
+They were not deleted or reused as current evidence.
+
+The final correction closes three fail-closed gaps before publication. First,
+the verifier's JSON reader and selected-cache byte readers now preflight ordinary,
+single-linked files, use `O_NOFOLLOW | O_NONBLOCK`, bind file-descriptor and
+pathname identities before and after reading, enforce containment and size
+bounds, and reject writable selected-cache files or writable/symlinked selected
+ancestor directories. Real FIFO regressions cover the verifier's generic JSON
+reader, accepted package and lock inputs, and selected cache content. The
+legacy local result now says `selectedCacheReadOnly` rather than claiming that
+unrelated cache content was inspected.
+
+Second, before execution the pinned Node version/basename/hash and npm CLI
+basename/hash, together with both bound file identities, are checked. After
+`npm --version`, both entries are rebound and rechecked, and the reported npm
+version is compared with its pin. A real fake-CLI test proved that an initially
+unpinned same-name script is rejected before it can create its sentinel; a
+separate post-execution drift test proved that a pinned test fixture which
+changes itself is rejected on the second check.
+
+Third, both declaration compiles now inspect every actual `tsc --listFiles`
+entry. Each entry must resolve inside the replay, the expected Host or Client
+contract must be present, duplicates are rejected, and exact path segments for
+`@deepseek-ai/dsh-storage` and `@deepseek-ai/dsh-storage-domain` are rejected.
+The receipt persists a Host/Client summary without local absolute paths and its
+canonical hash; tests cover both surfaces, nested storage paths, similar
+non-storage names, and receipt field/hash/extra-key drift.
+
+After final source-hash stamping, the focused three-file command exited `0`:
+263 tests passed and one `SKIP_ACCEPTED_CACHE_OR_ROOT_ABSENT` conditional test
+was skipped. The current acceptance/verifier tooling sources are bound as
+follows:
+
+- normalized acceptance source SHA-256:
+  `3caf3ab49fe4b79c7ce703411e95f3d3af625a4a8ad96a10d77427dfd2972d56`;
+- raw acceptance source SHA-256:
+  `cdc9cf615112ce88d1f03bf4ad7c0758ebf4630f972e2b3bd0b52e58943aecba`;
+- verifier source SHA-256:
+  `1cd80842bb5b1d8b6b74d9a818bdd827d85a3e0e1e63003e665864ce28096a37`.
+
+The first corrected real stage returned
+`PASS_STAGED_RC6_DECLARATION_INPUT_V2`, `PASS_STAGED_REPLAY`, and `PUBLISHED`.
+The second returned the same stage/replay statuses and `ADOPTED_EXISTING` for
+the same current bundle:
+`rc6-declaration-v2-proposal-bundles/bundle-70f3488f0d24bf62341f7e46270f3e0b`.
+
+Independent post-publication inspection and canonical recomputation found:
+
+- stable pointer SHA-256
+  `3041c72f98fca0360677819894e02eab3ff323adc6314a3aeea6ab5041a24409`,
+  mode `0444`, link count 1;
+- receipt SHA-256
+  `e7262509100cf9360d55412ad45a03f1f6b5b342a5fc6e08ba2e65faf41419d0`,
+  exactly matching the pointer;
+- unchanged input-manifest SHA-256
+  `e898299fd2b19f1195bc6402b6c00c95aa7bcdc52ee3d3dd513a0f4d1ba5eaa7`
+  and closure SHA-256
+  `19bfda32be5b62ea7097704015ff8640b420c36b65682de85e77914ae819c8a0`,
+  exactly matching the receipt;
+- compiler-result SHA-256
+  `96ef092029819624f0a4a62510bd03f3c7a56cfb1498fa751b64872451b48bc7`,
+  independently equal to the canonical Host/Client result object;
+- the receipt records a Host compile of 314 replay-relative files, list SHA-256
+  `87d56f0335888cc23448e38faf98b5b016f39279814cb9b9b6c92ba91d88874c`;
+- the receipt records a Client compile of 388 replay-relative files, list SHA-256
+  `71086ce76394f560d5e1819d74442d5df0337bac5489e97cbe3f2f745ea26d35`;
+- the publisher code enforces contract presence, all realpaths inside the
+  replay, and no listed declaration beneath either exact storage package. The
+  full `--listFiles` lists were intentionally not persisted, so their counts
+  and list hashes are receipt-bound stage outputs rather than post-cleanup
+  independently rehashable evidence;
+- the owner, payload identity, input/closure hashes, and compiler-result hash
+  independently matched; the pointer mode/link count, bundle-directory mode,
+  and all four bundle-file mode/single-link checks passed; recursive JSON-value
+  inspection found no local absolute path or file URI.
+
+The fixed selected source, input/closure payload, compiler-source aggregate
+`44535345dd7a3448bac9206c60ad352f67c265708d410c4c5e20dad0de83d943`,
+sealed-compiler aggregate
+`ddf98666210bbd9325c3902b7ab0718543ee4a37bc0c8a376e71bede4d3fe14a`,
+and verifier-result SHA-256
+`1d3c401ea2a7207927d159178b7b54a504eae2d562bb2a812d091fe381dc59bb`
+remain unchanged and are rebound by the corrected receipt.
+
+This is the current staged proposal, not a committed schema-v2 input and not a
+Harness plugin/runtime PASS. Explicit promotion remains pending. Promotion
+must also review, harden, replace, or disable the separate legacy acceptance
+branch: after a future schema-v2 promotion that branch would become reachable,
+and its older candidate-cache reads, npm install timeout policy, and legacy
+closure-writer destination handling are outside this B2b stage proof. No
+promotion, Harness action, remote operation, or later stage starts
+automatically.
+
+### Current final verification after all corrections
+
+The final serial suite, run after the three fail-closed corrections and the
+standalone-manifest update, exited `0` in 467.83 seconds:
+
+- 20 test files passed;
+- 373 tests passed;
+- one conditional accepted-cache test was skipped;
+- the arbitrary-absolute-path standalone relocation test passed in 239.728
+  seconds.
+
+Fresh post-suite checks all exited `0`:
+
+- `npm run typecheck`;
+- syntax checks for the acceptance script, verifier, and strict-umask proposal
+  child;
+- `npm run build`;
+- `npm run verify:package`, which returned `status: verified` and reported a
+  nine-file package inventory;
+- `npm run pack:dry`, which reported
+  `knight-dsh-pm-workbench-0.1.0.tgz`, 2.5 kB packed, 5.2 kB unpacked, and nine
+  files without writing a tarball;
+- `git diff --check`.
+
+These are repository and proposal-preflight results only. They do not prove
+installation, load/unload behavior, a live Harness session, compatibility with
+an arbitrary Harness release, or schema-v2 promotion.
+
+Two final independent read-only reviews of the current diff, ledger, and local
+proposal reported zero P0 and zero P1 findings. The evidence review also found
+no remaining overstatement. Their PASS closes this B2b review gate only; it
+does not approve the separate legacy branch or perform the explicit schema-v2
+promotion.

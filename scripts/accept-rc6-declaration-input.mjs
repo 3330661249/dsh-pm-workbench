@@ -72,12 +72,42 @@ const EXPECTED_RUNTIME = {
 
 const EXPECTED_ACCEPTED_PACKAGE_JSON_CANONICAL_SHA256 = 'ec3d67e9bcc952d225166c4290a0f4850038058b0ea62f1a9642ba8d6c7f593f'
 const EXPECTED_ACCEPTED_PACKAGE_LOCK_CANONICAL_SHA256 = 'd99f9a20b594ca3bd825d33a17c5f4f3953de3589c2df7fd5d87e77cbea2ecd1'
+const EXPECTED_COMMITTED_V1_INPUT_RAW_SHA256 = 'eaa89753953535e0a231ac99d3053de75d8fb67c2d73f7b9bcae9a2997d7e489'
+const EXPECTED_COMPILER_SOURCE_AGGREGATE_SHA256 = '44535345dd7a3448bac9206c60ad352f67c265708d410c4c5e20dad0de83d943'
+const EXPECTED_VERIFIER_SOURCE_SHA256 = '1cd80842bb5b1d8b6b74d9a818bdd827d85a3e0e1e63003e665864ce28096a37'
+const EXPECTED_ACCEPTANCE_SOURCE_NORMALIZED_SHA256 = '3caf3ab49fe4b79c7ce703411e95f3d3af625a4a8ad96a10d77427dfd2972d56'
+const CLIENT_COMPILER_OVERLAY_RELATIVE = 'tsconfig.surface.client.overlay.json'
+const EXPECTED_CLIENT_COMPILER_OVERLAY_SHA256 = 'ccc1578a3ed59a72264d3d468af7968b2a0771b693875d9ea9ee8fda4b1a2d24'
+const CLIENT_COMPILER_OVERLAY = {
+  extends: './tsconfig.surface.client.json',
+  compilerOptions: {
+    paths: {
+      react: ['./.compiler/node_modules/@types/react/index.d.ts'],
+      'prop-types': ['./.compiler/node_modules/@types/prop-types/index.d.ts'],
+      csstype: ['./.compiler/node_modules/csstype/index.d.ts'],
+    },
+  },
+}
+const REPLAY_EVIDENCE_KIND = 'REAL_NPM_CLI'
+const NPM_CLI_RELATIVE_FROM_NODE = '../lib/node_modules/npm/bin/npm-cli.js'
+const V2_PROPOSAL_POINTER_RELATIVE = '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json'
+const V2_PROPOSAL_BUNDLE_PARENT_RELATIVE = '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal-bundles'
+const V2_PROPOSAL_INPUT_NAME = 'input-manifest.v2.json'
+const V2_PROPOSAL_CLOSURE_NAME = 'rc6-declaration-closure.v2.json'
+const V2_PROPOSAL_POINTER_MAX_BYTES = 4096
 
 function fail(code, detail) {
   const error = new Error(`${code}: ${detail}`)
   error.code = code
   Object.defineProperty(error, 'ownedInputError', { value: true })
   throw error
+}
+
+async function settleOwnedMutations(operations) {
+  const results = await Promise.allSettled(operations)
+  const failed = results.find((result) => result.status === 'rejected')
+  if (failed) throw failed.reason
+  return results.map((result) => result.value)
 }
 
 function isObject(value) {
@@ -99,6 +129,23 @@ function canonicalJson(value) {
 
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex')
+}
+
+function normalizedAcceptanceSourceSha256(bytes) {
+  const source = bytes.toString('utf8')
+  const declaration = /const EXPECTED_ACCEPTANCE_SOURCE_NORMALIZED_SHA256 = '[a-f0-9]{64}'/gu
+  const matches = [...source.matchAll(declaration)]
+  if (matches.length !== 1) fail('VERIFIER_SOURCE_MISMATCH', 'acceptance source stamp')
+  const normalized = source.replace(
+    declaration,
+    `const EXPECTED_ACCEPTANCE_SOURCE_NORMALIZED_SHA256 = '${'0'.repeat(64)}'`,
+  )
+  return sha256(Buffer.from(normalized, 'utf8'))
+}
+
+function isOwnerReadableReadOnlyMode(mode) {
+  const permissions = mode & 0o777
+  return (permissions & 0o400) !== 0 && (permissions & 0o333) === 0
 }
 
 function compareUtf8(left, right) {
@@ -221,7 +268,7 @@ function assertSafeManifestStrings(value, label = 'input-manifest') {
   }
 }
 
-const V2_SELECTED_INDEX_SHA256 = '26ace684b811eed1aff8627aaaf072f346a5a9983676ac5d4607a2690b09e001'
+const V2_SELECTED_INDEX_SHA256 = '73e76d127ab8188d8005e4becb750bbe9cfec30988e501185b13558f4c6cd3f6'
 const V2_SELECTED_CONTENT_AGGREGATE_SHA256 = '3a8c2e3ba2bb7e07d3cc51212e9ae3dd4925e522d9c9c87acac16fee122757dc'
 
 const PRODUCTION_BOUNDARY_LINES = `package-lock.json a11f8250581bd1aa5f85f654044221f691b5231a5db7f12e76f3162a4f202f7f
@@ -271,6 +318,18 @@ export const expectedCompilerToolchain = {
   typescript: { lockPath: 'node_modules/typescript', version: '6.0.3', integrity: 'sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==' },
   nodeTypes: { lockPath: 'node_modules/@types/node', version: '24.13.3', integrity: 'sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==' },
   undiciTypes: { lockPath: 'node_modules/undici-types', version: '7.18.2', integrity: 'sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==' },
+  reactTypes: { lockPath: 'node_modules/@types/react', version: '18.3.31', integrity: 'sha512-vfEqpXTvwT91yhmwdfouStN2hSKwTvyRs8qpLfADyrq/kxDw0hZM7Wk9Ug1FELj8hIby+S/+kQCSRFF32nv2Qw==' },
+  propTypes: { lockPath: 'node_modules/@types/prop-types', version: '15.7.15', integrity: 'sha512-F6bEyamV9jKGAFBEmlQnesRPGOQqS2+Uwi0Em15xenOxHaf2hv6L8YCVn3rPdPJOiJfPiCnLIRyvwVaqMY3MIw==' },
+  csstype: { lockPath: 'node_modules/csstype', version: '3.2.3', integrity: 'sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==' },
+}
+
+const expectedCompilerRootDependencies = {
+  typescript: {},
+  nodeTypes: { 'undici-types': '~7.18.0' },
+  undiciTypes: {},
+  reactTypes: { '@types/prop-types': '*', csstype: '^3.2.2' },
+  propTypes: {},
+  csstype: {},
 }
 
 async function sha256File(path, missingCode) {
@@ -280,19 +339,47 @@ async function sha256File(path, missingCode) {
 async function readJsonFile(path) {
   let handle
   try {
-    handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    const preflight = await lstat(path)
+    if (!preflight.isFile() || preflight.isSymbolicLink()) {
+      fail('INPUT_READ_FAILED', 'json input')
+    }
+    handle = await open(
+      path,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+    )
   } catch {
     fail('INPUT_READ_FAILED', 'json input')
   }
   let bytes
+  let identity
   try {
     const before = await handle.stat()
-    if (!before.isFile() || before.nlink !== 1) fail('INPUT_READ_FAILED', 'json input')
+    const pathBefore = await lstat(path)
+    if (!before.isFile() || !pathBefore.isFile() || pathBefore.isSymbolicLink()
+      || before.nlink !== 1 || pathBefore.nlink !== 1) {
+      fail('INPUT_READ_FAILED', 'json input')
+    }
+    for (const field of ['dev', 'ino', 'size', 'nlink', 'mode', 'mtimeMs', 'ctimeMs']) {
+      if (before[field] !== pathBefore[field]) fail('SOURCE_FILE_IDENTITY_CHANGED', 'json input')
+    }
     bytes = await handle.readFile()
     const after = await handle.stat()
-    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
-      || before.nlink !== after.nlink || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
-      fail('SOURCE_FILE_IDENTITY_CHANGED', 'json input')
+    const pathAfter = await lstat(path)
+    for (const field of ['dev', 'ino', 'size', 'nlink', 'mode', 'mtimeMs', 'ctimeMs']) {
+      if (before[field] !== after[field] || before[field] !== pathAfter[field]) {
+        fail('SOURCE_FILE_IDENTITY_CHANGED', 'json input')
+      }
+    }
+    if (bytes.length !== before.size) fail('SOURCE_FILE_IDENTITY_CHANGED', 'json input')
+    identity = {
+      sha256: sha256(bytes),
+      size: before.size,
+      mode: before.mode & 0o777,
+      dev: before.dev,
+      ino: before.ino,
+      nlink: before.nlink,
+      mtimeMs: before.mtimeMs,
+      ctimeMs: before.ctimeMs,
     }
   } catch (error) {
     if (error?.code) throw error
@@ -313,6 +400,7 @@ async function readJsonFile(path) {
     rawBytes: bytes,
     rawSha256: sha256(bytes),
     canonicalSha256: sha256(canonicalJsonBytes(value)),
+    identity,
     value,
   }
 }
@@ -352,7 +440,8 @@ export const publicInputMismatchCodes = Object.freeze([
   'NONCANONICAL_SELECTED_CACHE_ORDER', 'LOCK_PROJECTION_MISMATCH', 'SELECTED_CACHE_BYTE_SUM_MISMATCH',
   'SELECTED_INDEX_HASH_MISMATCH', 'SELECTED_CONTENT_AGGREGATE_MISMATCH', 'LOCK_PROJECTION_HASH_MISMATCH',
   'ACCEPTANCE_RESULT_MISMATCH', 'RUNTIME_IDENTITY_TYPE_MISMATCH', 'RUNTIME_IDENTITY_MISMATCH',
-  'COMMITTED_INPUT_BYTE_HASH_MISMATCH', 'INVALID_COMMITTED_SELECTED_CACHE', 'INVALID_COMMITTED_CACHE_ENTRY',
+  'COMMITTED_INPUT_BYTE_HASH_MISMATCH', 'COMMITTED_INPUT_CANONICAL_MISMATCH',
+  'INVALID_COMMITTED_SELECTED_CACHE', 'INVALID_COMMITTED_CACHE_ENTRY',
   'UNSUPPORTED_INTEGRITY', 'INVALID_SHA512_INTEGRITY',
   'CACHE_INDEX_IDENTITY_MISMATCH', 'INVALID_CACHE_INDEX_SIZE', 'ACCEPTED_ROOT_NOT_EMPTY',
   'INVALID_LOCK_RECORD', 'AMBIGUOUS_CACHE_INDEX', 'INVALID_CACHE_INDEX_LINE', 'CACHE_SIZE_MISMATCH',
@@ -371,7 +460,12 @@ export const publicInputMismatchCodes = Object.freeze([
   'STABLE_POINTER_CONFLICT',
   'STABLE_POINTER_LINK_STATE',
   'CACHE_INDEX_CRLF_FORBIDDEN', 'CACHE_INDEX_LINE_LIMIT', 'CACHE_INDEX_TOTAL_BYTES_LIMIT',
-  'SOURCE_FILE_IDENTITY_CHANGED', 'PREPARE_OPTIONS_MISMATCH',
+  'SOURCE_FILE_IDENTITY_CHANGED', 'PREPARE_OPTIONS_MISMATCH', 'STAGE_OPTIONS_MISMATCH',
+  'COMMITTED_V1_BOOTSTRAP_MISMATCH', 'STABLE_POINTER_REQUIRED',
+  'PUBLISHED_LOGICAL_INPUT_MISMATCH', 'PROPOSAL_CONFLICT',
+  'PROPOSAL_POINTER_LINK_STATE', 'REPLAY_PATH_CONTAINMENT',
+  'COMPILER_PATH_CONTAINMENT', 'COMPILER_OUTPUT_ESCAPE', 'STORAGE_SELECTED_OR_IMPORTED',
+  'VERIFIER_SOURCE_MISMATCH',
   'BUNDLE_SOURCE_TARGET_INODE_OVERLAP',
   'CACHE_SOURCE_PATH_CHAIN_INVALID',
   'CACHE_INDEX_SCHEMA_MISMATCH',
@@ -389,6 +483,19 @@ export const publicInputOperationalCodes = Object.freeze([
   'POINTER_RESIDUE_CLEANUP_FAILED',
   'POINTER_SIZE_LIMIT',
   'POINTER_TEMP_WRITE_FAILED',
+  'OFFLINE_REPLAY_FAILED',
+  'STAGED_REPLAY_VERIFICATION_FAILED',
+  'DECLARATION_COMPILE_FAILED',
+  'PROPOSAL_POINTER_TEMP_WRITE_FAILED',
+  'PROPOSAL_COMMIT_FAILED',
+  'PROPOSAL_COMMIT_UNCERTAIN',
+  'PROPOSAL_RESIDUE_CLEANUP_FAILED',
+  'PROPOSAL_CLEANUP_FAILED',
+  'PROPOSAL_CLEANUP_OWNERSHIP_LOST',
+  'REPLAY_ROOT_CREATE_FAILED',
+  'REPLAY_CLEANUP_FAILED',
+  'REPLAY_CLEANUP_OWNERSHIP_LOST',
+  'COMMITTED_EVIDENCE_CHANGED',
 ])
 
 const PUBLIC_INPUT_SCHEMA_CODES = new Set(publicInputSchemaCodes)
@@ -821,13 +928,29 @@ export async function readSelectedCacheRecord({ cacheRoot, lockPath, record }) {
 async function readNoFollow(path, code) {
   let handle
   try {
-    handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    const preflight = await lstat(path)
+    if (!preflight.isFile() || preflight.isSymbolicLink()) fail(code, path)
+    handle = await open(
+      path,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+    )
   } catch (error) {
     if (error && error.code === 'ENOENT') fail(code, path)
+    if (error?.ownedInputError === true) throw error
     throw error
   }
   try {
-    return await handle.readFile()
+    const before = await handle.stat()
+    if (!before.isFile() || before.nlink !== 1) fail(code, path)
+    const bytes = await handle.readFile()
+    const after = await handle.stat()
+    if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino
+      || after.size !== before.size || after.nlink !== before.nlink
+      || after.mode !== before.mode || after.mtimeMs !== before.mtimeMs
+      || after.ctimeMs !== before.ctimeMs || bytes.length !== before.size) {
+      fail('SOURCE_FILE_IDENTITY_CHANGED', path)
+    }
+    return bytes
   } finally {
     await handle.close()
   }
@@ -853,9 +976,17 @@ async function readBoundSourceFile(
 ) {
   let handle
   try {
-    handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    const preflight = await lstat(path)
+    if (preflight.isSymbolicLink()) fail(symlinkCode, logicalLabel)
+    if (!preflight.isFile()) fail(specialCode, logicalLabel)
+    if (preflight.size > maximumBytes) fail(oversizedCode, logicalLabel)
+    handle = await open(
+      path,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+    )
   } catch (error) {
     if (error?.code === 'ELOOP') fail(symlinkCode, logicalLabel)
+    if (error?.ownedInputError === true) throw error
     fail(code, logicalLabel)
   }
   try {
@@ -1269,11 +1400,42 @@ export function compareCacheSnapshots(left, right, { role = 'source' } = {}) {
 
 async function makeTreeReadOnlyStrict(path) {
   const entry = await lstat(path)
+  if (entry.isSymbolicLink()) fail('CACHE_INVENTORY_SYMLINK', path)
   if (entry.isDirectory()) {
-    for (const name of await readdir(path)) await makeTreeReadOnlyStrict(resolve(path, name))
-    await chmod(path, 0o555)
+    const boundary = await openBoundDirectory(
+      path,
+      'BUNDLE_PATH_CONTAINMENT',
+      'tree sealing directory',
+    )
+    try {
+      for (const name of await readdirWithStableMissingCode(path, 'CACHE_INVENTORY_MISSING')) {
+        await makeTreeReadOnlyStrict(resolve(path, name))
+      }
+      await assertBoundDirectory(boundary, 'BUNDLE_PATH_CONTAINMENT', 'tree sealing directory')
+      await boundary.handle.chmod(0o555)
+      const sealed = await boundary.handle.stat()
+      if (!sealed.isDirectory() || (sealed.mode & 0o777) !== 0o555) {
+        fail('CACHE_READONLY_REQUIRED', path)
+      }
+      await assertBoundDirectory(boundary, 'BUNDLE_PATH_CONTAINMENT', 'tree sealing directory')
+    } finally {
+      await boundary.handle.close().catch(() => {})
+    }
   } else if (entry.isFile()) {
-    await chmod(path, 0o444)
+    const sealed = await readBoundSourceFile(
+      path,
+      'CACHE_INVENTORY_MISSING',
+      CACHE_CONTENT_MAX_BYTES,
+      'CACHE_INVENTORY_MISSING',
+      'tree sealing file',
+      {
+        symlinkCode: 'CACHE_INVENTORY_SYMLINK',
+        specialCode: 'CACHE_INVENTORY_SPECIAL',
+        hardlinkCode: 'CACHE_HARDLINK_FORBIDDEN',
+        writableCode: 'CACHE_READONLY_REQUIRED',
+      },
+    )
+    if (sealed.identity.mode !== 0o444) fail('CACHE_READONLY_REQUIRED', path)
   } else fail('CACHE_INVENTORY_SPECIAL', path)
 }
 
@@ -1283,9 +1445,7 @@ async function makeTreeWritableForCleanup(path) {
   if (entry.isDirectory()) {
     await chmod(path, 0o755)
     for (const name of await readdir(path)) await makeTreeWritableForCleanup(resolve(path, name))
-  } else if (entry.isFile()) {
-    await chmod(path, 0o644)
-  }
+  } else if (!entry.isFile()) fail('CACHE_INVENTORY_SPECIAL', path)
 }
 
 const FIXTURE_POINTER_RELATIVE_PATH = '.tmp/dsh-pm-workbench/declaration-input-source.json'
@@ -1469,7 +1629,8 @@ async function unlinkOwnedPointerTemporary(pointerTemporary, code) {
   }
   try {
     await unlink(pointerTemporary.path)
-  } catch {
+  } catch (error) {
+    if (error?.code === 'ENOENT') return
     fail(code, 'pointer temporary unlink')
   }
 }
@@ -1550,9 +1711,17 @@ async function writeBundleFile(target, bytes) {
     handle = await open(target, fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600)
     await handle.writeFile(bytes)
     await handle.sync()
+    const beforeSeal = await handle.stat()
+    if (!beforeSeal.isFile() || beforeSeal.nlink !== 1) {
+      fail('BUNDLE_TARGET_WRITE_FAILED', target)
+    }
     await handle.chmod(0o444)
     const afterWrite = await handle.stat()
-    if (!afterWrite.isFile() || afterWrite.nlink !== 1 || (afterWrite.mode & 0o222) !== 0) fail('BUNDLE_TARGET_WRITE_FAILED', target)
+    if (!afterWrite.isFile() || afterWrite.dev !== beforeSeal.dev
+      || afterWrite.ino !== beforeSeal.ino || afterWrite.size !== beforeSeal.size
+      || afterWrite.nlink !== 1 || (afterWrite.mode & 0o777) !== 0o444) {
+      fail('BUNDLE_TARGET_WRITE_FAILED', target)
+    }
     const reread = Buffer.alloc(bytes.length)
     const { bytesRead } = await handle.read(reread, 0, reread.length, 0)
     if (bytesRead !== bytes.length || !reread.equals(Buffer.from(bytes))) fail('BUNDLE_TARGET_WRITE_FAILED', target)
@@ -1652,10 +1821,24 @@ async function writeReadOnlyPointerTemp(pointerParentBoundary, pointerBytes) {
   )
   let handle
   try {
-    handle = await open(temporary, fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600)
+    handle = await open(
+      temporary,
+      fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      0o444,
+    )
+    const beforeWrite = await handle.stat()
+    if (!beforeWrite.isFile() || beforeWrite.nlink !== 1
+      || beforeWrite.size !== 0 || !isOwnerReadableReadOnlyMode(beforeWrite.mode)) {
+      fail('POINTER_TEMP_WRITE_FAILED', 'pointer temporary identity')
+    }
     await handle.writeFile(pointerBytes)
-    await handle.chmod(0o444)
     await handle.sync()
+    const afterWrite = await handle.stat()
+    if (!afterWrite.isFile() || afterWrite.dev !== beforeWrite.dev
+      || afterWrite.ino !== beforeWrite.ino || afterWrite.nlink !== 1
+      || afterWrite.size !== pointerBytes.length || !isOwnerReadableReadOnlyMode(afterWrite.mode)) {
+      fail('POINTER_TEMP_WRITE_FAILED', 'pointer temporary identity')
+    }
   } catch (error) {
     if (error?.code) fail('POINTER_TEMP_WRITE_FAILED', 'pointer temporary')
     throw error
@@ -1701,7 +1884,9 @@ async function readStablePointer(pointerPath) {
     }
   }
   const { bytes, identity } = snapshot
-  if (identity.mode !== 0o444) fail('STABLE_POINTER_LINK_STATE', 'stable pointer mode')
+  if (!isOwnerReadableReadOnlyMode(identity.mode)) {
+    fail('STABLE_POINTER_LINK_STATE', 'stable pointer mode')
+  }
   let value
   try {
     value = JSON.parse(bytes.toString('utf8'))
@@ -2198,7 +2383,8 @@ async function prepareSelectedSourceCore({ workspaceRoot, workspaceBoundary, sou
       payload,
     }
     const receiptBytes = Buffer.from(`${canonicalJsonBytes(receipt)}\n`, 'utf8')
-    await chmod(bundleRoot, 0o755)
+    await bundleBoundary.handle.chmod(0o700)
+    await assertBoundDirectory(bundleBoundary, 'BUNDLE_PATH_CONTAINMENT', 'bundle root')
     await writeBundleFile(resolve(bundleRoot, 'receipt.json'), receiptBytes)
     await makeTreeReadOnlyStrict(bundleRoot)
     await assertBoundDirectory(bundleBoundary, 'BUNDLE_PATH_CONTAINMENT', 'bundle root')
@@ -2472,6 +2658,85 @@ export async function prepareSelectedSource({ workspaceRoot = DEFAULT_WORKSPACE_
   }
 }
 
+async function consumeSelectedSourcePublication({
+  workspaceRoot,
+  lockModel,
+  publicationIdentity,
+}) {
+  const paths = fixtureBundlePaths(workspaceRoot)
+  const workspaceBoundary = await openBoundDirectory(
+    workspaceRoot,
+    'BUNDLE_PATH_CONTAINMENT',
+    'workspace root',
+  )
+  let pointerParentBoundary
+  let bundleParentBoundary
+  try {
+    await assertDescendantDirectoryChain(workspaceBoundary, paths.pointerParent, {
+      code: 'BUNDLE_PATH_CONTAINMENT',
+      missingCode: 'STABLE_POINTER_REQUIRED',
+      logicalLabel: 'pointer parent',
+      includeLeafDirectory: true,
+    })
+    pointerParentBoundary = await openBoundDirectory(
+      paths.pointerParent,
+      'BUNDLE_PATH_CONTAINMENT',
+      'pointer parent',
+    )
+    const stable = await readStablePointer(paths.pointerPath)
+    if (stable.identity.nlink !== 1) {
+      fail('STABLE_POINTER_LINK_STATE', 'consumer requires a converged stable pointer')
+    }
+    await assertDescendantDirectoryChain(pointerParentBoundary, paths.bundleParent, {
+      code: 'BUNDLE_PATH_CONTAINMENT',
+      missingCode: 'STABLE_POINTER_REQUIRED',
+      logicalLabel: 'bundle parent',
+      includeLeafDirectory: true,
+    })
+    bundleParentBoundary = await openBoundDirectory(
+      paths.bundleParent,
+      'BUNDLE_PATH_CONTAINMENT',
+      'bundle parent',
+    )
+    const bundleRoot = resolve(paths.pointerParent, stable.value.bundleRelativePath)
+    const relativeBundle = relative(paths.bundleParent, bundleRoot)
+    if (!/^bundle-[a-f0-9]{32}$/.test(relativeBundle) || relativeBundle.includes(sep)) {
+      fail('BUNDLE_PATH_CONTAINMENT', 'published bundle')
+    }
+    const cacheRoot = resolve(bundleRoot, '_cacache')
+    const snapshot = await snapshotPublishedSelectedCache({ cacheRoot, lockModel })
+    const descriptor = buildPublicationDescriptor({
+      sourceSnapshot: snapshot,
+      lockModel,
+      publicationIdentity,
+    })
+    const verified = await verifyPublishedBundle({
+      workspaceRoot,
+      bundleParentBoundary,
+      pointer: stable.value,
+      expectedDescriptor: descriptor,
+      expectedEntries: snapshot.entries,
+    })
+    await assertBoundDirectory(workspaceBoundary, 'BUNDLE_PATH_CONTAINMENT', 'workspace root')
+    await assertBoundDirectory(pointerParentBoundary, 'BUNDLE_PATH_CONTAINMENT', 'pointer parent')
+    await assertBoundDirectory(bundleParentBoundary, 'BUNDLE_PATH_CONTAINMENT', 'bundle parent')
+    return {
+      pointer: stable.value,
+      pointerBytes: stable.bytes,
+      pointerIdentity: stable.identity,
+      descriptor: verified.descriptor,
+      receipt: verified.receipt,
+      bundleRoot,
+      cacheRoot,
+      snapshot,
+    }
+  } finally {
+    await bundleParentBoundary?.handle.close().catch(() => {})
+    await pointerParentBoundary?.handle.close().catch(() => {})
+    await workspaceBoundary.handle.close().catch(() => {})
+  }
+}
+
 function canonicalSelectedCacheEntries(entries) {
   return entries.map((entry) => ({
     lockPath: entry.lockPath,
@@ -2479,7 +2744,6 @@ function canonicalSelectedCacheEntries(entries) {
     version: entry.version,
     integrity: entry.integrity,
     key: entry.key,
-    indexChecksum: entry.indexChecksum,
     byteLength: entry.byteLength,
     contentDigest: entry.contentDigest,
   }))
@@ -2564,22 +2828,30 @@ export function deriveCanonicalLockInput(packageJson, packageLock) {
 }
 
 function assertCompilerToolchain(rootPackageLock, compilerToolchain) {
-  assertExactKeys(compilerToolchain, ['typescript', 'nodeTypes', 'undiciTypes'], 'compilerToolchain')
+  assertExactKeys(
+    compilerToolchain,
+    ['typescript', 'nodeTypes', 'undiciTypes', 'reactTypes', 'propTypes', 'csstype'],
+    'compilerToolchain',
+  )
   if (!isObject(rootPackageLock?.packages)) fail('INVALID_ROOT_LOCKFILE', 'packages')
   for (const [key, expected] of Object.entries(expectedCompilerToolchain)) {
     const actual = compilerToolchain[key]
     assertExactKeys(actual, ['lockPath', 'version', 'integrity'], `compilerToolchain.${key}`)
-    if (JSON.stringify(actual) !== JSON.stringify(expected)) fail('COMPILER_TOOLCHAIN_MISMATCH', key)
+    if (canonicalJsonBytes(actual) !== canonicalJsonBytes(expected)) fail('COMPILER_TOOLCHAIN_MISMATCH', key)
     const rootEntry = rootPackageLock.packages[expected.lockPath]
     if (!isObject(rootEntry) || rootEntry.version !== expected.version || rootEntry.integrity !== expected.integrity) {
       fail('ROOT_LOCK_TOOLCHAIN_MISMATCH', expected.lockPath)
+    }
+    const rootDependencies = rootEntry.dependencies ?? {}
+    if (!sameStringMap(rootDependencies, expectedCompilerRootDependencies[key])) {
+      fail('ROOT_LOCK_TOOLCHAIN_MISMATCH', `${expected.lockPath} dependencies`)
     }
   }
 }
 
 function assertProductionBoundaryShape(productionBoundary) {
   assertExactKeys(productionBoundary, ['baselineCommit', 'files', 'aggregateSha256'], 'productionBoundary')
-  if (JSON.stringify(productionBoundary) !== JSON.stringify(expectedProductionBoundary)) {
+  if (canonicalJsonBytes(productionBoundary) !== canonicalJsonBytes(expectedProductionBoundary)) {
     fail('PRODUCTION_BOUNDARY_MANIFEST_MISMATCH', 'expected boundary')
   }
 }
@@ -2607,8 +2879,22 @@ export async function validateProductionBoundary({ workspaceRoot = DEFAULT_WORKS
   const files = []
   for (const path of expectedPaths) {
     const absolutePath = resolve(workspaceRoot, path)
-    await assertRegularFile(absolutePath, 'PRODUCTION_BOUNDARY_FILE_MISSING')
-    files.push({ path, sha256: await sha256File(absolutePath, 'PRODUCTION_BOUNDARY_FILE_MISSING') })
+    const snapshot = await readBoundSourceFile(
+      absolutePath,
+      'PRODUCTION_BOUNDARY_FILE_MISSING',
+      16 * 1024 * 1024,
+      'PRODUCTION_BOUNDARY_FILE_MISSING',
+      'production boundary file',
+      {
+        symlinkCode: 'PRODUCTION_BOUNDARY_SYMLINK',
+        specialCode: 'PRODUCTION_BOUNDARY_SPECIAL_FILE',
+        hardlinkCode: 'PRODUCTION_BOUNDARY_SPECIAL_FILE',
+      },
+    )
+    if (snapshot.identity.mode !== 0o644) {
+      fail('PRODUCTION_BOUNDARY_HASH_MISMATCH', path)
+    }
+    files.push({ path, sha256: snapshot.identity.sha256 })
   }
   if (JSON.stringify(files) !== JSON.stringify(expectedProductionBoundary.files) || sha256(canonicalJson(files)) !== expectedProductionBoundary.aggregateSha256) {
     fail('PRODUCTION_BOUNDARY_HASH_MISMATCH', 'changed source')
@@ -2630,8 +2916,8 @@ export function validateInputManifest({ inputManifest, packageJson, packageLock,
   assertExactKeys(inputManifest.acceptedRootPackage, ['name', 'private', 'devDependencies'], 'acceptedRootPackage')
   if (inputManifest.acceptedRootPackage.name !== packageJson.name || inputManifest.acceptedRootPackage.private !== true || !sameStringMap(inputManifest.acceptedRootPackage.devDependencies, packageJson.devDependencies)) fail('ACCEPTED_ROOT_PACKAGE_MISMATCH', 'name/private/devDependencies')
   assertExactKeys(inputManifest.packageCounts, ['registry', 'deepseek', 'dsh'], 'packageCounts')
-  if (JSON.stringify(inputManifest.packageCounts) !== JSON.stringify({ registry: 169, deepseek: 59, dsh: 54 })) fail('PACKAGE_COUNTS_MISMATCH', 'packageCounts')
-  if (inputManifest.dshVersion !== EXPECTED.dshVersion || JSON.stringify(inputManifest.nestedCommander) !== JSON.stringify(EXPECTED.nestedCommander)) fail('DECLARATION_COHORT_MISMATCH', 'dsh/nested commander')
+  if (canonicalJsonBytes(inputManifest.packageCounts) !== canonicalJsonBytes({ registry: 169, deepseek: 59, dsh: 54 })) fail('PACKAGE_COUNTS_MISMATCH', 'packageCounts')
+  if (inputManifest.dshVersion !== EXPECTED.dshVersion || canonicalJsonBytes(inputManifest.nestedCommander) !== canonicalJsonBytes(EXPECTED.nestedCommander)) fail('DECLARATION_COHORT_MISMATCH', 'dsh/nested commander')
   assertExactKeys(inputManifest.selectedCache, ['entries', 'totalBytes'], 'selectedCache')
   if (!Array.isArray(inputManifest.selectedCache.entries) || inputManifest.selectedCache.entries.length !== EXPECTED.registryPackageCount || inputManifest.selectedCache.totalBytes !== EXPECTED.selectedContentBytes) fail('SELECTED_CACHE_COUNT_OR_BYTES_MISMATCH', 'selectedCache')
   const projection = deriveCanonicalLockInput(packageJson, packageLock)
@@ -2639,8 +2925,8 @@ export function validateInputManifest({ inputManifest, packageJson, packageLock,
   let previous = null
   for (let index = 0; index < inputManifest.selectedCache.entries.length; index += 1) {
     const entry = inputManifest.selectedCache.entries[index]
-    assertExactKeys(entry, ['lockPath', 'name', 'version', 'integrity', 'key', 'indexChecksum', 'byteLength', 'contentDigest'], `selectedCache.entries[${index}]`)
-    if (typeof entry.lockPath !== 'string' || typeof entry.indexChecksum !== 'string' || !Number.isSafeInteger(entry.byteLength) || entry.byteLength < 0) fail('INVALID_SELECTED_CACHE_ENTRY', String(index))
+    assertExactKeys(entry, ['lockPath', 'name', 'version', 'integrity', 'key', 'byteLength', 'contentDigest'], `selectedCache.entries[${index}]`)
+    if (typeof entry.lockPath !== 'string' || !Number.isSafeInteger(entry.byteLength) || entry.byteLength < 0) fail('INVALID_SELECTED_CACHE_ENTRY', String(index))
     if (seen.has(entry.lockPath) || (previous !== null && compareUtf8(previous, entry.lockPath) >= 0)) fail('NONCANONICAL_SELECTED_CACHE_ORDER', entry.lockPath)
     seen.add(entry.lockPath); previous = entry.lockPath
     const expected = projection.entries[index]
@@ -2657,7 +2943,7 @@ export function validateInputManifest({ inputManifest, packageJson, packageLock,
   assertExactKeys(inputManifest.runtime.node, ['version', 'basename', 'sha256'], 'runtime.node')
   assertExactKeys(inputManifest.runtime.npm, ['version', 'cliBasename', 'cliSha256'], 'runtime.npm')
   for (const [label, value] of Object.entries({ ...inputManifest.runtime.node, ...inputManifest.runtime.npm })) if (typeof value !== 'string') fail('RUNTIME_IDENTITY_TYPE_MISMATCH', label)
-  if (JSON.stringify(inputManifest.runtime) !== JSON.stringify(EXPECTED_RUNTIME)) fail('RUNTIME_IDENTITY_MISMATCH', 'runtime')
+  if (canonicalJsonBytes(inputManifest.runtime) !== canonicalJsonBytes(EXPECTED_RUNTIME)) fail('RUNTIME_IDENTITY_MISMATCH', 'runtime')
   assertCompilerToolchain(rootPackageLock, inputManifest.compilerToolchain)
   assertProductionBoundaryShape(inputManifest.productionBoundary)
   return { projection, hashes }
@@ -2678,18 +2964,7 @@ async function copySelectedCache({ cacheRoot, targetCacheRoot, entries }) {
     const contentIntegrity = `sha512-${createHash('sha512').update(await readFile(contentTarget)).digest('base64')}`
     if (contentIntegrity !== entry.integrity) fail('COPIED_CONTENT_INTEGRITY_MISMATCH', entry.lockPath)
   }
-  await makeTreeReadOnly(targetCacheRoot)
-}
-
-async function makeTreeReadOnly(path) {
-  const entryStat = await lstat(path)
-  if (entryStat.isSymbolicLink()) fail('CACHE_SYMLINK_FORBIDDEN', path)
-  if (entryStat.isDirectory()) {
-    for (const child of await readdir(path)) await makeTreeReadOnly(resolve(path, child))
-    await chmod(path, 0o555)
-    return
-  }
-  if (entryStat.isFile()) await chmod(path, 0o444)
+  await makeTreeReadOnlyStrict(targetCacheRoot)
 }
 
 async function copyImmutableContractFiles({ workspaceRoot, acceptedRoot }) {
@@ -2709,19 +2984,89 @@ async function copyAcceptedInputFiles({ candidateRoot, acceptedRoot }) {
   await copyFile(resolve(candidateRoot, 'package-lock.json'), resolve(acceptedRoot, 'package-lock.json'))
 }
 
+function assertPinnedRuntimeEntries({ nodePath, npmCliPath, nodeSnapshot, npmSnapshot }) {
+  if (process.version !== EXPECTED_RUNTIME.node.version
+    || basename(nodePath) !== EXPECTED_RUNTIME.node.basename
+    || nodeSnapshot.identity.sha256 !== EXPECTED_RUNTIME.node.sha256) {
+    fail('INVALID_NODE_EXECUTABLE', 'Node executable identity')
+  }
+  if (basename(npmCliPath) !== EXPECTED_RUNTIME.npm.cliBasename
+    || npmSnapshot.identity.sha256 !== EXPECTED_RUNTIME.npm.cliSha256) {
+    fail('INVALID_NPM_CLI', 'npm CLI entry identity')
+  }
+}
+
 async function readRuntimeIdentity(nodePath, npmCliPath) {
-  await assertRegularFile(nodePath, 'INVALID_NODE_EXECUTABLE')
-  await assertRegularFile(npmCliPath, 'INVALID_NPM_CLI')
+  const [nodeBefore, npmBefore] = await Promise.all([
+    readBoundSourceFile(
+      nodePath,
+      'INVALID_NODE_EXECUTABLE',
+      256 * 1024 * 1024,
+      'INVALID_NODE_EXECUTABLE',
+      'Node executable',
+    ),
+    readBoundSourceFile(
+      npmCliPath,
+      'INVALID_NPM_CLI',
+      16 * 1024 * 1024,
+      'INVALID_NPM_CLI',
+      'npm CLI entry',
+    ),
+  ])
+  assertPinnedRuntimeEntries({ nodePath, npmCliPath, nodeSnapshot: nodeBefore, npmSnapshot: npmBefore })
+  let npmVersion
+  try {
+    npmVersion = (await execFileAsync(nodePath, [npmCliPath, '--version'], {
+      env: {},
+      maxBuffer: 1024 * 1024,
+      timeout: 30_000,
+    })).stdout.trim()
+  } catch {
+    fail('INVALID_NPM_CLI', 'npm CLI version execution')
+  }
+  const [nodeAfter, npmAfter] = await Promise.all([
+    readBoundSourceFile(
+      nodePath,
+      'INVALID_NODE_EXECUTABLE',
+      256 * 1024 * 1024,
+      'INVALID_NODE_EXECUTABLE',
+      'Node executable',
+    ),
+    readBoundSourceFile(
+      npmCliPath,
+      'INVALID_NPM_CLI',
+      16 * 1024 * 1024,
+      'INVALID_NPM_CLI',
+      'npm CLI entry',
+    ),
+  ])
+  for (const [label, before, after] of [
+    ['Node executable', nodeBefore, nodeAfter],
+    ['npm CLI entry', npmBefore, npmAfter],
+  ]) {
+    if (before.identity.dev !== after.identity.dev
+      || before.identity.ino !== after.identity.ino
+      || before.identity.size !== after.identity.size
+      || before.identity.mode !== after.identity.mode
+      || before.identity.nlink !== after.identity.nlink
+      || before.identity.sha256 !== after.identity.sha256) {
+      fail(label === 'Node executable' ? 'INVALID_NODE_EXECUTABLE' : 'INVALID_NPM_CLI', `${label} identity changed`)
+    }
+  }
+  assertPinnedRuntimeEntries({ nodePath, npmCliPath, nodeSnapshot: nodeAfter, npmSnapshot: npmAfter })
+  if (npmVersion !== EXPECTED_RUNTIME.npm.version) {
+    fail('INVALID_NPM_CLI', 'npm CLI version')
+  }
   return {
     node: {
       version: process.version,
       basename: basename(nodePath),
-      sha256: await sha256File(nodePath),
+      sha256: nodeBefore.identity.sha256,
     },
     npm: {
-      version: (await execFileAsync(nodePath, [npmCliPath, '--version'])).stdout.trim(),
+      version: npmVersion,
       cliBasename: basename(npmCliPath),
-      cliSha256: await sha256File(npmCliPath),
+      cliSha256: npmBefore.identity.sha256,
     },
   }
 }
@@ -2757,14 +3102,26 @@ async function writeInputManifest({
   return inputManifest
 }
 
-export async function inspectCommittedDeclarationInput({ workspaceRoot = DEFAULT_WORKSPACE_ROOT } = {}) {
+async function readCommittedDeclarationFiles(workspaceRoot) {
   const inputPath = resolve(workspaceRoot, 'tools/harness-rc6-declarations/input-manifest.json')
   const packagePath = resolve(workspaceRoot, 'tools/harness-rc6-declarations/package.json')
   const lockPath = resolve(workspaceRoot, 'tools/harness-rc6-declarations/package-lock.json')
-  const { value: inputManifest } = await readJsonFile(inputPath)
-  const { value: packageJson } = await readJsonFile(packagePath)
-  const { value: packageLock } = await readJsonFile(lockPath)
-  const { value: rootPackageLock } = await readJsonFile(resolve(workspaceRoot, 'package-lock.json'))
+  const rootLockPath = resolve(workspaceRoot, 'package-lock.json')
+  const [inputFile, packageFile, lockFile, rootLockFile] = await Promise.all([
+    readJsonFile(inputPath),
+    readJsonFile(packagePath),
+    readJsonFile(lockPath),
+    readJsonFile(rootLockPath),
+  ])
+  return { inputFile, packageFile, lockFile, rootLockFile }
+}
+
+async function inspectCommittedDeclarationInputSnapshot({ workspaceRoot, files }) {
+  const { inputFile, packageFile, lockFile, rootLockFile } = files
+  const inputManifest = inputFile.value
+  const packageJson = packageFile.value
+  const packageLock = lockFile.value
+  const rootPackageLock = rootLockFile.value
   if (inputManifest.schemaVersion !== '1' && inputManifest.schemaVersion !== '2') {
     fail('UNSUPPORTED_INPUT_MANIFEST_SCHEMA', String(inputManifest.schemaVersion))
   }
@@ -2789,18 +3146,23 @@ export async function inspectCommittedDeclarationInput({ workspaceRoot = DEFAULT
     if (!isObject(entry)) fail('INVALID_COMMITTED_CACHE_ENTRY', String(entry))
     return entry
   })
-  const indexHash = sha256(canonicalJson(normalizedEntries))
-  const contentHash = sha256(canonicalJson(inputManifest.schemaVersion === '1'
-    ? legacyCanonicalContentAggregate(normalizedEntries)
-    : canonicalContentAggregate(normalizedEntries)))
-  const packageJsonSha256 = await sha256File(packagePath)
-  const packageLockSha256 = await sha256File(lockPath)
+  const selectedHashes = inputManifest.schemaVersion === '1'
+    ? {
+        selectedCacheIndexSha256: sha256(canonicalJson(normalizedEntries)),
+        selectedContentAggregateSha256: sha256(canonicalJson(legacyCanonicalContentAggregate(normalizedEntries))),
+      }
+    : computeSelectedCacheHashes(normalizedEntries)
+  const packageJsonSha256 = packageFile.rawSha256
+  const packageLockSha256 = lockFile.rawSha256
   if (inputManifest.schemaVersion === '2') {
     if (packageJsonSha256 !== inputManifest.packageJsonSha256 || packageLockSha256 !== inputManifest.packageLockSha256) {
       fail('COMMITTED_INPUT_BYTE_HASH_MISMATCH', 'packageJson/packageLock')
     }
     validateInputManifest({ inputManifest, packageJson, packageLock, rootPackageLock })
     await validateProductionBoundary({ workspaceRoot, inputManifest })
+    if (!inputFile.rawBytes.equals(canonicalDocumentBytes(inputManifest))) {
+      fail('COMMITTED_INPUT_CANONICAL_MISMATCH', 'input-manifest v2')
+    }
   }
   return {
     inputManifest,
@@ -2808,11 +3170,2346 @@ export async function inspectCommittedDeclarationInput({ workspaceRoot = DEFAULT
     packageLock,
     packageJsonSha256,
     packageLockSha256,
-    selectedCacheIndexSha256: indexHash,
-    selectedContentAggregateSha256: contentHash,
+    ...selectedHashes,
     ...(inputManifest.schemaVersion === '1'
       ? { status: 'CHANGES_REQUIRED_REVIEW', reason: 'INPUT_MANIFEST_V2_PENDING_B2' }
       : { status: 'PASS_STATIC_METADATA' }),
+  }
+}
+
+export async function inspectCommittedDeclarationInput({ workspaceRoot = DEFAULT_WORKSPACE_ROOT } = {}) {
+  const files = await readCommittedDeclarationFiles(workspaceRoot)
+  return inspectCommittedDeclarationInputSnapshot({ workspaceRoot, files })
+}
+
+async function inspectCommittedV1Bootstrap(workspaceRoot, files) {
+  if (files.inputFile.rawSha256 !== EXPECTED_COMMITTED_V1_INPUT_RAW_SHA256
+    || files.inputFile.value.schemaVersion !== '1') {
+    fail('COMMITTED_V1_BOOTSTRAP_MISMATCH', 'committed input-manifest v1')
+  }
+  return inspectCommittedDeclarationInputSnapshot({ workspaceRoot, files })
+}
+
+const COMMITTED_ANCESTOR_RELATIVE_PATHS = [
+  'tools',
+  'tools/harness-rc6-declarations',
+  'research',
+]
+
+async function snapshotCommittedAncestorBoundaries(workspaceRoot, workspaceBoundary) {
+  const boundaries = []
+  try {
+    for (const relativePath of COMMITTED_ANCESTOR_RELATIVE_PATHS) {
+      const path = resolve(workspaceRoot, relativePath)
+      await assertDescendantDirectoryChain(workspaceBoundary, path, {
+        code: 'COMMITTED_EVIDENCE_CHANGED',
+        missingCode: 'COMMITTED_EVIDENCE_CHANGED',
+        logicalLabel: 'committed evidence ancestry',
+        includeLeafDirectory: true,
+      })
+      const boundary = await openBoundDirectory(
+        path,
+        'COMMITTED_EVIDENCE_CHANGED',
+        'committed evidence ancestry',
+      )
+      if (boundary.canonicalPath
+        !== resolve(workspaceBoundary.canonicalPath, relativePath)) {
+        await boundary.handle.close().catch(() => {})
+        fail('COMMITTED_EVIDENCE_CHANGED', 'committed evidence ancestry')
+      }
+      boundaries.push({ relativePath, ...boundary })
+    }
+    return boundaries
+  } catch (error) {
+    await Promise.all(boundaries.map((boundary) => boundary.handle.close().catch(() => {})))
+    throw error
+  }
+}
+
+async function assertCommittedAncestorBoundaries(
+  workspaceBoundary,
+  committedAncestorBoundaries,
+) {
+  await assertBoundDirectory(
+    workspaceBoundary,
+    'COMMITTED_EVIDENCE_CHANGED',
+    'committed evidence workspace',
+  )
+  for (const boundary of committedAncestorBoundaries) {
+    await assertBoundDirectory(
+      boundary,
+      'COMMITTED_EVIDENCE_CHANGED',
+      'committed evidence ancestry',
+    )
+    if (boundary.canonicalPath
+      !== resolve(workspaceBoundary.canonicalPath, boundary.relativePath)) {
+      fail('COMMITTED_EVIDENCE_CHANGED', 'committed evidence ancestry')
+    }
+  }
+}
+
+function assertSamePublication(before, after) {
+  for (const key of ['pointer', 'descriptor', 'receipt']) {
+    if (canonicalJsonBytes(before[key]) !== canonicalJsonBytes(after[key])) {
+      fail('PUBLISHED_LOGICAL_INPUT_MISMATCH', key)
+    }
+  }
+  if (!before.pointerBytes.equals(after.pointerBytes)
+    || before.pointerIdentity.dev !== after.pointerIdentity.dev
+    || before.pointerIdentity.ino !== after.pointerIdentity.ino
+    || before.pointerIdentity.nlink !== 1 || after.pointerIdentity.nlink !== 1) {
+    fail('PUBLISHED_LOGICAL_INPUT_MISMATCH', 'pointer identity')
+  }
+  if (canonicalJsonBytes(canonicalSelectedCacheEntries(before.snapshot.entries))
+    !== canonicalJsonBytes(canonicalSelectedCacheEntries(after.snapshot.entries))) {
+    fail('PUBLISHED_LOGICAL_INPUT_MISMATCH', 'selected cache')
+  }
+}
+
+async function assertCommittedEvidenceUnchanged(
+  workspaceRoot,
+  committedFiles,
+  closureFile,
+  workspaceBoundary,
+  committedAncestorBoundaries = [],
+) {
+  const committedPaths = [
+    'tools/harness-rc6-declarations/input-manifest.json',
+    'tools/harness-rc6-declarations/package.json',
+    'tools/harness-rc6-declarations/package-lock.json',
+    'package-lock.json',
+    'research/2026-09-05-rc6-declaration-closure.json',
+  ]
+  const assertCommittedAncestry = async () => {
+    if (!workspaceBoundary) return
+    await assertCommittedAncestorBoundaries(workspaceBoundary, committedAncestorBoundaries)
+    for (const relativePath of committedPaths) {
+      await assertDescendantDirectoryChain(
+        workspaceBoundary,
+        resolve(workspaceRoot, relativePath),
+        {
+          code: 'COMMITTED_EVIDENCE_CHANGED',
+          missingCode: 'COMMITTED_EVIDENCE_CHANGED',
+          logicalLabel: 'committed evidence ancestry',
+        },
+      )
+    }
+  }
+  await assertCommittedAncestry()
+  const [afterFiles, afterClosure] = await Promise.all([
+    readCommittedDeclarationFiles(workspaceRoot),
+    readJsonFile(resolve(workspaceRoot, 'research/2026-09-05-rc6-declaration-closure.json')),
+  ])
+  await assertCommittedAncestry()
+  const assertSameCommittedFile = (before, after, label) => {
+    if (!after.rawBytes.equals(before.rawBytes)) fail('COMMITTED_EVIDENCE_CHANGED', label)
+    for (const field of [
+      'sha256', 'size', 'mode', 'dev', 'ino', 'nlink', 'mtimeMs', 'ctimeMs',
+    ]) {
+      if (after.identity[field] !== before.identity[field]) {
+        fail('COMMITTED_EVIDENCE_CHANGED', label)
+      }
+    }
+  }
+  for (const key of ['inputFile', 'packageFile', 'lockFile', 'rootLockFile']) {
+    assertSameCommittedFile(committedFiles[key], afterFiles[key], key)
+  }
+  assertSameCommittedFile(closureFile, afterClosure, 'closure')
+}
+
+function isPathWithin(root, candidate) {
+  const remainder = relative(root, candidate)
+  return remainder === '' || (remainder !== '..' && !remainder.startsWith(`..${sep}`) && !isAbsolute(remainder))
+}
+
+function canonicalDocumentBytes(value) {
+  return Buffer.from(`${canonicalJsonBytes(value)}\n`, 'utf8')
+}
+
+async function readImmutableContractSnapshots(workspaceRoot, workspaceBoundary) {
+  const snapshots = []
+  for (const [relativePath, expectedHash] of Object.entries(EXPECTED.contractHashes)) {
+    const source = resolve(workspaceRoot, relativePath)
+    await assertDescendantDirectoryChain(workspaceBoundary, source, {
+      code: 'BUNDLE_PATH_CONTAINMENT',
+      missingCode: 'IMMUTABLE_CONTRACT_HASH_CHANGED',
+      logicalLabel: 'immutable contract input',
+    })
+    const snapshot = await readBoundSourceFile(
+      source,
+      'IMMUTABLE_CONTRACT_HASH_CHANGED',
+      1024 * 1024,
+      'IMMUTABLE_CONTRACT_HASH_CHANGED',
+      'immutable contract input',
+    )
+    if (snapshot.identity.sha256 !== expectedHash) {
+      fail('IMMUTABLE_CONTRACT_HASH_CHANGED', relativePath)
+    }
+    snapshots.push({ relativePath, expectedHash, ...snapshot })
+  }
+  return snapshots
+}
+
+async function assertImmutableContractSnapshotsUnchanged(workspaceRoot, snapshots) {
+  for (const snapshot of snapshots) {
+    const after = await readBoundSourceFile(
+      resolve(workspaceRoot, snapshot.relativePath),
+      'IMMUTABLE_CONTRACT_HASH_CHANGED',
+      1024 * 1024,
+      'IMMUTABLE_CONTRACT_HASH_CHANGED',
+      'immutable contract input',
+    )
+    if (!after.bytes.equals(snapshot.bytes)
+      || after.identity.dev !== snapshot.identity.dev
+      || after.identity.ino !== snapshot.identity.ino
+      || after.identity.sha256 !== snapshot.expectedHash) {
+      fail('IMMUTABLE_CONTRACT_HASH_CHANGED', snapshot.relativePath)
+    }
+  }
+}
+
+async function writeReplayInputs({ replayBoundary, replayRoot, committedFiles, contractSnapshots }) {
+  await settleOwnedMutations([
+    writeBundleFile(resolve(replayRoot, 'package.json'), committedFiles.packageFile.rawBytes),
+    writeBundleFile(resolve(replayRoot, 'package-lock.json'), committedFiles.lockFile.rawBytes),
+  ])
+  for (const snapshot of contractSnapshots) {
+    const destination = resolve(replayRoot, snapshot.relativePath)
+    if (dirname(destination) !== replayRoot) {
+      await ensureDescendantDirectoryChain(
+        replayBoundary,
+        dirname(destination),
+        'REPLAY_PATH_CONTAINMENT',
+        'replay contract parent',
+      )
+    }
+    const written = await writeBundleFile(destination, snapshot.bytes)
+    if (written.sha256 !== snapshot.expectedHash) {
+      fail('COPIED_CONTRACT_HASH_MISMATCH', snapshot.relativePath)
+    }
+  }
+}
+
+function replayCompilerPackages() {
+  return [
+    expectedCompilerToolchain.typescript,
+    expectedCompilerToolchain.nodeTypes,
+    expectedCompilerToolchain.undiciTypes,
+    expectedCompilerToolchain.reactTypes,
+    expectedCompilerToolchain.propTypes,
+    expectedCompilerToolchain.csstype,
+  ]
+}
+
+async function snapshotCompilerPackageTree(packageRoot) {
+  const rootBoundary = await openBoundDirectory(
+    packageRoot,
+    'COMPILER_PATH_CONTAINMENT',
+    'compiler package root',
+  )
+  const records = []
+  const identities = []
+  const materials = []
+  async function walk(directory, logicalPath, heldBoundary) {
+    const boundary = heldBoundary ?? await openBoundDirectory(
+      directory,
+      'COMPILER_PATH_CONTAINMENT',
+      'compiler package directory',
+    )
+    try {
+      const expectedCanonical = logicalPath === '.'
+        ? rootBoundary.canonicalPath
+        : resolve(rootBoundary.canonicalPath, ...logicalPath.split('/'))
+      if (boundary.canonicalPath !== expectedCanonical) {
+        fail('COMPILER_PATH_CONTAINMENT', 'compiler package directory')
+      }
+      await assertBoundDirectory(boundary, 'COMPILER_PATH_CONTAINMENT', 'compiler package directory')
+      const directoryStat = await boundary.handle.stat()
+      records.push({ path: logicalPath, type: 'directory', mode: directoryStat.mode & 0o777 })
+      identities.push({
+        path: logicalPath,
+        type: 'directory',
+        mode: directoryStat.mode & 0o777,
+        dev: directoryStat.dev,
+        ino: directoryStat.ino,
+      })
+      for (const name of (await readdirWithStableMissingCode(
+        directory,
+        'COMPILER_PATH_CONTAINMENT',
+      )).sort(compareUtf8)) {
+        const child = resolve(directory, name)
+        const childLogical = logicalPath === '.' ? name : `${logicalPath}/${name}`
+        const childStat = await lstatWithStableMissingCode(child, 'COMPILER_PATH_CONTAINMENT')
+        if (childStat.isSymbolicLink()) {
+          fail('COMPILER_PATH_CONTAINMENT', 'compiler package symlink')
+        }
+        if (childStat.isDirectory()) {
+          await walk(child, childLogical)
+          continue
+        }
+        if (!childStat.isFile()) fail('COMPILER_PATH_CONTAINMENT', 'compiler package special file')
+        const snapshot = await readBoundSourceFile(
+          child,
+          'COMPILER_PATH_CONTAINMENT',
+          CACHE_CONTENT_MAX_BYTES,
+          'COMPILER_PATH_CONTAINMENT',
+          'compiler package file',
+        )
+        records.push({
+          path: childLogical,
+          type: 'file',
+          mode: snapshot.identity.mode,
+          size: snapshot.identity.size,
+          sha256: snapshot.identity.sha256,
+        })
+        identities.push({ path: childLogical, type: 'file', ...snapshot.identity })
+        materials.push({ path: childLogical, bytes: snapshot.bytes })
+      }
+      await assertBoundDirectory(boundary, 'COMPILER_PATH_CONTAINMENT', 'compiler package directory')
+    } finally {
+      if (!heldBoundary) await boundary.handle.close().catch(() => {})
+    }
+  }
+  try {
+    await walk(packageRoot, '.', rootBoundary)
+    await assertBoundDirectory(rootBoundary, 'COMPILER_PATH_CONTAINMENT', 'compiler package root')
+    return {
+      canonicalRoot: rootBoundary.canonicalPath,
+      records: records.sort((left, right) => compareUtf8(left.path, right.path)),
+      identities: identities.sort((left, right) => compareUtf8(left.path, right.path)),
+      materials: materials.sort((left, right) => compareUtf8(left.path, right.path)),
+    }
+  } finally {
+    await rootBoundary.handle.close().catch(() => {})
+  }
+}
+
+async function snapshotCompilerToolchainSource(workspaceRoot, workspaceBoundary) {
+  const packages = []
+  const snapshots = []
+  for (const expected of replayCompilerPackages()) {
+    const packageRoot = resolve(workspaceRoot, expected.lockPath)
+    await assertDescendantDirectoryChain(workspaceBoundary, packageRoot, {
+      code: 'COMPILER_PATH_CONTAINMENT',
+      missingCode: 'COMPILER_PATH_CONTAINMENT',
+      logicalLabel: `compiler source package ${expected.lockPath}`,
+      includeLeafDirectory: true,
+    })
+    const snapshot = await snapshotCompilerPackageTree(packageRoot)
+    if (!isPathWithin(workspaceRoot, snapshot.canonicalRoot)) {
+      fail('COMPILER_PATH_CONTAINMENT', 'compiler source package')
+    }
+    const manifest = await readBoundSourceFile(
+      resolve(packageRoot, 'package.json'),
+      'COMPILER_PATH_CONTAINMENT',
+      1024 * 1024,
+      'COMPILER_PATH_CONTAINMENT',
+      'compiler source manifest',
+    )
+    let manifestValue
+    try {
+      manifestValue = JSON.parse(manifest.bytes.toString('utf8'))
+    } catch {
+      fail('COMPILER_PATH_CONTAINMENT', 'compiler source manifest')
+    }
+    if (!isObject(manifestValue) || manifestValue.version !== expected.version) {
+      fail('COMPILER_PATH_CONTAINMENT', 'compiler source manifest version')
+    }
+    const summary = {
+      lockPath: expected.lockPath,
+      version: expected.version,
+      integrity: expected.integrity,
+      inventoryCount: snapshot.records.length,
+      inventorySha256: sha256(canonicalJsonBytes(snapshot.records)),
+    }
+    packages.push(summary)
+    snapshots.push({ expected, packageRoot, ...snapshot })
+  }
+  packages.sort((left, right) => compareUtf8(left.lockPath, right.lockPath))
+  const aggregateSha256 = sha256(canonicalJsonBytes(packages))
+  if (aggregateSha256 !== EXPECTED_COMPILER_SOURCE_AGGREGATE_SHA256) {
+    fail('COMPILER_PATH_CONTAINMENT', 'compiler source aggregate')
+  }
+  return { workspaceRoot, workspaceBoundary, snapshots, packages, aggregateSha256 }
+}
+
+function sealedCompilerRecords(records) {
+  return records.map((record) => record.type === 'directory'
+    ? { ...record, mode: 0o555 }
+    : { ...record, mode: 0o444 })
+}
+
+function clientCompilerOverlayBytes() {
+  const bytes = canonicalDocumentBytes(CLIENT_COMPILER_OVERLAY)
+  if (sha256(bytes) !== EXPECTED_CLIENT_COMPILER_OVERLAY_SHA256) {
+    fail('COMPILER_PATH_CONTAINMENT', 'client compiler overlay identity')
+  }
+  return bytes
+}
+
+async function materializeReplayCompilerToolchain({
+  replayRoot,
+  replayBoundary,
+  sourceSnapshot,
+}) {
+  const compilerRoot = resolve(replayRoot, '.compiler')
+  await ensureDescendantDirectoryChain(
+    replayBoundary,
+    compilerRoot,
+    'COMPILER_PATH_CONTAINMENT',
+    'replay compiler root',
+  )
+  const installedPackages = []
+  for (const snapshot of sourceSnapshot.snapshots) {
+    const destinationRoot = resolve(compilerRoot, snapshot.expected.lockPath)
+    await ensureDescendantDirectoryChain(
+      replayBoundary,
+      destinationRoot,
+      'COMPILER_PATH_CONTAINMENT',
+      'replay compiler package',
+    )
+    for (const material of snapshot.materials) {
+      const destination = resolve(destinationRoot, ...material.path.split('/'))
+      if (!isPathWithin(destinationRoot, destination)) {
+        fail('COMPILER_PATH_CONTAINMENT', 'replay compiler file')
+      }
+      if (dirname(destination) !== destinationRoot) {
+        await ensureDescendantDirectoryChain(
+          replayBoundary,
+          dirname(destination),
+          'COMPILER_PATH_CONTAINMENT',
+          'replay compiler directory',
+        )
+      }
+      await writeBundleFile(destination, material.bytes)
+    }
+    await makeTreeReadOnlyStrict(destinationRoot)
+    const inventory = await inventoryBundlePayload(destinationRoot)
+    const expectedInventory = sealedCompilerRecords(snapshot.records)
+    if (canonicalJsonBytes(inventory) !== canonicalJsonBytes(expectedInventory)) {
+      fail('COMPILER_PATH_CONTAINMENT', 'replay compiler materialization')
+    }
+    installedPackages.push({
+      lockPath: snapshot.expected.lockPath,
+      version: snapshot.expected.version,
+      integrity: snapshot.expected.integrity,
+      inventoryCount: inventory.length,
+      inventorySha256: sha256(canonicalJsonBytes(inventory)),
+    })
+  }
+  installedPackages.sort((left, right) => compareUtf8(left.lockPath, right.lockPath))
+  await assertBoundDirectory(replayBoundary, 'COMPILER_PATH_CONTAINMENT', 'replay root')
+  const clientOverlayPath = resolve(replayRoot, CLIENT_COMPILER_OVERLAY_RELATIVE)
+  const clientOverlayBytes = clientCompilerOverlayBytes()
+  const clientOverlayIdentity = await writeBundleFile(clientOverlayPath, clientOverlayBytes)
+  await assertBoundDirectory(replayBoundary, 'COMPILER_PATH_CONTAINMENT', 'replay root')
+  if (clientOverlayIdentity.mode !== 0o444 || clientOverlayIdentity.nlink !== 1
+    || clientOverlayIdentity.sha256 !== EXPECTED_CLIENT_COMPILER_OVERLAY_SHA256) {
+    fail('COMPILER_PATH_CONTAINMENT', 'client compiler overlay seal')
+  }
+  const clientOverlayEvidence = {
+    relativePath: CLIENT_COMPILER_OVERLAY_RELATIVE,
+    sha256: clientOverlayIdentity.sha256,
+    size: clientOverlayIdentity.size,
+    mode: clientOverlayIdentity.mode,
+    nlink: clientOverlayIdentity.nlink,
+  }
+  const sealedEvidence = {
+    packages: installedPackages,
+    clientOverlay: clientOverlayEvidence,
+  }
+  const evidence = {
+    schemaVersion: '2',
+    sourceAggregateSha256: sourceSnapshot.aggregateSha256,
+    sealedAggregateSha256: sha256(canonicalJsonBytes(sealedEvidence)),
+    packages: installedPackages,
+    clientOverlay: clientOverlayEvidence,
+  }
+  const tscPath = await realpathWithStableMissingCode(
+    resolve(compilerRoot, expectedCompilerToolchain.typescript.lockPath, 'bin/tsc'),
+    'COMPILER_PATH_CONTAINMENT',
+  )
+  if (!isPathWithin(compilerRoot, tscPath)) {
+    fail('COMPILER_PATH_CONTAINMENT', 'replay compiler entry')
+  }
+  return {
+    tscPath,
+    compilerRoot,
+    sourceSnapshot,
+    evidence,
+    clientOverlay: {
+      path: clientOverlayPath,
+      bytes: clientOverlayBytes,
+      identity: clientOverlayIdentity,
+    },
+  }
+}
+
+async function assertCompilerToolchainSourceUnchanged(sourceSnapshot) {
+  const currentSource = await snapshotCompilerToolchainSource(
+    sourceSnapshot.workspaceRoot,
+    sourceSnapshot.workspaceBoundary,
+  )
+  for (let index = 0; index < currentSource.snapshots.length; index += 1) {
+    const before = sourceSnapshot.snapshots[index]
+    const after = currentSource.snapshots[index]
+    if (canonicalJsonBytes(after.identities) !== canonicalJsonBytes(before.identities)
+      || canonicalJsonBytes(after.records) !== canonicalJsonBytes(before.records)) {
+      fail('COMPILER_PATH_CONTAINMENT', 'compiler source changed')
+    }
+  }
+}
+
+async function assertClientCompilerOverlayUnchanged(compilerSnapshot) {
+  const currentOverlay = await readBoundSourceFile(
+    compilerSnapshot.clientOverlay.path,
+    'COMPILER_PATH_CONTAINMENT',
+    64 * 1024,
+    'COMPILER_PATH_CONTAINMENT',
+    'client compiler overlay',
+    { writableCode: 'COMPILER_PATH_CONTAINMENT' },
+  )
+  const beforeOverlay = compilerSnapshot.clientOverlay
+  if (!currentOverlay.bytes.equals(beforeOverlay.bytes)
+    || currentOverlay.identity.dev !== beforeOverlay.identity.dev
+    || currentOverlay.identity.ino !== beforeOverlay.identity.ino
+    || currentOverlay.identity.size !== beforeOverlay.identity.size
+    || currentOverlay.identity.mode !== 0o444
+    || currentOverlay.identity.nlink !== 1
+    || currentOverlay.identity.sha256 !== EXPECTED_CLIENT_COMPILER_OVERLAY_SHA256) {
+    fail('COMPILER_PATH_CONTAINMENT', 'client compiler overlay changed')
+  }
+  return {
+    relativePath: CLIENT_COMPILER_OVERLAY_RELATIVE,
+    sha256: currentOverlay.identity.sha256,
+    size: currentOverlay.identity.size,
+    mode: currentOverlay.identity.mode,
+    nlink: currentOverlay.identity.nlink,
+  }
+}
+
+async function assertReplayCompilerToolchainUnchanged(compilerSnapshot) {
+  await assertCompilerToolchainSourceUnchanged(compilerSnapshot.sourceSnapshot)
+  const currentPackages = []
+  for (const pkg of compilerSnapshot.evidence.packages) {
+    const root = resolve(compilerSnapshot.compilerRoot, pkg.lockPath)
+    const inventory = await inventoryBundlePayload(root)
+    if (inventory.length !== pkg.inventoryCount
+      || sha256(canonicalJsonBytes(inventory)) !== pkg.inventorySha256) {
+      fail('COMPILER_PATH_CONTAINMENT', 'replay compiler inventory changed')
+    }
+    currentPackages.push({ ...pkg })
+  }
+  currentPackages.sort((left, right) => compareUtf8(left.lockPath, right.lockPath))
+  const currentOverlayEvidence = await assertClientCompilerOverlayUnchanged(compilerSnapshot)
+  if (canonicalJsonBytes(currentOverlayEvidence)
+      !== canonicalJsonBytes(compilerSnapshot.evidence.clientOverlay)
+    || sha256(canonicalJsonBytes({
+      packages: currentPackages,
+      clientOverlay: currentOverlayEvidence,
+    })) !== compilerSnapshot.evidence.sealedAggregateSha256) {
+    fail('COMPILER_PATH_CONTAINMENT', 'replay compiler evidence changed')
+  }
+}
+
+function isStorageDeclarationRelativePath(relativePath) {
+  const segments = relativePath.split('/')
+  for (let index = 0; index <= segments.length - 3; index += 1) {
+    if (segments[index] === 'node_modules'
+      && segments[index + 1] === '@deepseek-ai'
+      && (segments[index + 2] === 'dsh-storage'
+        || segments[index + 2] === 'dsh-storage-domain')) {
+      return true
+    }
+  }
+  return false
+}
+
+async function assertCompilerOutputLocality({
+  stdout,
+  replayRoot,
+  surface,
+  contractRelativePath,
+}) {
+  const lines = stdout.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean)
+  const expectedContract = await realpathWithStableMissingCode(
+    resolve(replayRoot, contractRelativePath),
+    'COMPILER_OUTPUT_ESCAPE',
+  )
+  const relativeFiles = []
+  for (const line of lines) {
+    if (!isAbsolute(line)) fail('COMPILER_OUTPUT_ESCAPE', 'non-absolute compiler file list')
+    const normalized = await realpathWithStableMissingCode(line, 'COMPILER_OUTPUT_ESCAPE')
+    if (!isPathWithin(replayRoot, normalized)) {
+      fail('COMPILER_OUTPUT_ESCAPE', 'compiler file list')
+    }
+    const replayRelative = relative(replayRoot, normalized)
+    if (replayRelative === ''
+      || replayRelative === '..'
+      || replayRelative.startsWith(`..${sep}`)
+      || isAbsolute(replayRelative)) {
+      fail('COMPILER_OUTPUT_ESCAPE', 'compiler relative file list')
+    }
+    relativeFiles.push(replayRelative.split(sep).join('/'))
+  }
+  if (new Set(relativeFiles).size !== relativeFiles.length) {
+    fail('COMPILER_OUTPUT_ESCAPE', 'duplicate compiler file list entry')
+  }
+  const expectedContractRelative = relative(replayRoot, expectedContract).split(sep).join('/')
+  if (!relativeFiles.includes(expectedContractRelative)) {
+    fail('COMPILER_OUTPUT_ESCAPE', 'copied contract absent from compiler file list')
+  }
+  if (relativeFiles.some(isStorageDeclarationRelativePath)) {
+    fail('STORAGE_SELECTED_OR_IMPORTED', surface)
+  }
+  const sortedRelativeFiles = [...relativeFiles].sort(compareUtf8)
+  return {
+    surface,
+    contractRelativePath,
+    relativeFileCount: sortedRelativeFiles.length,
+    relativeFileListSha256: sha256(canonicalJsonBytes(sortedRelativeFiles)),
+    realpathsWithinReplayRoot: true,
+    contractListed: true,
+    storageDeclarationFilesListed: false,
+  }
+}
+
+function declarationCompileArguments(configPath, typeRootsPath) {
+  return [
+    '-p',
+    configPath,
+    '--noEmit',
+    '--types',
+    'node',
+    '--typeRoots',
+    typeRootsPath,
+    '--listFiles',
+    '--pretty',
+    'false',
+  ]
+}
+
+async function runDeclarationCompile({
+  nodePath,
+  compilerSnapshot,
+  replayRoot,
+  homeRoot,
+  tempRoot,
+  surface,
+  configRelativePath,
+  contractRelativePath,
+}) {
+  const configPath = resolve(replayRoot, configRelativePath)
+  const args = [
+    compilerSnapshot.tscPath,
+    ...declarationCompileArguments(
+      configPath,
+      resolve(compilerSnapshot.compilerRoot, 'node_modules/@types'),
+    ),
+  ]
+  let result
+  let executionFailed = false
+  await assertClientCompilerOverlayUnchanged(compilerSnapshot)
+  try {
+    result = await execFileAsync(nodePath, args, {
+      cwd: replayRoot,
+      env: { HOME: homeRoot, TMPDIR: tempRoot },
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: 60_000,
+    })
+  } catch {
+    executionFailed = true
+  }
+  await assertClientCompilerOverlayUnchanged(compilerSnapshot)
+  if (executionFailed) fail('DECLARATION_COMPILE_FAILED', configRelativePath)
+  return assertCompilerOutputLocality({
+    stdout: result.stdout,
+    replayRoot,
+    surface,
+    contractRelativePath,
+  })
+}
+
+function successfulStagedVerificationIdentity(verification) {
+  try {
+    assertExactKeys(verification, [
+      'closure',
+      'realpathsWithinStagingRoot',
+      'selectedDeclarationManifests',
+      'status',
+      'storage',
+    ], 'staged verification')
+    assertExactKeys(verification.storage, ['selectedOrImported'], 'staged verification storage')
+    assertExactKeys(verification.closure, [
+      'fullDeepseekCohort',
+      'selectedDeclarationSubgraph',
+    ], 'staged verification closure')
+    assertExactKeys(verification.closure.selectedDeclarationSubgraph, [
+      'records',
+      'roots',
+    ], 'staged verification selected declarations')
+    const { fullDeepseekCohort, selectedDeclarationSubgraph } = verification.closure
+    if (verification.status !== 'PASS_STAGED_REPLAY'
+      || verification.realpathsWithinStagingRoot !== true
+      || verification.storage.selectedOrImported !== false
+      || !Array.isArray(fullDeepseekCohort)
+      || fullDeepseekCohort.length !== EXPECTED.deepseekPackageCount
+      || !Array.isArray(selectedDeclarationSubgraph.records)
+      || selectedDeclarationSubgraph.records.length !== 5
+      || !Array.isArray(selectedDeclarationSubgraph.roots)
+      || selectedDeclarationSubgraph.roots.length !== 5
+      || !Array.isArray(verification.selectedDeclarationManifests)
+      || canonicalJsonBytes(verification.selectedDeclarationManifests)
+        !== canonicalJsonBytes(selectedDeclarationSubgraph.records)) {
+      fail('STAGED_REPLAY_VERIFICATION_FAILED', 'staged verification result')
+    }
+    return {
+      status: verification.status,
+      realpathsWithinStagingRoot: true,
+      storageSelectedOrImported: false,
+      fullDeepseekCount: fullDeepseekCohort.length,
+      selectedDeclarationCount: selectedDeclarationSubgraph.records.length,
+      verifierClosureSha256: sha256(canonicalJsonBytes(verification.closure)),
+      selectedDeclarationManifestsSha256: sha256(
+        canonicalJsonBytes(verification.selectedDeclarationManifests),
+      ),
+    }
+  } catch (error) {
+    if (error?.ownedInputError === true
+      && error.code === 'STAGED_REPLAY_VERIFICATION_FAILED') throw error
+    fail('STAGED_REPLAY_VERIFICATION_FAILED', 'staged verification result')
+  }
+}
+
+async function assertBoundSourceSnapshotUnchanged(path, before, code, label) {
+  const after = await readBoundSourceFile(
+    path,
+    code,
+    4 * 1024 * 1024,
+    code,
+    label,
+  )
+  for (const field of ['sha256', 'size', 'mode', 'dev', 'ino', 'nlink']) {
+    if (after.identity[field] !== before.identity[field]) fail(code, `${label} changed`)
+  }
+  if (!after.bytes.equals(before.bytes)) fail(code, `${label} changed`)
+}
+
+async function assertVerificationSourcesUnchanged(sourceSnapshot) {
+  await Promise.all([
+    assertBoundSourceSnapshotUnchanged(
+      sourceSnapshot.acceptancePath,
+      sourceSnapshot.acceptance,
+      'VERIFIER_SOURCE_MISMATCH',
+      'acceptance source',
+    ),
+    assertBoundSourceSnapshotUnchanged(
+      sourceSnapshot.verifierPath,
+      sourceSnapshot.verifier,
+      'VERIFIER_SOURCE_MISMATCH',
+      'verifier source',
+    ),
+  ])
+}
+
+function verificationSourcePayload(files) {
+  return [
+    { path: '.', type: 'directory', mode: 0o555 },
+    { path: 'scripts', type: 'directory', mode: 0o555 },
+    ...files.map(({ name, bytes }) => ({
+      path: `scripts/${name}`,
+      type: 'file',
+      mode: 0o444,
+      size: bytes.length,
+      sha256: sha256(bytes),
+    })),
+  ].sort((left, right) => compareUtf8(left.path, right.path))
+}
+
+async function materializeReplayVerificationSources({
+  replayRoot,
+  replayBoundary,
+  sourceSnapshot,
+}) {
+  await assertVerificationSourcesUnchanged(sourceSnapshot)
+  const verificationRoot = resolve(replayRoot, '.verification')
+  const scriptsRoot = resolve(verificationRoot, 'scripts')
+  await ensureDescendantDirectoryChain(
+    replayBoundary,
+    scriptsRoot,
+    'VERIFIER_SOURCE_MISMATCH',
+    'replay verification source root',
+  )
+  const files = [
+    { name: 'accept-rc6-declaration-input.mjs', bytes: sourceSnapshot.acceptance.bytes },
+    { name: 'verify-rc6-declaration-closure.mjs', bytes: sourceSnapshot.verifier.bytes },
+  ]
+  if (REPLAY_EVIDENCE_KIND !== 'REAL_NPM_CLI') {
+    const seam = await readBoundSourceFile(
+      resolve(moduleDirectory, 'child-process-replay-seam.mjs'),
+      'VERIFIER_SOURCE_MISMATCH',
+      4 * 1024 * 1024,
+      'VERIFIER_SOURCE_MISMATCH',
+      'synthetic replay seam',
+    )
+    files.push({ name: 'child-process-replay-seam.mjs', bytes: seam.bytes })
+  }
+  for (const file of files) {
+    await writeBundleFile(resolve(scriptsRoot, file.name), file.bytes)
+  }
+  await makeTreeReadOnlyStrict(verificationRoot)
+  const expectedPayload = verificationSourcePayload(files)
+  const actualPayload = await inventoryBundlePayload(verificationRoot)
+  if (canonicalJsonBytes(actualPayload) !== canonicalJsonBytes(expectedPayload)) {
+    fail('VERIFIER_SOURCE_MISMATCH', 'replay verification source materialization')
+  }
+  return {
+    verificationRoot,
+    verifierPath: resolve(scriptsRoot, 'verify-rc6-declaration-closure.mjs'),
+    sourceSnapshot,
+    payload: expectedPayload,
+    sealedAggregateSha256: sha256(canonicalJsonBytes(expectedPayload)),
+  }
+}
+
+async function assertReplayVerificationSourcesUnchanged(snapshot) {
+  await assertVerificationSourcesUnchanged(snapshot.sourceSnapshot)
+  const actualPayload = await inventoryBundlePayload(snapshot.verificationRoot)
+  if (canonicalJsonBytes(actualPayload) !== canonicalJsonBytes(snapshot.payload)
+    || sha256(canonicalJsonBytes(actualPayload)) !== snapshot.sealedAggregateSha256) {
+    fail('VERIFIER_SOURCE_MISMATCH', 'replay verification sources changed')
+  }
+}
+
+async function cleanupOwnedDirectory({
+  parentBoundary,
+  ownedBoundary,
+  root,
+  ownerMarker,
+  quarantinePrefix,
+  ownershipCode,
+  cleanupCode,
+}) {
+  try {
+    await assertBoundDirectory(parentBoundary, ownershipCode, 'owned directory parent')
+    await assertBoundDirectory(ownedBoundary, ownershipCode, 'owned directory')
+    if (ownedBoundary.canonicalPath
+      !== resolve(parentBoundary.canonicalPath, basename(root))) {
+      fail(ownershipCode, 'owned directory relationship')
+    }
+    const owner = await readBoundSourceFile(
+      resolve(root, '.owner'),
+      ownershipCode,
+      128,
+      ownershipCode,
+      'owned directory marker',
+    )
+    if (owner.bytes.toString('utf8') !== ownerMarker) {
+      fail(ownershipCode, 'owned directory marker')
+    }
+    await assertBoundDirectory(parentBoundary, ownershipCode, 'owned directory parent')
+    await assertBoundDirectory(ownedBoundary, ownershipCode, 'owned directory')
+    const quarantinePath = resolve(
+      parentBoundary.path,
+      `${quarantinePrefix}${ownerMarker}-${randomBytes(8).toString('hex')}`,
+    )
+    try {
+      await rename(root, quarantinePath)
+    } catch {
+      fail(cleanupCode, 'quarantine rename')
+    }
+    ownedBoundary.path = quarantinePath
+    ownedBoundary.canonicalPath = resolve(parentBoundary.canonicalPath, basename(quarantinePath))
+    await assertBoundDirectory(ownedBoundary, ownershipCode, 'quarantined directory')
+    const quarantinedOwner = await readBoundSourceFile(
+      resolve(quarantinePath, '.owner'),
+      ownershipCode,
+      128,
+      ownershipCode,
+      'quarantined directory marker',
+    )
+    if (quarantinedOwner.bytes.toString('utf8') !== ownerMarker) {
+      fail(ownershipCode, 'quarantined directory marker')
+    }
+    await assertBoundDirectory(parentBoundary, ownershipCode, 'owned directory parent')
+    await assertBoundDirectory(ownedBoundary, ownershipCode, 'quarantined directory')
+    // Keep the isolated quarantine instead of recursively chmod/rm'ing by path.
+    // Node does not expose the dirfd-relative removal primitives needed to make
+    // a recursive deletion safe against same-user path replacement or hardlinks.
+    return { quarantinePath }
+  } catch (error) {
+    if (error?.ownedInputError === true && error.code === ownershipCode) throw error
+    if (error?.ownedInputError === true && error.code === cleanupCode) throw error
+    fail(ownershipCode, 'owned directory')
+  } finally {
+    await ownedBoundary.handle.close().catch(() => {})
+  }
+}
+
+function proposalBundlePaths(workspaceRoot) {
+  const pointerPath = resolve(workspaceRoot, V2_PROPOSAL_POINTER_RELATIVE)
+  const pointerParent = dirname(pointerPath)
+  const bundleParent = resolve(workspaceRoot, V2_PROPOSAL_BUNDLE_PARENT_RELATIVE)
+  if (relative(pointerParent, bundleParent) !== 'rc6-declaration-v2-proposal-bundles') {
+    fail('BUNDLE_PATH_CONTAINMENT', 'proposal bundle parent')
+  }
+  return { pointerPath, pointerParent, bundleParent }
+}
+
+async function assertProposalPublicationBoundaries({
+  workspaceBoundary,
+  pointerParentBoundary,
+  bundleParentBoundary,
+  bundleBoundary,
+}) {
+  await assertBoundDirectory(workspaceBoundary, 'BUNDLE_PATH_CONTAINMENT', 'workspace root')
+  await assertBoundDirectory(
+    pointerParentBoundary,
+    'BUNDLE_PATH_CONTAINMENT',
+    'proposal pointer parent',
+  )
+  await assertBoundDirectory(
+    bundleParentBoundary,
+    'BUNDLE_PATH_CONTAINMENT',
+    'proposal bundle parent',
+  )
+  if (pointerParentBoundary.canonicalPath
+      !== resolve(workspaceBoundary.canonicalPath, '.tmp/dsh-pm-workbench')
+    || bundleParentBoundary.canonicalPath
+      !== resolve(pointerParentBoundary.canonicalPath, 'rc6-declaration-v2-proposal-bundles')) {
+    fail('BUNDLE_PATH_CONTAINMENT', 'proposal publication parent relationship')
+  }
+  if (bundleBoundary) {
+    await assertBoundDirectory(bundleBoundary, 'BUNDLE_PATH_CONTAINMENT', 'proposal bundle')
+    const segment = basename(bundleBoundary.path)
+    if (!/^bundle-[a-f0-9]{32}$/.test(segment)
+      || bundleBoundary.canonicalPath
+        !== resolve(bundleParentBoundary.canonicalPath, segment)) {
+      fail('BUNDLE_PATH_CONTAINMENT', 'proposal bundle relationship')
+    }
+  }
+}
+
+function assertProposalPointerShape(pointer) {
+  assertExactKeys(pointer, [
+    'bundleRelativePath',
+    'receiptRelativePath',
+    'receiptSha256',
+    'schemaVersion',
+  ], 'proposal pointer')
+  if (pointer.schemaVersion !== '2'
+    || typeof pointer.bundleRelativePath !== 'string'
+    || !/^rc6-declaration-v2-proposal-bundles\/bundle-[a-f0-9]{32}$/.test(pointer.bundleRelativePath)
+    || pointer.receiptRelativePath !== `${pointer.bundleRelativePath}/receipt.json`
+    || typeof pointer.receiptSha256 !== 'string'
+    || !/^[a-f0-9]{64}$/.test(pointer.receiptSha256)) {
+    fail('PROPOSAL_CONFLICT', 'proposal pointer')
+  }
+}
+
+async function proposalPointerExists(path) {
+  try {
+    await lstat(path)
+    return true
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false
+    fail('PROPOSAL_CONFLICT', 'proposal pointer access')
+  }
+}
+
+async function readStableProposalPointer(pointerPath) {
+  let snapshot
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      snapshot = await readBoundSourceFile(
+        pointerPath,
+        'PROPOSAL_CONFLICT',
+        V2_PROPOSAL_POINTER_MAX_BYTES,
+        'PROPOSAL_CONFLICT',
+        'proposal pointer',
+        {
+          symlinkCode: 'PROPOSAL_CONFLICT',
+          specialCode: 'PROPOSAL_CONFLICT',
+          hardlinkCode: 'PROPOSAL_POINTER_LINK_STATE',
+          writableCode: 'PROPOSAL_CONFLICT',
+          allowedLinkCounts: [1, 2],
+        },
+      )
+      break
+    } catch (error) {
+      if (error?.code !== 'SOURCE_FILE_IDENTITY_CHANGED' || attempt === 2) throw error
+    }
+  }
+  if (!isOwnerReadableReadOnlyMode(snapshot.identity.mode)) {
+    fail('PROPOSAL_POINTER_LINK_STATE', 'proposal pointer mode')
+  }
+  let value
+  try {
+    value = JSON.parse(snapshot.bytes.toString('utf8'))
+  } catch {
+    fail('PROPOSAL_CONFLICT', 'proposal pointer json')
+  }
+  if (!isObject(value) || !snapshot.bytes.equals(canonicalDocumentBytes(value))) {
+    fail('PROPOSAL_CONFLICT', 'proposal pointer canonical')
+  }
+  assertProposalPointerShape(value)
+  return { ...snapshot, value }
+}
+
+async function writeReadOnlyProposalPointerTemp(pointerParentBoundary, pointerBytes) {
+  if (pointerBytes.length > V2_PROPOSAL_POINTER_MAX_BYTES) {
+    fail('PROPOSAL_POINTER_TEMP_WRITE_FAILED', 'proposal pointer size')
+  }
+  await assertBoundDirectory(pointerParentBoundary, 'BUNDLE_PATH_CONTAINMENT', 'proposal pointer parent')
+  const path = resolve(
+    pointerParentBoundary.path,
+    `.rc6-declaration-v2-proposal-${randomBytes(16).toString('hex')}.tmp`,
+  )
+  let handle
+  try {
+    handle = await open(
+      path,
+      fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      0o444,
+    )
+    const beforeWrite = await handle.stat()
+    if (!beforeWrite.isFile() || beforeWrite.nlink !== 1
+      || beforeWrite.size !== 0 || !isOwnerReadableReadOnlyMode(beforeWrite.mode)) {
+      fail('PROPOSAL_POINTER_TEMP_WRITE_FAILED', 'proposal pointer temporary identity')
+    }
+    await handle.writeFile(pointerBytes)
+    await handle.sync()
+    const afterWrite = await handle.stat()
+    if (!afterWrite.isFile() || afterWrite.dev !== beforeWrite.dev
+      || afterWrite.ino !== beforeWrite.ino || afterWrite.nlink !== 1
+      || afterWrite.size !== pointerBytes.length || !isOwnerReadableReadOnlyMode(afterWrite.mode)) {
+      fail('PROPOSAL_POINTER_TEMP_WRITE_FAILED', 'proposal pointer temporary identity')
+    }
+  } catch {
+    fail('PROPOSAL_POINTER_TEMP_WRITE_FAILED', 'proposal pointer temporary')
+  } finally {
+    await handle?.close().catch(() => {})
+  }
+  const verify = await readBoundSourceFile(
+    path,
+    'PROPOSAL_POINTER_TEMP_WRITE_FAILED',
+    V2_PROPOSAL_POINTER_MAX_BYTES,
+    'PROPOSAL_POINTER_TEMP_WRITE_FAILED',
+    'proposal pointer temporary',
+    { writableCode: 'PROPOSAL_POINTER_TEMP_WRITE_FAILED' },
+  )
+  if (!verify.bytes.equals(pointerBytes)) {
+    fail('PROPOSAL_POINTER_TEMP_WRITE_FAILED', 'proposal pointer temporary bytes')
+  }
+  return { path, identity: verify.identity }
+}
+
+async function convergeProposalPointerLinkCount(pointerParentBoundary, pointerPath, stable) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await assertBoundDirectory(
+      pointerParentBoundary,
+      'BUNDLE_PATH_CONTAINMENT',
+      'proposal pointer parent',
+    )
+    const current = await readStableProposalPointer(pointerPath)
+    if (current.identity.dev !== stable.identity.dev
+      || current.identity.ino !== stable.identity.ino
+      || !current.bytes.equals(stable.bytes)) {
+      fail('PROPOSAL_POINTER_LINK_STATE', 'proposal pointer identity')
+    }
+    if (current.identity.nlink === 1) {
+      const confirm = await readStableProposalPointer(pointerPath)
+      await assertBoundDirectory(
+        pointerParentBoundary,
+        'BUNDLE_PATH_CONTAINMENT',
+        'proposal pointer parent',
+      )
+      if (confirm.identity.dev === current.identity.dev
+        && confirm.identity.ino === current.identity.ino
+        && confirm.identity.nlink === 1
+        && confirm.bytes.equals(current.bytes)) return confirm
+      continue
+    }
+    if (current.identity.nlink !== 2) {
+      fail('PROPOSAL_POINTER_LINK_STATE', 'proposal pointer link count')
+    }
+    const matchingAliases = []
+    for (const name of await readdirWithStableMissingCode(
+      pointerParentBoundary.path,
+      'PROPOSAL_POINTER_LINK_STATE',
+    )) {
+      if (!/^\.rc6-declaration-v2-proposal-[a-f0-9]{32}\.tmp$/.test(name)) continue
+      const path = resolve(pointerParentBoundary.path, name)
+      let entry
+      try {
+        entry = await lstat(path)
+      } catch (error) {
+        if (error?.code === 'ENOENT') continue
+        fail('PROPOSAL_POINTER_LINK_STATE', 'proposal pointer alias')
+      }
+      if (entry.dev === current.identity.dev && entry.ino === current.identity.ino) {
+        if (!entry.isFile() || entry.isSymbolicLink() || (entry.mode & 0o222) !== 0
+          || ![1, 2].includes(entry.nlink)) {
+          fail('PROPOSAL_POINTER_LINK_STATE', 'proposal pointer alias identity')
+        }
+        matchingAliases.push({ path, identity: current.identity })
+      }
+    }
+    if (matchingAliases.length === 1) {
+      await unlinkOwnedPointerTemporary(
+        matchingAliases[0],
+        'PROPOSAL_RESIDUE_CLEANUP_FAILED',
+      )
+    } else if (matchingAliases.length > 1) {
+      fail('PROPOSAL_POINTER_LINK_STATE', 'proposal pointer alias count')
+    }
+  }
+  const converged = await readStableProposalPointer(pointerPath)
+  await assertBoundDirectory(
+    pointerParentBoundary,
+    'BUNDLE_PATH_CONTAINMENT',
+    'proposal pointer parent',
+  )
+  if (converged.identity.dev !== stable.identity.dev
+    || converged.identity.ino !== stable.identity.ino
+    || converged.identity.nlink !== 1
+    || !converged.bytes.equals(stable.bytes)) {
+    fail('PROPOSAL_RESIDUE_CLEANUP_FAILED', 'proposal pointer convergence')
+  }
+  return converged
+}
+
+function proposalPayload(inputBytes, closureBytes) {
+  return [
+    { path: '.', type: 'directory', mode: 0o555 },
+    {
+      path: V2_PROPOSAL_INPUT_NAME,
+      type: 'file',
+      mode: 0o444,
+      size: inputBytes.length,
+      sha256: sha256(inputBytes),
+    },
+    {
+      path: V2_PROPOSAL_CLOSURE_NAME,
+      type: 'file',
+      mode: 0o444,
+      size: closureBytes.length,
+      sha256: sha256(closureBytes),
+    },
+  ].sort((left, right) => compareUtf8(left.path, right.path))
+}
+
+const PROPOSAL_EVIDENCE_KEYS = Object.freeze([
+  'acceptanceSourceSha256',
+  'verifierSourceSha256',
+  'compilerSourceAggregateSha256',
+  'compilerSealedAggregateSha256',
+  'verifierResultSha256',
+  'compileResults',
+  'compilerResultSha256',
+])
+
+const COMPILE_RESULT_KEYS = Object.freeze([
+  'surface',
+  'contractRelativePath',
+  'relativeFileCount',
+  'relativeFileListSha256',
+  'realpathsWithinReplayRoot',
+  'contractListed',
+  'storageDeclarationFilesListed',
+])
+
+const EXPECTED_COMPILE_CONTRACTS = Object.freeze({
+  host: 'tools/harness-rc6-declarations/contracts/harness-host-rc6-surface.ts',
+  client: 'tools/harness-rc6-declarations/contracts/harness-client-rc6-surface.ts',
+})
+
+function assertProposalObjectKeys(value, expectedKeys, label) {
+  if (!isObject(value)) fail('PROPOSAL_CONFLICT', label)
+  const actualKeys = Object.keys(value).sort(compareUtf8)
+  const sortedExpectedKeys = [...expectedKeys].sort(compareUtf8)
+  if (actualKeys.length !== sortedExpectedKeys.length
+    || actualKeys.some((key, index) => key !== sortedExpectedKeys[index])) {
+    fail('PROPOSAL_CONFLICT', `${label} keys`)
+  }
+}
+
+function assertCompileResults(compileResults) {
+  assertProposalObjectKeys(compileResults, ['host', 'client'], 'compile results')
+  for (const surface of ['host', 'client']) {
+    const result = compileResults[surface]
+    assertProposalObjectKeys(result, COMPILE_RESULT_KEYS, `${surface} compile result`)
+    if (result.surface !== surface
+      || result.contractRelativePath !== EXPECTED_COMPILE_CONTRACTS[surface]
+      || !Number.isSafeInteger(result.relativeFileCount)
+      || result.relativeFileCount < 1
+      || typeof result.relativeFileListSha256 !== 'string'
+      || !/^[a-f0-9]{64}$/.test(result.relativeFileListSha256)
+      || result.realpathsWithinReplayRoot !== true
+      || result.contractListed !== true
+      || result.storageDeclarationFilesListed !== false) {
+      fail('PROPOSAL_CONFLICT', `${surface} compile result identity`)
+    }
+  }
+}
+
+function assertProposalEvidence(proposalEvidence) {
+  assertProposalObjectKeys(proposalEvidence, PROPOSAL_EVIDENCE_KEYS, 'proposal evidence')
+  for (const key of [
+    'acceptanceSourceSha256',
+    'verifierSourceSha256',
+    'compilerSourceAggregateSha256',
+    'compilerSealedAggregateSha256',
+    'verifierResultSha256',
+    'compilerResultSha256',
+  ]) {
+    if (typeof proposalEvidence[key] !== 'string'
+      || !/^[a-f0-9]{64}$/.test(proposalEvidence[key])) {
+      fail('PROPOSAL_CONFLICT', `proposal evidence ${key}`)
+    }
+  }
+  assertCompileResults(proposalEvidence.compileResults)
+  if (proposalEvidence.compilerResultSha256
+      !== sha256(canonicalJsonBytes(proposalEvidence.compileResults))) {
+    fail('PROPOSAL_CONFLICT', 'proposal compiler result identity')
+  }
+}
+
+function verifierResultIdentityFromProposalClosure(closure) {
+  if (!isObject(closure)
+    || !Array.isArray(closure.fullDeepseekCohort)
+    || closure.fullDeepseekCohort.length !== EXPECTED.deepseekPackageCount
+    || !isObject(closure.selectedDeclarationSubgraph)
+    || !Array.isArray(closure.selectedDeclarationSubgraph.records)
+    || closure.selectedDeclarationSubgraph.records.length !== 5
+    || !Array.isArray(closure.selectedDeclarationSubgraph.roots)
+    || closure.selectedDeclarationSubgraph.roots.length !== 5) {
+    fail('PROPOSAL_CONFLICT', 'proposal verifier result identity')
+  }
+  const verifierClosure = {
+    fullDeepseekCohort: closure.fullDeepseekCohort,
+    selectedDeclarationSubgraph: closure.selectedDeclarationSubgraph,
+  }
+  return {
+    status: 'PASS_STAGED_REPLAY',
+    realpathsWithinStagingRoot: true,
+    storageSelectedOrImported: false,
+    fullDeepseekCount: closure.fullDeepseekCohort.length,
+    selectedDeclarationCount: closure.selectedDeclarationSubgraph.records.length,
+    verifierClosureSha256: sha256(canonicalJsonBytes(verifierClosure)),
+    selectedDeclarationManifestsSha256: sha256(
+      canonicalJsonBytes(closure.selectedDeclarationSubgraph.records),
+    ),
+  }
+}
+
+function expectedProposalReceipt({
+  ownerMarker,
+  inputBytes,
+  closureBytes,
+  sourcePublication,
+  runtime,
+  proposalEvidence,
+}) {
+  assertProposalEvidence(proposalEvidence)
+  const payload = proposalPayload(inputBytes, closureBytes)
+  const npmPolicy = {
+    cliBasename: 'npm-cli.js',
+    command: 'ci',
+    args: [
+      '--ignore-scripts', '--offline', '--audit=false', '--fund=false',
+      '--update-notifier=false', '--cache=<verified-bundle>', '--prefix=<owned-replay>',
+      '--logs-dir=<owned-logs>', '--userconfig=<owned-npmrc>', '--globalconfig=<owned-npmrc>',
+    ],
+    envKeys: ['HOME', 'TMPDIR'],
+  }
+  const compilePolicy = {
+    compiler: 'typescript/bin/tsc',
+    invocations: [
+      {
+        surface: 'host',
+        configRelativePath: 'tsconfig.surface.host.json',
+        args: declarationCompileArguments('<host-config>', '<sealed-compiler-types>'),
+      },
+      {
+        surface: 'client',
+        configRelativePath: CLIENT_COMPILER_OVERLAY_RELATIVE,
+        args: declarationCompileArguments('<client-overlay>', '<sealed-compiler-types>'),
+      },
+    ],
+    clientOverlay: {
+      relativePath: CLIENT_COMPILER_OVERLAY_RELATIVE,
+      sha256: EXPECTED_CLIENT_COMPILER_OVERLAY_SHA256,
+      extends: CLIENT_COMPILER_OVERLAY.extends,
+      compilerOptions: CLIENT_COMPILER_OVERLAY.compilerOptions,
+    },
+    envKeys: ['HOME', 'TMPDIR'],
+  }
+  return {
+    schemaVersion: '1',
+    result: 'PASS_RC6_DECLARATION_V2_PROPOSAL',
+    ownerMarker,
+    inputManifestSha256: sha256(inputBytes),
+    closureSha256: sha256(closureBytes),
+    selectedSourcePointerSha256: sha256(sourcePublication.pointerBytes),
+    selectedSourceReceiptSha256: sourcePublication.pointer.receiptSha256,
+    selectedSourcePayloadIdentitySha256: sourcePublication.receipt.payloadIdentitySha256,
+    npmPolicySha256: sha256(canonicalJsonBytes(npmPolicy)),
+    compilePolicySha256: sha256(canonicalJsonBytes(compilePolicy)),
+    acceptanceSourceSha256: proposalEvidence.acceptanceSourceSha256,
+    verifierSourceSha256: proposalEvidence.verifierSourceSha256,
+    compilerSourceAggregateSha256: proposalEvidence.compilerSourceAggregateSha256,
+    compilerSealedAggregateSha256: proposalEvidence.compilerSealedAggregateSha256,
+    verifierResultSha256: proposalEvidence.verifierResultSha256,
+    compileResults: proposalEvidence.compileResults,
+    compilerResultSha256: proposalEvidence.compilerResultSha256,
+    runtime,
+    payloadIdentitySha256: sha256(canonicalJsonBytes(payload)),
+    payload,
+  }
+}
+
+async function verifyProposalBundle({
+  paths,
+  bundleParentBoundary,
+  pointer,
+  inputManifest,
+  closure,
+  sourcePublication,
+  runtime,
+  proposalEvidence,
+}) {
+  assertProposalPointerShape(pointer)
+  assertProposalEvidence(proposalEvidence)
+  if (proposalEvidence.verifierResultSha256
+      !== sha256(canonicalJsonBytes(verifierResultIdentityFromProposalClosure(closure)))) {
+    fail('PROPOSAL_CONFLICT', 'proposal verifier result identity')
+  }
+  await assertBoundDirectory(
+    bundleParentBoundary,
+    'BUNDLE_PATH_CONTAINMENT',
+    'proposal bundle parent',
+  )
+  const bundleRoot = resolve(paths.pointerParent, pointer.bundleRelativePath)
+  const segment = relative(paths.bundleParent, bundleRoot)
+  if (!/^bundle-[a-f0-9]{32}$/.test(segment) || segment.includes(sep)) {
+    fail('PROPOSAL_CONFLICT', 'proposal bundle path')
+  }
+  const bundleBoundary = await openBoundDirectory(
+    bundleRoot,
+    'PROPOSAL_CONFLICT',
+    'proposal bundle',
+  )
+  try {
+    if (bundleBoundary.canonicalPath !== resolve(bundleParentBoundary.canonicalPath, segment)) {
+      fail('PROPOSAL_CONFLICT', 'proposal bundle relationship')
+    }
+    const readProposalFile = async (name) => (await readBoundSourceFile(
+      resolve(bundleRoot, name),
+      'PROPOSAL_CONFLICT',
+      16 * 1024 * 1024,
+      'PROPOSAL_CONFLICT',
+      'proposal bundle file',
+      {
+        symlinkCode: 'PROPOSAL_CONFLICT',
+        specialCode: 'PROPOSAL_CONFLICT',
+        hardlinkCode: 'PROPOSAL_CONFLICT',
+        writableCode: 'PROPOSAL_CONFLICT',
+      },
+    )).bytes
+    const [ownerBytes, inputBytes, closureBytes, receiptBytes] = await Promise.all([
+      readProposalFile('.owner'),
+      readProposalFile(V2_PROPOSAL_INPUT_NAME),
+      readProposalFile(V2_PROPOSAL_CLOSURE_NAME),
+      readProposalFile('receipt.json'),
+    ])
+    if (!inputBytes.equals(canonicalDocumentBytes(inputManifest))
+      || !closureBytes.equals(canonicalDocumentBytes(closure))
+      || sha256(receiptBytes) !== pointer.receiptSha256) {
+      fail('PROPOSAL_CONFLICT', 'proposal bytes')
+    }
+    let receipt
+    try {
+      receipt = JSON.parse(receiptBytes.toString('utf8'))
+    } catch {
+      fail('PROPOSAL_CONFLICT', 'proposal receipt json')
+    }
+    if (!isObject(receipt) || !receiptBytes.equals(canonicalDocumentBytes(receipt))) {
+      fail('PROPOSAL_CONFLICT', 'proposal receipt canonical')
+    }
+    assertExactKeys(receipt, [
+      'acceptanceSourceSha256',
+      'closureSha256',
+      'compilePolicySha256',
+      'compileResults',
+      'compilerSealedAggregateSha256',
+      'compilerResultSha256',
+      'compilerSourceAggregateSha256',
+      'inputManifestSha256',
+      'npmPolicySha256',
+      'ownerMarker',
+      'payload',
+      'payloadIdentitySha256',
+      'result',
+      'runtime',
+      'schemaVersion',
+      'selectedSourcePayloadIdentitySha256',
+      'selectedSourcePointerSha256',
+      'selectedSourceReceiptSha256',
+      'verifierResultSha256',
+      'verifierSourceSha256',
+    ], 'proposal receipt')
+    assertProposalEvidence(Object.fromEntries(
+      PROPOSAL_EVIDENCE_KEYS.map((key) => [key, receipt[key]]),
+    ))
+    if (typeof receipt.ownerMarker !== 'string'
+      || !/^[a-f0-9]{32}$/.test(receipt.ownerMarker)
+      || ownerBytes.toString('utf8') !== receipt.ownerMarker) {
+      fail('PROPOSAL_CONFLICT', 'proposal owner')
+    }
+    const expectedReceipt = expectedProposalReceipt({
+      ownerMarker: receipt.ownerMarker,
+      inputBytes,
+      closureBytes,
+      sourcePublication,
+      runtime,
+      proposalEvidence,
+    })
+    if (canonicalJsonBytes(receipt) !== canonicalJsonBytes(expectedReceipt)) {
+      fail('PROPOSAL_CONFLICT', 'proposal receipt identity')
+    }
+    const inventory = (await inventoryBundlePayload(bundleRoot))
+      .filter((record) => record.path !== '.owner' && record.path !== 'receipt.json')
+    if (canonicalJsonBytes(inventory) !== canonicalJsonBytes(proposalPayload(inputBytes, closureBytes))) {
+      fail('PROPOSAL_CONFLICT', 'proposal payload')
+    }
+    await assertBoundDirectory(bundleBoundary, 'PROPOSAL_CONFLICT', 'proposal bundle')
+    await assertBoundDirectory(
+      bundleParentBoundary,
+      'BUNDLE_PATH_CONTAINMENT',
+      'proposal bundle parent',
+    )
+    return { bundleRoot, bundleBoundary, receipt, inputBytes, closureBytes }
+  } catch (error) {
+    await bundleBoundary.handle.close().catch(() => {})
+    throw error
+  }
+}
+
+async function publishV2ProposalBundle({
+  workspaceRoot,
+  workspaceBoundary,
+  inputManifest,
+  closure,
+  sourcePublication,
+  runtime,
+  proposalEvidence,
+  assertPreCommit,
+}) {
+  if (typeof assertPreCommit !== 'function') {
+    fail('PROPOSAL_COMMIT_UNCERTAIN', 'proposal precommit verifier')
+  }
+  const paths = proposalBundlePaths(workspaceRoot)
+  await assertDescendantDirectoryChain(workspaceBoundary, paths.pointerParent, {
+    code: 'BUNDLE_PATH_CONTAINMENT',
+    missingCode: 'BUNDLE_PATH_CONTAINMENT',
+    logicalLabel: 'proposal pointer parent',
+    includeLeafDirectory: true,
+  })
+  const pointerParentBoundary = await openBoundDirectory(
+    paths.pointerParent,
+    'BUNDLE_PATH_CONTAINMENT',
+    'proposal pointer parent',
+  )
+  let bundleParentBoundary
+  let bundleBoundary
+  let bundleRoot
+  let pointerTemporary
+  let ownerMarker
+  let publicationState = 'INITIAL'
+  let linkAttempted = false
+  let publishedOwnWithIndependentPointerInode = false
+  const inputBytes = canonicalDocumentBytes(inputManifest)
+  const closureBytes = canonicalDocumentBytes(closure)
+  try {
+    await ensureDescendantDirectoryChain(
+      pointerParentBoundary,
+      paths.bundleParent,
+      'BUNDLE_PATH_CONTAINMENT',
+      'proposal bundle parent',
+    )
+    bundleParentBoundary = await openBoundDirectory(
+      paths.bundleParent,
+      'BUNDLE_PATH_CONTAINMENT',
+      'proposal bundle parent',
+    )
+    await assertProposalPublicationBoundaries({
+      workspaceBoundary,
+      pointerParentBoundary,
+      bundleParentBoundary,
+    })
+    if (await proposalPointerExists(paths.pointerPath)) {
+      const stable = await readStableProposalPointer(paths.pointerPath)
+      const verified = await verifyProposalBundle({
+        paths,
+        bundleParentBoundary,
+        pointer: stable.value,
+        inputManifest,
+        closure,
+        sourcePublication,
+        runtime,
+        proposalEvidence,
+      })
+      await verified.bundleBoundary.handle.close()
+      await assertPreCommit()
+      await assertProposalPublicationBoundaries({
+        workspaceBoundary,
+        pointerParentBoundary,
+        bundleParentBoundary,
+      })
+      const converged = await convergeProposalPointerLinkCount(
+        pointerParentBoundary,
+        paths.pointerPath,
+        stable,
+      )
+      await assertProposalPublicationBoundaries({
+        workspaceBoundary,
+        pointerParentBoundary,
+        bundleParentBoundary,
+      })
+      const verifiedConverged = await verifyProposalBundle({
+        paths,
+        bundleParentBoundary,
+        pointer: converged.value,
+        inputManifest,
+        closure,
+        sourcePublication,
+        runtime,
+        proposalEvidence,
+      })
+      await verifiedConverged.bundleBoundary.handle.close()
+      const finalStable = await readStableProposalPointer(paths.pointerPath)
+      if (finalStable.identity.dev !== converged.identity.dev
+        || finalStable.identity.ino !== converged.identity.ino
+        || finalStable.identity.nlink !== 1
+        || !finalStable.bytes.equals(converged.bytes)) {
+        fail('PROPOSAL_COMMIT_UNCERTAIN', 'adopted proposal pointer changed')
+      }
+      publicationState = 'COMPLETE'
+      return { pointer: finalStable.value, publicationStatus: 'ADOPTED_EXISTING' }
+    }
+    await assertProposalPublicationBoundaries({
+      workspaceBoundary,
+      pointerParentBoundary,
+      bundleParentBoundary,
+    })
+    bundleRoot = await createExclusiveBundleDirectory(paths.bundleParent)
+    bundleBoundary = await openBoundDirectory(bundleRoot, 'BUNDLE_PATH_CONTAINMENT', 'proposal bundle')
+    if (bundleBoundary.canonicalPath
+      !== resolve(bundleParentBoundary.canonicalPath, basename(bundleRoot))) {
+      fail('BUNDLE_PATH_CONTAINMENT', 'proposal bundle relationship')
+    }
+    await assertProposalPublicationBoundaries({
+      workspaceBoundary,
+      pointerParentBoundary,
+      bundleParentBoundary,
+      bundleBoundary,
+    })
+    publicationState = 'OWNED_BUILDING'
+    ownerMarker = randomBytes(16).toString('hex')
+    await writeBundleFile(resolve(bundleRoot, '.owner'), Buffer.from(ownerMarker, 'utf8'))
+    await settleOwnedMutations([
+      writeBundleFile(resolve(bundleRoot, V2_PROPOSAL_INPUT_NAME), inputBytes),
+      writeBundleFile(resolve(bundleRoot, V2_PROPOSAL_CLOSURE_NAME), closureBytes),
+    ])
+    await assertProposalPublicationBoundaries({
+      workspaceBoundary,
+      pointerParentBoundary,
+      bundleParentBoundary,
+      bundleBoundary,
+    })
+    const receipt = expectedProposalReceipt({
+      ownerMarker,
+      inputBytes,
+      closureBytes,
+      sourcePublication,
+      runtime,
+      proposalEvidence,
+    })
+    const receiptBytes = canonicalDocumentBytes(receipt)
+    await writeBundleFile(resolve(bundleRoot, 'receipt.json'), receiptBytes)
+    await makeTreeReadOnlyStrict(bundleRoot)
+    await assertProposalPublicationBoundaries({
+      workspaceBoundary,
+      pointerParentBoundary,
+      bundleParentBoundary,
+      bundleBoundary,
+    })
+    publicationState = 'OWNED_SEALED'
+    const segment = basename(bundleRoot)
+    const pointer = {
+      bundleRelativePath: `rc6-declaration-v2-proposal-bundles/${segment}`,
+      receiptRelativePath: `rc6-declaration-v2-proposal-bundles/${segment}/receipt.json`,
+      receiptSha256: sha256(receiptBytes),
+      schemaVersion: '2',
+    }
+    const pointerBytes = canonicalDocumentBytes(pointer)
+    const verifiedOwn = await verifyProposalBundle({
+      paths,
+      bundleParentBoundary,
+      pointer,
+      inputManifest,
+      closure,
+      sourcePublication,
+      runtime,
+      proposalEvidence,
+    })
+    await verifiedOwn.bundleBoundary.handle.close()
+    await assertProposalPublicationBoundaries({
+      workspaceBoundary,
+      pointerParentBoundary,
+      bundleParentBoundary,
+      bundleBoundary,
+    })
+    pointerTemporary = await writeReadOnlyProposalPointerTemp(pointerParentBoundary, pointerBytes)
+    publicationState = 'POINTER_TEMP_READY'
+    await assertProposalPublicationBoundaries({
+      workspaceBoundary,
+      pointerParentBoundary,
+      bundleParentBoundary,
+      bundleBoundary,
+    })
+    await assertPreCommit()
+    await assertProposalPublicationBoundaries({
+      workspaceBoundary,
+      pointerParentBoundary,
+      bundleParentBoundary,
+      bundleBoundary,
+    })
+    let adoptedExisting
+    let linkError
+    try {
+      linkAttempted = true
+      publicationState = 'PUBLICATION_UNKNOWN'
+      await link(pointerTemporary.path, paths.pointerPath)
+      publicationState = 'PUBLISHED_OWN'
+    } catch (error) {
+      linkError = error
+    }
+    await assertProposalPublicationBoundaries({
+      workspaceBoundary,
+      pointerParentBoundary,
+      bundleParentBoundary,
+      bundleBoundary,
+    })
+    if (linkError) {
+      if (linkError?.code === 'EEXIST') {
+        const existing = await readStableProposalPointer(paths.pointerPath)
+        if (existing.bytes.equals(pointerBytes)) {
+          publicationState = 'PUBLISHED_OWN'
+          publishedOwnWithIndependentPointerInode = existing.identity.dev
+              !== pointerTemporary.identity.dev
+            || existing.identity.ino !== pointerTemporary.identity.ino
+        } else {
+          publicationState = 'LINK_DID_NOT_PUBLISH'
+          let verifiedExisting
+          try {
+            verifiedExisting = await verifyProposalBundle({
+              paths,
+              bundleParentBoundary,
+              pointer: existing.value,
+              inputManifest,
+              closure,
+              sourcePublication,
+              runtime,
+              proposalEvidence,
+            })
+          } catch {
+            fail('PROPOSAL_CONFLICT', 'proposal pointer exists')
+          }
+          await verifiedExisting.bundleBoundary.handle.close()
+          const converged = await convergeProposalPointerLinkCount(
+            pointerParentBoundary,
+            paths.pointerPath,
+            existing,
+          )
+          adoptedExisting = converged
+        }
+      } else {
+        let stableAfterError
+        try {
+          if (await proposalPointerExists(paths.pointerPath)) {
+            stableAfterError = await readStableProposalPointer(paths.pointerPath)
+          }
+        } catch {
+          publicationState = 'PUBLICATION_UNKNOWN'
+          fail('PROPOSAL_COMMIT_UNCERTAIN', 'proposal pointer probe')
+        }
+        if (!stableAfterError) {
+          const temporaryAfterError = await readBoundSourceFile(
+            pointerTemporary.path,
+            'PROPOSAL_COMMIT_UNCERTAIN',
+            V2_PROPOSAL_POINTER_MAX_BYTES,
+            'PROPOSAL_COMMIT_UNCERTAIN',
+            'proposal pointer temporary probe',
+            { allowedLinkCounts: [1, 2] },
+          )
+          if (temporaryAfterError.identity.dev === pointerTemporary.identity.dev
+            && temporaryAfterError.identity.ino === pointerTemporary.identity.ino
+            && temporaryAfterError.identity.nlink === 1
+            && temporaryAfterError.bytes.equals(pointerBytes)) {
+            publicationState = 'LINK_DID_NOT_PUBLISH'
+            fail('PROPOSAL_COMMIT_FAILED', 'proposal pointer link')
+          }
+          publicationState = 'PUBLICATION_UNKNOWN'
+          fail('PROPOSAL_COMMIT_UNCERTAIN', 'proposal pointer state')
+        }
+        if (stableAfterError.bytes.equals(pointerBytes)) {
+          publicationState = 'PUBLISHED_OWN'
+          publishedOwnWithIndependentPointerInode = stableAfterError.identity.dev
+              !== pointerTemporary.identity.dev
+            || stableAfterError.identity.ino !== pointerTemporary.identity.ino
+        } else {
+          publicationState = 'LINK_DID_NOT_PUBLISH'
+          let verifiedExisting
+          try {
+            verifiedExisting = await verifyProposalBundle({
+              paths,
+              bundleParentBoundary,
+              pointer: stableAfterError.value,
+              inputManifest,
+              closure,
+              sourcePublication,
+              runtime,
+              proposalEvidence,
+            })
+          } catch {
+            publicationState = 'PUBLICATION_UNKNOWN'
+            fail('PROPOSAL_COMMIT_UNCERTAIN', 'unexpected proposal pointer')
+          }
+          await verifiedExisting.bundleBoundary.handle.close()
+          adoptedExisting = await convergeProposalPointerLinkCount(
+            pointerParentBoundary,
+            paths.pointerPath,
+            stableAfterError,
+          )
+        }
+      }
+    }
+    if (adoptedExisting) {
+      publicationState = 'ADOPTED_EXISTING'
+      await assertProposalPublicationBoundaries({
+        workspaceBoundary,
+        pointerParentBoundary,
+        bundleParentBoundary,
+        bundleBoundary,
+      })
+      await unlinkOwnedPointerTemporary(
+        pointerTemporary,
+        'PROPOSAL_RESIDUE_CLEANUP_FAILED',
+      )
+      pointerTemporary = undefined
+      await cleanupOwnedDirectory({
+        parentBoundary: bundleParentBoundary,
+        ownedBoundary: bundleBoundary,
+        root: bundleRoot,
+        ownerMarker,
+        quarantinePrefix: '.cleanup-proposal-',
+        ownershipCode: 'PROPOSAL_CLEANUP_OWNERSHIP_LOST',
+        cleanupCode: 'PROPOSAL_CLEANUP_FAILED',
+      })
+      bundleBoundary = undefined
+      bundleRoot = undefined
+      await assertProposalPublicationBoundaries({
+        workspaceBoundary,
+        pointerParentBoundary,
+        bundleParentBoundary,
+      })
+      const finalStable = await readStableProposalPointer(paths.pointerPath)
+      if (finalStable.identity.dev !== adoptedExisting.identity.dev
+        || finalStable.identity.ino !== adoptedExisting.identity.ino
+        || finalStable.identity.nlink !== 1
+        || !finalStable.bytes.equals(adoptedExisting.bytes)) {
+        fail('PROPOSAL_COMMIT_UNCERTAIN', 'adopted proposal pointer changed')
+      }
+      const verifiedAdopted = await verifyProposalBundle({
+        paths,
+        bundleParentBoundary,
+        pointer: finalStable.value,
+        inputManifest,
+        closure,
+        sourcePublication,
+        runtime,
+        proposalEvidence,
+      })
+      await verifiedAdopted.bundleBoundary.handle.close()
+      const confirmedStable = await readStableProposalPointer(paths.pointerPath)
+      if (confirmedStable.identity.dev !== finalStable.identity.dev
+        || confirmedStable.identity.ino !== finalStable.identity.ino
+        || confirmedStable.identity.nlink !== 1
+        || !confirmedStable.bytes.equals(finalStable.bytes)) {
+        fail('PROPOSAL_COMMIT_UNCERTAIN', 'adopted proposal pointer changed')
+      }
+      publicationState = 'COMPLETE'
+      return { pointer: confirmedStable.value, publicationStatus: 'ADOPTED_EXISTING' }
+    }
+    await assertProposalPublicationBoundaries({
+      workspaceBoundary,
+      pointerParentBoundary,
+      bundleParentBoundary,
+      bundleBoundary,
+    })
+    const stable = await readStableProposalPointer(paths.pointerPath)
+    if (!stable.bytes.equals(pointerBytes)
+      || !publishedOwnWithIndependentPointerInode
+        && (stable.identity.dev !== pointerTemporary.identity.dev
+          || stable.identity.ino !== pointerTemporary.identity.ino)) {
+      publicationState = 'PUBLICATION_UNKNOWN'
+      fail('PROPOSAL_COMMIT_UNCERTAIN', 'proposal pointer identity')
+    }
+    const verifiedPublished = await verifyProposalBundle({
+      paths,
+      bundleParentBoundary,
+      pointer: stable.value,
+      inputManifest,
+      closure,
+      sourcePublication,
+      runtime,
+      proposalEvidence,
+    })
+    await verifiedPublished.bundleBoundary.handle.close()
+    await assertProposalPublicationBoundaries({
+      workspaceBoundary,
+      pointerParentBoundary,
+      bundleParentBoundary,
+      bundleBoundary,
+    })
+    await unlinkOwnedPointerTemporary(
+      pointerTemporary,
+      'PROPOSAL_RESIDUE_CLEANUP_FAILED',
+    )
+    pointerTemporary = undefined
+    const converged = await readStableProposalPointer(paths.pointerPath)
+    if (!converged.bytes.equals(pointerBytes) || converged.identity.nlink !== 1) {
+      fail('PROPOSAL_RESIDUE_CLEANUP_FAILED', 'proposal pointer final state')
+    }
+    await assertProposalPublicationBoundaries({
+      workspaceBoundary,
+      pointerParentBoundary,
+      bundleParentBoundary,
+      bundleBoundary,
+    })
+    const verifiedConverged = await verifyProposalBundle({
+      paths,
+      bundleParentBoundary,
+      pointer: converged.value,
+      inputManifest,
+      closure,
+      sourcePublication,
+      runtime,
+      proposalEvidence,
+    })
+    await verifiedConverged.bundleBoundary.handle.close()
+    const confirmed = await readStableProposalPointer(paths.pointerPath)
+    if (confirmed.identity.dev !== converged.identity.dev
+      || confirmed.identity.ino !== converged.identity.ino
+      || confirmed.identity.nlink !== 1
+      || !confirmed.bytes.equals(converged.bytes)) {
+      fail('PROPOSAL_COMMIT_UNCERTAIN', 'published proposal pointer changed')
+    }
+    publicationState = 'COMPLETE'
+    return { pointer: confirmed.value, publicationStatus: 'PUBLISHED' }
+  } catch (error) {
+    if (['PUBLISHED_OWN', 'PUBLICATION_UNKNOWN'].includes(publicationState)
+      && !['PROPOSAL_COMMIT_UNCERTAIN', 'PROPOSAL_RESIDUE_CLEANUP_FAILED'].includes(error?.code)) {
+      fail('PROPOSAL_COMMIT_UNCERTAIN', 'published proposal verification')
+    }
+    if ((!linkAttempted || publicationState === 'LINK_DID_NOT_PUBLISH')
+      && !['PUBLISHED_OWN', 'ADOPTED_EXISTING', 'PUBLICATION_UNKNOWN', 'COMPLETE'].includes(publicationState)) {
+      if (pointerTemporary) {
+        await unlinkOwnedPointerTemporary(
+          pointerTemporary,
+          'PROPOSAL_RESIDUE_CLEANUP_FAILED',
+        )
+        pointerTemporary = undefined
+      }
+      if (bundleRoot && bundleBoundary && bundleParentBoundary && ownerMarker) {
+        await cleanupOwnedDirectory({
+          parentBoundary: bundleParentBoundary,
+          ownedBoundary: bundleBoundary,
+          root: bundleRoot,
+          ownerMarker,
+          quarantinePrefix: '.cleanup-proposal-',
+          ownershipCode: 'PROPOSAL_CLEANUP_OWNERSHIP_LOST',
+          cleanupCode: 'PROPOSAL_CLEANUP_FAILED',
+        })
+        bundleBoundary = undefined
+        bundleRoot = undefined
+      }
+    }
+    throw error
+  } finally {
+    await bundleBoundary?.handle.close().catch(() => {})
+    await bundleParentBoundary?.handle.close().catch(() => {})
+    await pointerParentBoundary.handle.close().catch(() => {})
+  }
+}
+
+async function createOwnedReplayRoot(workspaceRoot, workspaceBoundary) {
+  const replayParent = resolve(workspaceRoot, '.tmp/dsh-pm-workbench/rc6-declaration-v2-replays')
+  await ensureDescendantDirectoryChain(
+    workspaceBoundary,
+    replayParent,
+    'REPLAY_PATH_CONTAINMENT',
+    'replay parent',
+  )
+  const parentBoundary = await openBoundDirectory(
+    replayParent,
+    'REPLAY_PATH_CONTAINMENT',
+    'replay parent',
+  )
+  let root
+  try {
+    root = await mkdtemp(resolve(replayParent, 'replay-'))
+  } catch (error) {
+    await parentBoundary.handle.close().catch(() => {})
+    fail('REPLAY_ROOT_CREATE_FAILED', 'replay root')
+  }
+  let rootBoundary
+  try {
+    rootBoundary = await openBoundDirectory(root, 'REPLAY_PATH_CONTAINMENT', 'replay root')
+    if (rootBoundary.canonicalPath !== resolve(parentBoundary.canonicalPath, basename(root))) {
+      fail('REPLAY_PATH_CONTAINMENT', 'replay root relationship')
+    }
+    const ownerMarker = randomBytes(16).toString('hex')
+    await writeBundleFile(resolve(root, '.owner'), Buffer.from(ownerMarker, 'utf8'))
+    return { root, rootBoundary, parentBoundary, ownerMarker }
+  } catch (error) {
+    await rootBoundary?.handle.close().catch(() => {})
+    await parentBoundary.handle.close().catch(() => {})
+    fail('REPLAY_ROOT_CREATE_FAILED', 'replay root initialization')
+  }
+}
+
+export async function stageRc6DeclarationInputV2(options) {
+  if (!isObject(options)
+    || Object.keys(options).length !== 1 || !Object.hasOwn(options, 'workspaceRoot')
+    || typeof options.workspaceRoot !== 'string' || options.workspaceRoot === '') {
+    fail('STAGE_OPTIONS_MISMATCH', 'stageRc6DeclarationInputV2 options')
+  }
+  const { workspaceRoot } = options
+  const workspaceBoundary = await openBoundDirectory(
+    workspaceRoot,
+    'BUNDLE_PATH_CONTAINMENT',
+    'workspace root',
+  )
+  let replay
+  let replayCleaned = false
+  let committedAncestorBoundaries = []
+  try {
+    for (const relativePath of [
+      'tools/harness-rc6-declarations/input-manifest.json',
+      'tools/harness-rc6-declarations/package.json',
+      'tools/harness-rc6-declarations/package-lock.json',
+      'research/2026-09-05-rc6-declaration-closure.json',
+      'package-lock.json',
+    ]) {
+      await assertDescendantDirectoryChain(workspaceBoundary, resolve(workspaceRoot, relativePath), {
+        code: 'BUNDLE_PATH_CONTAINMENT',
+        missingCode: 'INPUT_READ_FAILED',
+        logicalLabel: 'committed declaration evidence',
+      })
+    }
+    committedAncestorBoundaries = await snapshotCommittedAncestorBoundaries(
+      workspaceRoot,
+      workspaceBoundary,
+    )
+    const [files, closureFile] = await Promise.all([
+      readCommittedDeclarationFiles(workspaceRoot),
+      readJsonFile(resolve(workspaceRoot, 'research/2026-09-05-rc6-declaration-closure.json')),
+    ])
+    const bootstrap = await inspectCommittedV1Bootstrap(workspaceRoot, files)
+    const pointerPath = fixtureBundlePaths(workspaceRoot).pointerPath
+    try {
+      const pointerStat = await lstat(pointerPath)
+      if (!pointerStat.isFile() || pointerStat.isSymbolicLink()) {
+        fail('STABLE_POINTER_REQUIRED', 'selected-source publication')
+      }
+    } catch (error) {
+      if (error?.ownedInputError === true) throw error
+      if (error?.code === 'ENOENT') fail('STABLE_POINTER_REQUIRED', 'selected-source publication')
+      throw error
+    }
+    const packageJson = files.packageFile.value
+    const packageLock = files.lockFile.value
+    const lockModel = deriveCanonicalLockInput(packageJson, packageLock)
+    const publicationIdentity = {
+      inputLabel: bootstrap.inputManifest.inputLabel,
+      authorizationBasis: bootstrap.inputManifest.authorizationBasis,
+      packageJsonRawSha256: files.packageFile.rawSha256,
+      packageJsonCanonicalSha256: files.packageFile.canonicalSha256,
+      packageLockRawSha256: files.lockFile.rawSha256,
+      packageLockCanonicalSha256: files.lockFile.canonicalSha256,
+      packageCounts: {
+        registry: EXPECTED.registryPackageCount,
+        deepseek: EXPECTED.deepseekPackageCount,
+        dsh: EXPECTED.dshPackageCount,
+      },
+    }
+    const publicationBefore = await consumeSelectedSourcePublication({
+      workspaceRoot,
+      lockModel,
+      publicationIdentity,
+    })
+    const selectedCacheEntries = canonicalSelectedCacheEntries(publicationBefore.snapshot.entries)
+    const selectedHashes = computeSelectedCacheHashes(selectedCacheEntries)
+    if (selectedHashes.selectedCacheIndexSha256 !== publicationBefore.descriptor.selectedCacheIndexSha256
+      || selectedHashes.selectedContentAggregateSha256 !== publicationBefore.descriptor.selectedContentAggregateSha256
+      || publicationBefore.descriptor.packageJsonRawSha256 !== files.packageFile.rawSha256
+      || publicationBefore.descriptor.packageLockRawSha256 !== files.lockFile.rawSha256) {
+      fail('PUBLISHED_LOGICAL_INPUT_MISMATCH', 'descriptor')
+    }
+    const nodePath = await realpathWithStableMissingCode(process.execPath, 'INVALID_NODE_EXECUTABLE')
+    const npmCliPath = await realpathWithStableMissingCode(
+      resolve(dirname(nodePath), NPM_CLI_RELATIVE_FROM_NODE),
+      'INVALID_NPM_CLI',
+    )
+    const runtime = await readRuntimeIdentity(nodePath, npmCliPath)
+    if (canonicalJsonBytes(runtime) !== canonicalJsonBytes(EXPECTED_RUNTIME)
+      || canonicalJsonBytes(runtime) !== canonicalJsonBytes(bootstrap.inputManifest.runtime)) {
+      fail('RUNTIME_IDENTITY_MISMATCH', 'bootstrap runtime')
+    }
+    const contractSnapshots = await readImmutableContractSnapshots(workspaceRoot, workspaceBoundary)
+    const compilerSourceSnapshot = await snapshotCompilerToolchainSource(
+      workspaceRoot,
+      workspaceBoundary,
+    )
+    const acceptanceSourcePath = fileURLToPath(import.meta.url)
+    const verifierSourcePath = resolve(moduleDirectory, 'verify-rc6-declaration-closure.mjs')
+    const [acceptanceSourceSnapshot, verifierSourceSnapshot] = await Promise.all([
+      readBoundSourceFile(
+        acceptanceSourcePath,
+        'VERIFIER_SOURCE_MISMATCH',
+        4 * 1024 * 1024,
+        'VERIFIER_SOURCE_MISMATCH',
+        'acceptance source',
+      ),
+      readBoundSourceFile(
+        verifierSourcePath,
+        'VERIFIER_SOURCE_MISMATCH',
+        4 * 1024 * 1024,
+        'VERIFIER_SOURCE_MISMATCH',
+        'verifier source',
+      ),
+    ])
+    if (normalizedAcceptanceSourceSha256(acceptanceSourceSnapshot.bytes)
+        !== EXPECTED_ACCEPTANCE_SOURCE_NORMALIZED_SHA256) {
+      fail('VERIFIER_SOURCE_MISMATCH', 'acceptance source hash')
+    }
+    if (verifierSourceSnapshot.identity.sha256 !== EXPECTED_VERIFIER_SOURCE_SHA256) {
+      fail('VERIFIER_SOURCE_MISMATCH', 'verifier source hash')
+    }
+    const verificationSourceSnapshot = {
+      acceptancePath: acceptanceSourcePath,
+      acceptance: acceptanceSourceSnapshot,
+      verifierPath: verifierSourcePath,
+      verifier: verifierSourceSnapshot,
+    }
+    const inputManifest = {
+    schemaVersion: '2',
+    inputLabel: bootstrap.inputManifest.inputLabel,
+    authorizationBasis: bootstrap.inputManifest.authorizationBasis,
+    packageJsonSha256: files.packageFile.rawSha256,
+    packageLockSha256: files.lockFile.rawSha256,
+    lockfileVersion: packageLock.lockfileVersion,
+    acceptedRootPackage: {
+      name: packageJson.name,
+      private: packageJson.private,
+      devDependencies: packageJson.devDependencies,
+    },
+    packageCounts: bootstrap.inputManifest.packageCounts,
+    dshVersion: bootstrap.inputManifest.dshVersion,
+    nestedCommander: bootstrap.inputManifest.nestedCommander,
+    selectedCache: {
+      entries: selectedCacheEntries,
+      totalBytes: publicationBefore.snapshot.totalBytes,
+    },
+    ...selectedHashes,
+    acceptance: {
+      command: 'node scripts/accept-rc6-declaration-input.mjs',
+      result: 'PASS_OFFLINE_INSTALL',
+    },
+    runtime,
+    compilerToolchain: expectedCompilerToolchain,
+    productionBoundary: expectedProductionBoundary,
+    lockProjectionSha256: lockModel.sha256,
+    }
+    validateInputManifest({
+      inputManifest,
+      packageJson,
+      packageLock,
+      rootPackageLock: files.rootLockFile.value,
+    })
+    await validateProductionBoundary({ workspaceRoot, inputManifest })
+
+    replay = await createOwnedReplayRoot(workspaceRoot, workspaceBoundary)
+    await writeReplayInputs({
+      replayBoundary: replay.rootBoundary,
+      replayRoot: replay.root,
+      committedFiles: files,
+      contractSnapshots,
+    })
+    const homeRoot = resolve(replay.root, '.home')
+    const tempRoot = resolve(replay.root, '.tmp')
+    const logRoot = resolve(replay.root, '.logs')
+    await settleOwnedMutations([
+      ensureDescendantDirectoryChain(replay.rootBoundary, homeRoot, 'REPLAY_PATH_CONTAINMENT', 'replay home'),
+      ensureDescendantDirectoryChain(replay.rootBoundary, tempRoot, 'REPLAY_PATH_CONTAINMENT', 'replay temp'),
+      ensureDescendantDirectoryChain(replay.rootBoundary, logRoot, 'REPLAY_PATH_CONTAINMENT', 'replay logs'),
+    ])
+    const userNpmrc = resolve(replay.root, 'user.npmrc')
+    const globalNpmrc = resolve(replay.root, 'global.npmrc')
+    const npmrc = 'ignore-scripts=true\noffline=true\naudit=false\nfund=false\nupdate-notifier=false\n'
+    await settleOwnedMutations([
+      writeBundleFile(userNpmrc, Buffer.from(npmrc, 'utf8')),
+      writeBundleFile(globalNpmrc, Buffer.from(npmrc, 'utf8')),
+    ])
+    const npmArguments = [
+      npmCliPath,
+      'ci',
+      '--ignore-scripts',
+      '--offline',
+      '--audit=false',
+      '--fund=false',
+      '--update-notifier=false',
+      `--cache=${publicationBefore.bundleRoot}`,
+      `--prefix=${replay.root}`,
+      `--logs-dir=${logRoot}`,
+      `--userconfig=${userNpmrc}`,
+      `--globalconfig=${globalNpmrc}`,
+    ]
+    try {
+      await execFileAsync(nodePath, npmArguments, {
+        cwd: replay.root,
+        env: {
+          HOME: homeRoot,
+          TMPDIR: tempRoot,
+        },
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: 120_000,
+      })
+    } catch {
+      fail('OFFLINE_REPLAY_FAILED', 'npm ci')
+    }
+    const publicationAfter = await consumeSelectedSourcePublication({
+      workspaceRoot,
+      lockModel,
+      publicationIdentity,
+    })
+    assertSamePublication(publicationBefore, publicationAfter)
+    const compilerSnapshot = await materializeReplayCompilerToolchain({
+      replayRoot: replay.root,
+      replayBoundary: replay.rootBoundary,
+      sourceSnapshot: compilerSourceSnapshot,
+    })
+    const verificationSnapshot = await materializeReplayVerificationSources({
+      replayRoot: replay.root,
+      replayBoundary: replay.rootBoundary,
+      sourceSnapshot: verificationSourceSnapshot,
+    })
+    const verifierUrl = pathToFileURL(verificationSnapshot.verifierPath)
+    verifierUrl.searchParams.set('sha256', verifierSourceSnapshot.identity.sha256)
+    const verifier = await import(verifierUrl.href)
+    if (typeof verifier.verifyStagedDeclarationClosure !== 'function') {
+      fail('OFFLINE_REPLAY_FAILED', 'staged closure verifier unavailable')
+    }
+    let verified
+    let verifiedIdentity
+    try {
+      verified = await verifier.verifyStagedDeclarationClosure({
+        workspaceRoot,
+        inputManifest,
+        stagingRoot: replay.root,
+      })
+      verifiedIdentity = successfulStagedVerificationIdentity(verified)
+    } catch {
+      fail('STAGED_REPLAY_VERIFICATION_FAILED', 'staged closure verification')
+    }
+    const hostCompileResult = await runDeclarationCompile({
+      nodePath,
+      compilerSnapshot,
+      replayRoot: replay.root,
+      homeRoot,
+      tempRoot,
+      surface: 'host',
+      configRelativePath: 'tsconfig.surface.host.json',
+      contractRelativePath: 'tools/harness-rc6-declarations/contracts/harness-host-rc6-surface.ts',
+    })
+    const clientCompileResult = await runDeclarationCompile({
+      nodePath,
+      compilerSnapshot,
+      replayRoot: replay.root,
+      homeRoot,
+      tempRoot,
+      surface: 'client',
+      configRelativePath: CLIENT_COMPILER_OVERLAY_RELATIVE,
+      contractRelativePath: 'tools/harness-rc6-declarations/contracts/harness-client-rc6-surface.ts',
+    })
+    const compileResults = {
+      host: hostCompileResult,
+      client: clientCompileResult,
+    }
+    let verifiedAfterCompile
+    let verifiedAfterCompileIdentity
+    try {
+      verifiedAfterCompile = await verifier.verifyStagedDeclarationClosure({
+        workspaceRoot,
+        inputManifest,
+        stagingRoot: replay.root,
+      })
+      verifiedAfterCompileIdentity = successfulStagedVerificationIdentity(verifiedAfterCompile)
+    } catch {
+      fail('STAGED_REPLAY_VERIFICATION_FAILED', 'post-compile closure verification')
+    }
+    if (canonicalJsonBytes(verifiedAfterCompileIdentity)
+      !== canonicalJsonBytes(verifiedIdentity)) {
+      fail('PUBLISHED_LOGICAL_INPUT_MISMATCH', 'closure changed during compile')
+    }
+    await assertReplayVerificationSourcesUnchanged(verificationSnapshot)
+    const closure = {
+      schemaVersion: '2',
+      generationCommand: 'stageRc6DeclarationInputV2({ workspaceRoot })',
+      inputManifestSha256: sha256(canonicalDocumentBytes(inputManifest)),
+      packageLockSha256: inputManifest.packageLockSha256,
+      packageCounts: inputManifest.packageCounts,
+      runtime: inputManifest.runtime,
+      fullDeepseekCohort: verified.closure.fullDeepseekCohort,
+      selectedDeclarationSubgraph: verified.closure.selectedDeclarationSubgraph,
+    }
+    assertSafeManifestStrings(inputManifest, 'v2 input proposal')
+    assertSafeManifestStrings(closure, 'v2 closure proposal')
+    await assertCommittedEvidenceUnchanged(
+      workspaceRoot,
+      files,
+      closureFile,
+      workspaceBoundary,
+      committedAncestorBoundaries,
+    )
+    await assertImmutableContractSnapshotsUnchanged(workspaceRoot, contractSnapshots)
+    await assertReplayCompilerToolchainUnchanged(compilerSnapshot)
+    await assertReplayVerificationSourcesUnchanged(verificationSnapshot)
+    const proposalEvidence = {
+      acceptanceSourceSha256: acceptanceSourceSnapshot.identity.sha256,
+      verifierSourceSha256: verifierSourceSnapshot.identity.sha256,
+      compilerSourceAggregateSha256: compilerSnapshot.evidence.sourceAggregateSha256,
+      compilerSealedAggregateSha256: compilerSnapshot.evidence.sealedAggregateSha256,
+      verifierResultSha256: sha256(canonicalJsonBytes(verifiedAfterCompileIdentity)),
+      compileResults,
+      compilerResultSha256: sha256(canonicalJsonBytes(compileResults)),
+    }
+    assertProposalEvidence(proposalEvidence)
+    await cleanupOwnedDirectory({
+      parentBoundary: replay.parentBoundary,
+      ownedBoundary: replay.rootBoundary,
+      root: replay.root,
+      ownerMarker: replay.ownerMarker,
+      quarantinePrefix: '.cleanup-replay-',
+      ownershipCode: 'REPLAY_CLEANUP_OWNERSHIP_LOST',
+      cleanupCode: 'REPLAY_CLEANUP_FAILED',
+    })
+    await replay.parentBoundary.handle.close()
+    replayCleaned = true
+    replay = undefined
+    const publicationFinal = await consumeSelectedSourcePublication({
+      workspaceRoot,
+      lockModel,
+      publicationIdentity,
+    })
+    assertSamePublication(publicationBefore, publicationFinal)
+    const assertPreCommit = async () => {
+      const runtimeBeforeCommit = await readRuntimeIdentity(nodePath, npmCliPath)
+      if (canonicalJsonBytes(runtimeBeforeCommit) !== canonicalJsonBytes(runtime)) {
+        fail('RUNTIME_IDENTITY_MISMATCH', 'runtime changed during replay')
+      }
+      const publicationBeforeCommit = await consumeSelectedSourcePublication({
+        workspaceRoot,
+        lockModel,
+        publicationIdentity,
+      })
+      assertSamePublication(publicationFinal, publicationBeforeCommit)
+      await assertCommittedEvidenceUnchanged(
+        workspaceRoot,
+        files,
+        closureFile,
+        workspaceBoundary,
+        committedAncestorBoundaries,
+      )
+      await assertImmutableContractSnapshotsUnchanged(workspaceRoot, contractSnapshots)
+      await assertCompilerToolchainSourceUnchanged(compilerSourceSnapshot)
+      await assertVerificationSourcesUnchanged(verificationSourceSnapshot)
+      await validateProductionBoundary({ workspaceRoot, inputManifest })
+      validateInputManifest({
+        inputManifest,
+        packageJson,
+        packageLock,
+        rootPackageLock: files.rootLockFile.value,
+      })
+    }
+    if (REPLAY_EVIDENCE_KIND !== 'REAL_NPM_CLI') {
+      await assertPreCommit()
+      return {
+        status: 'INCONCLUSIVE_SYNTHETIC_REPLAY',
+        evidenceKind: REPLAY_EVIDENCE_KIND,
+        selectedCount: inputManifest.selectedCache.entries.length,
+        selectedBytes: inputManifest.selectedCache.totalBytes,
+        fullDeepseekCount: closure.fullDeepseekCohort.length,
+        selectedDeclarationCount: closure.selectedDeclarationSubgraph.records.length,
+        candidateInputManifestSha256: sha256(canonicalDocumentBytes(inputManifest)),
+        candidateClosureSha256: sha256(canonicalDocumentBytes(closure)),
+      }
+    }
+    const published = await publishV2ProposalBundle({
+      workspaceRoot,
+      workspaceBoundary,
+      inputManifest,
+      closure,
+      sourcePublication: publicationFinal,
+      runtime,
+      proposalEvidence,
+      assertPreCommit,
+    })
+    const proposalBase = `.tmp/dsh-pm-workbench/${published.pointer.bundleRelativePath}`
+    return {
+      status: 'PASS_STAGED_RC6_DECLARATION_INPUT_V2',
+      replayStatus: verified.status,
+      publicationStatus: published.publicationStatus,
+      proposalPointer: V2_PROPOSAL_POINTER_RELATIVE,
+      inputManifestProposal: `${proposalBase}/${V2_PROPOSAL_INPUT_NAME}`,
+      closureProposal: `${proposalBase}/${V2_PROPOSAL_CLOSURE_NAME}`,
+    }
+  } finally {
+    let cleanupFailed = false
+    if (replay && !replayCleaned) {
+      try {
+        await cleanupOwnedDirectory({
+          parentBoundary: replay.parentBoundary,
+          ownedBoundary: replay.rootBoundary,
+          root: replay.root,
+          ownerMarker: replay.ownerMarker,
+          quarantinePrefix: '.cleanup-replay-',
+          ownershipCode: 'REPLAY_CLEANUP_OWNERSHIP_LOST',
+          cleanupCode: 'REPLAY_CLEANUP_FAILED',
+        })
+      } catch {
+        cleanupFailed = true
+      }
+      await replay.parentBoundary.handle.close().catch(() => { cleanupFailed = true })
+    }
+    await Promise.all(
+      committedAncestorBoundaries.map((boundary) => boundary.handle.close().catch(() => {})),
+    )
+    await workspaceBoundary.handle.close().catch(() => {})
+    if (cleanupFailed) fail('REPLAY_CLEANUP_FAILED', 'replay cleanup')
   }
 }
 
@@ -2860,7 +5557,7 @@ export async function acceptRc6DeclarationInput({
     targetCacheRoot: resolve(paths.targetCacheRoot, '_cacache'),
     entries: selected.entries,
   })
-  await chmod(paths.targetCacheRoot, 0o555)
+  await makeTreeReadOnlyStrict(paths.targetCacheRoot)
   await copyAcceptedInputFiles({ candidateRoot, acceptedRoot: paths.acceptedRoot })
   await copyImmutableContractFiles({ workspaceRoot, acceptedRoot: paths.acceptedRoot })
   const acceptedToolsRoot = resolve(workspaceRoot, 'tools/harness-rc6-declarations')

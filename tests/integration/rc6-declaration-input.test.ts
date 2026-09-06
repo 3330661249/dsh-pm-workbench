@@ -5,9 +5,11 @@ import { tmpdir } from 'node:os'
 import { execFile } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { promisify } from 'node:util'
+import { pathToFileURL } from 'node:url'
 import { describe, expect, test } from 'vitest'
 import {
   withSynthetic169ConcurrentProductionPath,
+  withSynthetic169BootstrapProductionPath,
   withSynthetic169LinkFaultProductionPath,
   withSynthetic169ProductionPath,
 } from './helpers/rc6-169-production-path.js'
@@ -20,6 +22,135 @@ const require = createRequire(import.meta.url)
 
 async function readJson(relativePath: string) {
   return JSON.parse(await readFile(resolve(workspaceRoot, relativePath), 'utf8'))
+}
+
+async function withProposalReceiptBuilderForTest<T>(
+  inspect: (buildReceipt: (options: Record<string, unknown>) => Record<string, unknown>) => T | Promise<T>,
+): Promise<T> {
+  const root = await mkdtemp(resolve(tmpdir(), 'rc6-proposal-receipt-'))
+  const script = resolve(root, 'accept-rc6-declaration-input.mjs')
+  const source = await readFile(
+    resolve(workspaceRoot, 'scripts/accept-rc6-declaration-input.mjs'),
+    'utf8',
+  )
+  await writeFile(
+    script,
+    `${source}\nexport { expectedProposalReceipt as __testExpectedProposalReceipt }\n`,
+    'utf8',
+  )
+  try {
+    const imported = await import(`${pathToFileURL(script).href}?receipt-test=${Date.now()}`)
+    return await inspect(imported.__testExpectedProposalReceipt)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
+async function withCompilerEvidenceHelpersForTest<T>(
+  inspect: (helpers: {
+    isStorageDeclarationRelativePath: (relativePath: string) => boolean
+  }) => T | Promise<T>,
+): Promise<T> {
+  const root = await mkdtemp(resolve(tmpdir(), 'rc6-compiler-evidence-'))
+  const script = resolve(root, 'accept-rc6-declaration-input.mjs')
+  const source = await readFile(
+    resolve(workspaceRoot, 'scripts/accept-rc6-declaration-input.mjs'),
+    'utf8',
+  )
+  await writeFile(
+    script,
+    `${source}\nexport { isStorageDeclarationRelativePath as __testIsStorageDeclarationRelativePath }\n`,
+    'utf8',
+  )
+  try {
+    const imported = await import(`${pathToFileURL(script).href}?compiler-evidence-test=${Date.now()}`)
+    return await inspect({
+      isStorageDeclarationRelativePath: imported.__testIsStorageDeclarationRelativePath,
+    })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
+const hostContractRelativePath =
+  'tools/harness-rc6-declarations/contracts/harness-host-rc6-surface.ts'
+const clientContractRelativePath =
+  'tools/harness-rc6-declarations/contracts/harness-client-rc6-surface.ts'
+
+function compileResultsFixture(): Record<string, unknown> {
+  return {
+    host: {
+      surface: 'host',
+      contractRelativePath: hostContractRelativePath,
+      relativeFileCount: 11,
+      relativeFileListSha256: '6'.repeat(64),
+      realpathsWithinReplayRoot: true,
+      contractListed: true,
+      storageDeclarationFilesListed: false,
+    },
+    client: {
+      surface: 'client',
+      contractRelativePath: clientContractRelativePath,
+      relativeFileCount: 13,
+      relativeFileListSha256: '7'.repeat(64),
+      realpathsWithinReplayRoot: true,
+      contractListed: true,
+      storageDeclarationFilesListed: false,
+    },
+  }
+}
+
+function proposalEvidenceFixture(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const compileResults = compileResultsFixture()
+  return {
+    acceptanceSourceSha256: '1'.repeat(64),
+    verifierSourceSha256: '2'.repeat(64),
+    compilerSourceAggregateSha256: '3'.repeat(64),
+    compilerSealedAggregateSha256: '4'.repeat(64),
+    verifierResultSha256: '5'.repeat(64),
+    compileResults,
+    compilerResultSha256: createHash('sha256')
+      .update(acceptance.canonicalJsonBytes(compileResults))
+      .digest('hex'),
+    ...overrides,
+  }
+}
+
+async function withRuntimeIdentityForTest<T>(
+  inspect: (
+    readRuntimeIdentity: (nodePath: string, npmCliPath: string) => Promise<Record<string, unknown>>,
+  ) => T | Promise<T>,
+  { expectedNpmCliSha256 }: { expectedNpmCliSha256?: string } = {},
+): Promise<T> {
+  const root = await mkdtemp(resolve(tmpdir(), 'rc6-runtime-identity-'))
+  const script = resolve(root, 'accept-rc6-declaration-input.mjs')
+  let source = await readFile(
+    resolve(workspaceRoot, 'scripts/accept-rc6-declaration-input.mjs'),
+    'utf8',
+  )
+  if (expectedNpmCliSha256) {
+    if (!/^[a-f0-9]{64}$/.test(expectedNpmCliSha256)) {
+      throw new Error('test npm CLI hash must be a SHA-256')
+    }
+    const expected = '8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7'
+    if (source.split(expected).length !== 2) {
+      throw new Error('production npm CLI hash fixture is not unique')
+    }
+    source = source.replace(expected, expectedNpmCliSha256)
+  }
+  await writeFile(
+    script,
+    `${source}\nexport { readRuntimeIdentity as __testReadRuntimeIdentity }\n`,
+    'utf8',
+  )
+  try {
+    const imported = await import(`${pathToFileURL(script).href}?runtime-test=${Date.now()}`)
+    return await inspect(imported.__testReadRuntimeIdentity)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 }
 
 function makeSyntheticV2Input({
@@ -38,6 +169,11 @@ function makeSyntheticV2Input({
     type: 'module',
     devDependencies: (currentInput.acceptedRootPackage as any).devDependencies,
   }, packageLock)
+  const selectedEntries = (currentInput.selectedCache as any).entries.map((entry: any) => {
+    const { indexChecksum: _legacyPhysicalIndexChecksum, ...logicalEntry } = entry
+    return logicalEntry
+  })
+  const selectedHashes = acceptance.computeSelectedCacheHashes(selectedEntries)
   return {
     schemaVersion: '2',
     inputLabel: currentInput.inputLabel,
@@ -52,11 +188,8 @@ function makeSyntheticV2Input({
     packageCounts: currentInput.packageCounts,
     dshVersion: currentInput.dshVersion,
     nestedCommander: currentInput.nestedCommander,
-    selectedCache: currentInput.selectedCache,
-    selectedCacheIndexSha256:
-      '26ace684b811eed1aff8627aaaf072f346a5a9983676ac5d4607a2690b09e001',
-    selectedContentAggregateSha256:
-      '3a8c2e3ba2bb7e07d3cc51212e9ae3dd4925e522d9c9c87acac16fee122757dc',
+    selectedCache: { entries: selectedEntries, totalBytes: (currentInput.selectedCache as any).totalBytes },
+    ...selectedHashes,
     acceptance: {
       command: 'node scripts/accept-rc6-declaration-input.mjs',
       result: 'PASS_OFFLINE_INSTALL',
@@ -94,11 +227,27 @@ async function createInspectorFixture() {
     readJson('tools/harness-rc6-declarations/package-lock.json'),
   ])
   await mkdir(resolve(root, 'tools/harness-rc6-declarations'), { recursive: true })
+  const v2Input = makeSyntheticV2Input({ currentInput, packageLock, packageJson })
   await writeFile(
     resolve(root, 'tools/harness-rc6-declarations/input-manifest.json'),
-    `${JSON.stringify(makeSyntheticV2Input({ currentInput, packageLock, packageJson }), null, 2)}\n`,
+    `${acceptance.canonicalJsonBytes(v2Input)}\n`,
     'utf8',
   )
+  return root
+}
+
+async function createBootstrapFixture() {
+  const root = await createBoundaryFixture()
+  for (const relativePath of [
+    'tools/harness-rc6-declarations/package.json',
+    'tools/harness-rc6-declarations/package-lock.json',
+    'tools/harness-rc6-declarations/input-manifest.json',
+    'research/2026-09-05-rc6-declaration-closure.json',
+  ]) {
+    const destination = resolve(root, relativePath)
+    await mkdir(dirname(destination), { recursive: true })
+    await copyFile(resolve(workspaceRoot, relativePath), destination)
+  }
   return root
 }
 
@@ -421,6 +570,27 @@ describe('rc.6 accepted declaration input', () => {
   })
 
   test.each([
+    ['pretty JSON', (canonical: string) => `${JSON.stringify(JSON.parse(canonical), null, 2)}\n`],
+    ['reordered JSON keys', (canonical: string) => {
+      const value = JSON.parse(canonical)
+      return `${JSON.stringify(Object.fromEntries(Object.entries(value).reverse()))}\n`
+    }],
+    ['extra trailing newline', (canonical: string) => `${canonical}\n\n`],
+    ['duplicate schema key', (canonical: string) => canonical.replace('{', '{"schemaVersion":"2",')],
+  ])('rejects a semantically valid noncanonical committed schema2 document: %s', async (_label, encode) => {
+    const root = await createInspectorFixture()
+    try {
+      const path = resolve(root, 'tools/harness-rc6-declarations/input-manifest.json')
+      const canonical = await readFile(path, 'utf8')
+      await writeFile(path, encode(canonical), 'utf8')
+      await expect(acceptance.inspectCommittedDeclarationInput({ workspaceRoot: root }))
+        .rejects.toThrow('COMMITTED_INPUT_CANONICAL_MISMATCH')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test.each([
     ['raw package byte drift', async (root: string) => writeFile(resolve(root, 'tools/harness-rc6-declarations/package.json'), '\n', { encoding: 'utf8', flag: 'a' })],
     ['missing production tree', async (root: string) => rm(resolve(root, 'packages/workbench'), { recursive: true, force: true })],
     ['changed production source', async (root: string) => writeFile(resolve(root, 'packages/workbench/src/config.ts'), 'forged\n', 'utf8')],
@@ -650,6 +820,49 @@ describe('rc.6 accepted declaration input', () => {
       const path = kind === 'dangling' ? resolve(root, 'dangling-node') : absent
       if (kind === 'dangling') await symlink(absent, path)
       await expect(acceptance.realpathWithStableMissingCode(path, 'INVALID_NODE_EXECUTABLE')).rejects.toMatchObject({ code: 'INVALID_NODE_EXECUTABLE' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects an unpinned npm CLI before any child process execution', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'rc6-unpinned-npm-cli-'))
+    const fakeCli = resolve(root, 'npm-cli.js')
+    const executionSentinel = resolve(root, 'executed')
+    try {
+      await writeFile(
+        fakeCli,
+        `import { writeFileSync } from 'node:fs'\nwriteFileSync(${JSON.stringify(executionSentinel)}, 'executed')\nprocess.stdout.write('11.9.0\\n')\n`,
+        { mode: 0o444 },
+      )
+      await withRuntimeIdentityForTest(async (readRuntimeIdentity) => {
+        await expect(readRuntimeIdentity(process.execPath, fakeCli)).rejects.toMatchObject({
+          code: 'INVALID_NPM_CLI',
+        })
+      })
+      await expect(stat(executionSentinel)).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects npm CLI identity drift after version execution', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'rc6-drifting-npm-cli-'))
+    const fakeCli = resolve(root, 'npm-cli.js')
+    const executionSentinel = resolve(root, 'executed')
+    try {
+      const fakeCliBytes = Buffer.from(
+        `import { appendFileSync, chmodSync, writeFileSync } from 'node:fs'\nwriteFileSync(${JSON.stringify(executionSentinel)}, 'executed')\nchmodSync(process.argv[1], 0o600)\nappendFileSync(process.argv[1], '\\n// drifted after execution\\n')\nchmodSync(process.argv[1], 0o444)\nprocess.stdout.write('11.9.0\\n')\n`,
+        'utf8',
+      )
+      const fakeCliSha256 = createHash('sha256').update(fakeCliBytes).digest('hex')
+      await writeFile(fakeCli, fakeCliBytes, { mode: 0o444 })
+      await withRuntimeIdentityForTest(async (readRuntimeIdentity) => {
+        await expect(readRuntimeIdentity(process.execPath, fakeCli)).rejects.toMatchObject({
+          code: 'INVALID_NPM_CLI',
+        })
+      }, { expectedNpmCliSha256: fakeCliSha256 })
+      await expect(stat(executionSentinel)).resolves.toMatchObject({ size: 8 })
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -1238,9 +1451,45 @@ describe('rc.6 accepted declaration input', () => {
       'selectCacheIndexRecord',
       'snapshotSelectedCacheFixtureOnly',
       'snapshotSelectedCacheSelectedOnlyForTest',
+      'stageRc6DeclarationInputV2',
       'validateInputManifest',
       'validateProductionBoundary',
     ].sort())
+  })
+
+  test('B2b bootstrap pins the complete host and client compiler toolchain', () => {
+    expect(acceptance.expectedCompilerToolchain).toEqual({
+      typescript: {
+        lockPath: 'node_modules/typescript',
+        version: '6.0.3',
+        integrity: 'sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==',
+      },
+      nodeTypes: {
+        lockPath: 'node_modules/@types/node',
+        version: '24.13.3',
+        integrity: 'sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==',
+      },
+      undiciTypes: {
+        lockPath: 'node_modules/undici-types',
+        version: '7.18.2',
+        integrity: 'sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==',
+      },
+      reactTypes: {
+        lockPath: 'node_modules/@types/react',
+        version: '18.3.31',
+        integrity: 'sha512-vfEqpXTvwT91yhmwdfouStN2hSKwTvyRs8qpLfADyrq/kxDw0hZM7Wk9Ug1FELj8hIby+S/+kQCSRFF32nv2Qw==',
+      },
+      propTypes: {
+        lockPath: 'node_modules/@types/prop-types',
+        version: '15.7.15',
+        integrity: 'sha512-F6bEyamV9jKGAFBEmlQnesRPGOQqS2+Uwi0Em15xenOxHaf2hv6L8YCVn3rPdPJOiJfPiCnLIRyvwVaqMY3MIw==',
+      },
+      csstype: {
+        lockPath: 'node_modules/csstype',
+        version: '3.2.3',
+        integrity: 'sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==',
+      },
+    })
   })
 
   test('B2a rewrite: public production path publishes the complete 169-entry path-free receipt chain', async () => {
@@ -1435,6 +1684,984 @@ describe('rc.6 accepted declaration input', () => {
     }
   })
 
+  test('B2b bootstrap exposes only the exact workspaceRoot request shape', async () => {
+    const root = await createBootstrapFixture()
+    try {
+      expect(typeof acceptance.stageRc6DeclarationInputV2).toBe('function')
+      await expect(acceptance.stageRc6DeclarationInputV2(null as any))
+        .rejects.toMatchObject({ code: 'STAGE_OPTIONS_MISMATCH' })
+      await expect(acceptance.stageRc6DeclarationInputV2({
+        workspaceRoot: root,
+        replay: false,
+      } as any)).rejects.toMatchObject({ code: 'STAGE_OPTIONS_MISMATCH' })
+      await expect(stat(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('B2b bootstrap rejects any committed schema-v1 byte drift before temporary writes', async () => {
+    const root = await createBootstrapFixture()
+    const manifestPath = resolve(root, 'tools/harness-rc6-declarations/input-manifest.json')
+    try {
+      const before = await readFile(manifestPath)
+      await writeFile(manifestPath, Buffer.concat([before, Buffer.from('\n')]))
+      const changed = await readFile(manifestPath)
+
+      await expect(acceptance.stageRc6DeclarationInputV2({ workspaceRoot: root }))
+        .rejects.toMatchObject({ code: 'COMMITTED_V1_BOOTSTRAP_MISMATCH' })
+      expect(await readFile(manifestPath)).toEqual(changed)
+      await expect(stat(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('B2b bootstrap reuses one bound committed-input snapshot instead of reopening schema v1', async () => {
+    const source = await readFile(resolve(workspaceRoot, 'scripts/accept-rc6-declaration-input.mjs'), 'utf8')
+    const stage = source.match(/export async function stageRc6DeclarationInputV2\([\s\S]+?\n}\n\nexport async function acceptRc6DeclarationInput/)
+    expect(stage).not.toBeNull()
+    expect(stage?.[0]).toContain('readCommittedDeclarationFiles(workspaceRoot)')
+    expect(stage?.[0]).toContain('inspectCommittedV1Bootstrap(workspaceRoot, files)')
+    expect(stage?.[0]).not.toContain('inspectCommittedDeclarationInput({ workspaceRoot })')
+    const bootstrap = source.match(/async function inspectCommittedV1Bootstrap\([\s\S]+?\n}\n\nexport async function stageRc6DeclarationInputV2/)
+    expect(bootstrap?.[0]).toContain('inspectCommittedDeclarationInputSnapshot({ workspaceRoot, files })')
+  })
+
+  test('B2b bootstrap is a strict consumer and never creates a missing selected-source publication', async () => {
+    const root = await createBootstrapFixture()
+    try {
+      await expect(acceptance.stageRc6DeclarationInputV2({ workspaceRoot: root }))
+        .rejects.toMatchObject({ code: 'STABLE_POINTER_REQUIRED' })
+      await expect(stat(resolve(root, '.tmp'))).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('B2b compiler evidence matches only exact storage package path segments', async () => {
+    await withCompilerEvidenceHelpersForTest(({ isStorageDeclarationRelativePath }) => {
+      for (const relativePath of [
+        'node_modules/@deepseek-ai/dsh-storage',
+        'node_modules/@deepseek-ai/dsh-storage/index.d.ts',
+        'packages/workbench/node_modules/@deepseek-ai/dsh-storage-domain',
+        'packages/workbench/node_modules/@deepseek-ai/dsh-storage-domain/dist/index.d.ts',
+      ]) {
+        expect(isStorageDeclarationRelativePath(relativePath)).toBe(true)
+      }
+      for (const relativePath of [
+        'node_modules/@deepseek-ai/dsh-storage-extra/index.d.ts',
+        'node_modules/@deepseek-ai/dsh-storage-domain-extra/index.d.ts',
+        'node_modules/@deepseek-ai/not-dsh-storage/index.d.ts',
+        'node_modules/@other/dsh-storage/index.d.ts',
+        'src/dsh-storage/index.d.ts',
+      ]) {
+        expect(isStorageDeclarationRelativePath(relativePath)).toBe(false)
+      }
+    })
+  })
+
+  test.each([
+    ['host', 'dsh-storage', 'index.d.ts', 3],
+    ['client', 'dsh-storage-domain', 'dist/nested.d.ts', 4],
+  ] as const)(
+    'B2b bootstrap rejects %s compile output that imports %s and publishes no proposal',
+    async (surface, packageName, nestedPath, expectedCallCount) => {
+      await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+        const before = await fixture.snapshotCommittedEvidence()
+        fixture.injectStorageOnNextCompile(surface, packageName, nestedPath)
+
+        await expect(fixture.stageV2Proposal()).rejects.toMatchObject({
+          code: 'STORAGE_SELECTED_OR_IMPORTED',
+        })
+
+        expect(fixture.replayEvidence.calls).toHaveLength(expectedCallCount)
+        expect(await fixture.snapshotCommittedEvidence()).toBe(before)
+        await expect(stat(resolve(
+          fixture.workspaceRoot,
+          '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json',
+        ))).rejects.toMatchObject({ code: 'ENOENT' })
+      })
+    },
+    30_000,
+  )
+
+  test('B2b proposal receipt binds replay compile results and the sealed compiler type-root policy', async () => {
+    await withProposalReceiptBuilderForTest((buildReceipt) => {
+      const proposalEvidence = proposalEvidenceFixture()
+      const receipt = buildReceipt({
+        ownerMarker: 'a'.repeat(32),
+        inputBytes: Buffer.from('input', 'utf8'),
+        closureBytes: Buffer.from('closure', 'utf8'),
+        sourcePublication: {
+          pointerBytes: Buffer.from('pointer', 'utf8'),
+          pointer: { receiptSha256: 'b'.repeat(64) },
+          receipt: { payloadIdentitySha256: 'c'.repeat(64) },
+        },
+        runtime: { node: 'fixture' },
+        proposalEvidence,
+      })
+      const expectedCompilePolicy = {
+        compiler: 'typescript/bin/tsc',
+        invocations: [
+          {
+            surface: 'host',
+            configRelativePath: 'tsconfig.surface.host.json',
+            args: [
+              '-p', '<host-config>', '--noEmit', '--types', 'node',
+              '--typeRoots', '<sealed-compiler-types>', '--listFiles', '--pretty', 'false',
+            ],
+          },
+          {
+            surface: 'client',
+            configRelativePath: 'tsconfig.surface.client.overlay.json',
+            args: [
+              '-p', '<client-overlay>', '--noEmit', '--types', 'node',
+              '--typeRoots', '<sealed-compiler-types>', '--listFiles', '--pretty', 'false',
+            ],
+          },
+        ],
+        clientOverlay: {
+          relativePath: 'tsconfig.surface.client.overlay.json',
+          sha256: 'ccc1578a3ed59a72264d3d468af7968b2a0771b693875d9ea9ee8fda4b1a2d24',
+          extends: './tsconfig.surface.client.json',
+          compilerOptions: {
+            paths: {
+              react: ['./.compiler/node_modules/@types/react/index.d.ts'],
+              'prop-types': ['./.compiler/node_modules/@types/prop-types/index.d.ts'],
+              csstype: ['./.compiler/node_modules/csstype/index.d.ts'],
+            },
+          },
+        },
+        envKeys: ['HOME', 'TMPDIR'],
+      }
+
+      expect(Object.keys(receipt).sort()).toEqual([
+        'acceptanceSourceSha256',
+        'closureSha256',
+        'compilePolicySha256',
+        'compileResults',
+        'compilerSealedAggregateSha256',
+        'compilerResultSha256',
+        'compilerSourceAggregateSha256',
+        'inputManifestSha256',
+        'npmPolicySha256',
+        'ownerMarker',
+        'payload',
+        'payloadIdentitySha256',
+        'result',
+        'runtime',
+        'schemaVersion',
+        'selectedSourcePayloadIdentitySha256',
+        'selectedSourcePointerSha256',
+        'selectedSourceReceiptSha256',
+        'verifierResultSha256',
+        'verifierSourceSha256',
+      ].sort())
+      expect(receipt).toMatchObject(proposalEvidence)
+      expect(receipt.compilerResultSha256).toBe(
+        createHash('sha256')
+          .update(acceptance.canonicalJsonBytes(receipt.compileResults))
+          .digest('hex'),
+      )
+      const overlayPaths = expectedCompilePolicy.clientOverlay.compilerOptions.paths
+      expect(Object.keys(overlayPaths).sort()).toEqual(['csstype', 'prop-types', 'react'])
+      for (const targets of Object.values(overlayPaths)) {
+        expect(targets).toHaveLength(1)
+        expect(targets[0].startsWith('./.compiler/')).toBe(true)
+        expect(targets[0].split('/')).not.toContain('..')
+      }
+      expect(receipt.compilePolicySha256).toBe(
+        createHash('sha256')
+          .update(acceptance.canonicalJsonBytes(expectedCompilePolicy))
+          .digest('hex'),
+      )
+      expect(JSON.stringify(receipt)).not.toMatch(/(?:\/Users\/|\/private\/|file:|[A-Za-z]:[\\/])/)
+    })
+  })
+
+  test('B2b proposal receipt rejects malformed replay evidence hashes', async () => {
+    await withProposalReceiptBuilderForTest((buildReceipt) => {
+      expect(() => buildReceipt({
+        ownerMarker: 'a'.repeat(32),
+        inputBytes: Buffer.from('input', 'utf8'),
+        closureBytes: Buffer.from('closure', 'utf8'),
+        sourcePublication: {
+          pointerBytes: Buffer.from('pointer', 'utf8'),
+          pointer: { receiptSha256: 'b'.repeat(64) },
+          receipt: { payloadIdentitySha256: 'c'.repeat(64) },
+        },
+        runtime: { node: 'fixture' },
+        proposalEvidence: proposalEvidenceFixture({ verifierSourceSha256: 'not-a-sha256' }),
+      })).toThrowError(expect.objectContaining({ code: 'PROPOSAL_CONFLICT' }))
+    })
+  })
+
+  test('B2b proposal receipt rejects compile evidence shape, hash, count, boolean, and extra-key drift', async () => {
+    await withProposalReceiptBuilderForTest((buildReceipt) => {
+      const build = (proposalEvidence: Record<string, unknown>) => buildReceipt({
+        ownerMarker: 'a'.repeat(32),
+        inputBytes: Buffer.from('input', 'utf8'),
+        closureBytes: Buffer.from('closure', 'utf8'),
+        sourcePublication: {
+          pointerBytes: Buffer.from('pointer', 'utf8'),
+          pointer: { receiptSha256: 'b'.repeat(64) },
+          receipt: { payloadIdentitySha256: 'c'.repeat(64) },
+        },
+        runtime: { node: 'fixture' },
+        proposalEvidence,
+      })
+      const cases: Record<string, unknown>[] = []
+
+      const missingClient = compileResultsFixture() as any
+      delete missingClient.client
+      cases.push(proposalEvidenceFixture({
+        compileResults: missingClient,
+        compilerResultSha256: createHash('sha256')
+          .update(acceptance.canonicalJsonBytes(missingClient)).digest('hex'),
+      }))
+
+      cases.push(proposalEvidenceFixture({ compilerResultSha256: 'f'.repeat(64) }))
+
+      const zeroCount = compileResultsFixture() as any
+      zeroCount.host.relativeFileCount = 0
+      cases.push(proposalEvidenceFixture({
+        compileResults: zeroCount,
+        compilerResultSha256: createHash('sha256')
+          .update(acceptance.canonicalJsonBytes(zeroCount)).digest('hex'),
+      }))
+
+      const storageSeen = compileResultsFixture() as any
+      storageSeen.client.storageDeclarationFilesListed = true
+      cases.push(proposalEvidenceFixture({
+        compileResults: storageSeen,
+        compilerResultSha256: createHash('sha256')
+          .update(acceptance.canonicalJsonBytes(storageSeen)).digest('hex'),
+      }))
+
+      const extraKey = compileResultsFixture() as any
+      extraKey.host.absoluteFiles = ['/private/forbidden.d.ts']
+      cases.push(proposalEvidenceFixture({
+        compileResults: extraKey,
+        compilerResultSha256: createHash('sha256')
+          .update(acceptance.canonicalJsonBytes(extraKey)).digest('hex'),
+      }))
+
+      for (const proposalEvidence of cases) {
+        expect(() => build(proposalEvidence)).toThrowError(
+          expect.objectContaining({ code: 'PROPOSAL_CONFLICT' }),
+        )
+      }
+    })
+  })
+
+  test('B2b stage captures proposal evidence before replay cleanup and passes it to publication', async () => {
+    const source = await readFile(resolve(workspaceRoot, 'scripts/accept-rc6-declaration-input.mjs'), 'utf8')
+    const stage = source.match(/export async function stageRc6DeclarationInputV2\([\s\S]+?\n}\n\nexport async function acceptRc6DeclarationInput/)
+    expect(stage).not.toBeNull()
+    const stageSource = stage?.[0] ?? ''
+    const finalVerifierCheck = stageSource.lastIndexOf(
+      'await assertReplayVerificationSourcesUnchanged(verificationSnapshot)',
+    )
+    const evidenceCapture = stageSource.indexOf('const proposalEvidence = {')
+    const replayCleanup = stageSource.indexOf('await cleanupOwnedDirectory({', evidenceCapture)
+    const publication = stageSource.indexOf('await publishV2ProposalBundle({', replayCleanup)
+
+    expect(finalVerifierCheck).toBeGreaterThan(-1)
+    expect(evidenceCapture).toBeGreaterThan(finalVerifierCheck)
+    expect(replayCleanup).toBeGreaterThan(evidenceCapture)
+    expect(publication).toBeGreaterThan(replayCleanup)
+    expect(stageSource.slice(evidenceCapture, replayCleanup)).toContain(
+      'verifierResultSha256: sha256(canonicalJsonBytes(verifiedAfterCompileIdentity))',
+    )
+    expect(stageSource.slice(publication, publication + 500)).toContain('proposalEvidence,')
+  })
+
+  test('B2b bootstrap derives path-free v2 candidates but stays inconclusive under the synthetic replay seam', async () => {
+    await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+      expect(fixture.historicalInputsIsolated).toBe(true)
+      const dangerousEnvironment = {
+        NODE_OPTIONS: process.env.NODE_OPTIONS,
+        NODE_PATH: process.env.NODE_PATH,
+        npm_config_registry: process.env.npm_config_registry,
+        npm_package_name: process.env.npm_package_name,
+        INIT_CWD: process.env.INIT_CWD,
+        HTTPS_PROXY: process.env.HTTPS_PROXY,
+        TOKEN: process.env.TOKEN,
+      }
+      Object.assign(process.env, {
+        NODE_OPTIONS: '--require=/must-not-run.cjs',
+        NODE_PATH: '/must-not-load',
+        npm_config_registry: 'https://must-not-contact.invalid',
+        npm_package_name: 'must-not-inherit',
+        INIT_CWD: '/must-not-inherit',
+        HTTPS_PROXY: 'http://credential:secret@must-not-inherit.invalid',
+        TOKEN: 'must-not-inherit',
+      })
+      try {
+        const before = await fixture.snapshotCommittedEvidence()
+        const result = await fixture.stageV2Proposal()
+        const after = await fixture.snapshotCommittedEvidence()
+        const serialized = JSON.stringify(result)
+
+        expect(result).toEqual({
+          status: 'INCONCLUSIVE_SYNTHETIC_REPLAY',
+          evidenceKind: 'SYNTHETIC_CHILD_PROCESS_SEAM',
+          selectedCount: 169,
+          selectedBytes: fixture.selectedContentBytes,
+          fullDeepseekCount: 59,
+          selectedDeclarationCount: 5,
+          candidateInputManifestSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          candidateClosureSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        })
+        expect(serialized).not.toContain('PASS_OFFLINE_INSTALL')
+        expect(serialized).not.toContain(fixture.workspaceRoot)
+        expect(serialized).not.toMatch(/(?:\/Users\/|\/private\/|file:|[A-Za-z]:[\\/])/)
+        expect(after).toBe(before)
+        await expect(stat(resolve(fixture.workspaceRoot, '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json')))
+          .rejects.toMatchObject({ code: 'ENOENT' })
+        expect(fixture.replayEvidence.calls).toHaveLength(5)
+        const [beforeVersion, npmCi, hostCompile, clientCompile, afterVersion] = fixture.replayEvidence.calls
+        expect(beforeVersion).toEqual({
+          file: beforeVersion.file,
+          args: [fixture.fakeNpmCliPath, '--version'],
+          env: {},
+          cwd: null,
+          timeout: 30_000,
+          maxBuffer: 1024 * 1024,
+        })
+        expect(afterVersion).toEqual({
+          file: beforeVersion.file,
+          args: [fixture.fakeNpmCliPath, '--version'],
+          env: {},
+          cwd: null,
+          timeout: 30_000,
+          maxBuffer: 1024 * 1024,
+        })
+        const replayRoot = npmCi.args.find((value: string) => value.startsWith('--prefix='))
+          ?.slice('--prefix='.length) ?? ''
+        expect(replayRoot).not.toBe('')
+        expect(npmCi).toEqual({
+          file: beforeVersion.file,
+          args: [
+          fixture.fakeNpmCliPath,
+          'ci',
+          '--ignore-scripts',
+          '--offline',
+          '--audit=false',
+          '--fund=false',
+          '--update-notifier=false',
+          `--cache=${fixture.selectedSourceBundleRoot}`,
+          `--prefix=${replayRoot}`,
+          `--logs-dir=${resolve(replayRoot, '.logs')}`,
+          `--userconfig=${resolve(replayRoot, 'user.npmrc')}`,
+          `--globalconfig=${resolve(replayRoot, 'global.npmrc')}`,
+          ],
+          env: { HOME: resolve(replayRoot, '.home'), TMPDIR: resolve(replayRoot, '.tmp') },
+          cwd: replayRoot,
+          timeout: 120_000,
+          maxBuffer: 10 * 1024 * 1024,
+        })
+        for (const [call, config] of [
+          [hostCompile, 'tsconfig.surface.host.json'],
+          [clientCompile, 'tsconfig.surface.client.overlay.json'],
+        ] as const) {
+          expect(call).toEqual({
+            file: beforeVersion.file,
+            args: [
+            resolve(replayRoot, '.compiler/node_modules/typescript/bin/tsc'),
+            '-p',
+            resolve(replayRoot, config),
+            '--noEmit',
+            '--types',
+            'node',
+            '--typeRoots',
+            resolve(replayRoot, '.compiler/node_modules/@types'),
+            '--listFiles',
+            '--pretty',
+            'false',
+            ],
+            env: { HOME: resolve(replayRoot, '.home'), TMPDIR: resolve(replayRoot, '.tmp') },
+            cwd: replayRoot,
+            timeout: 60_000,
+            maxBuffer: 10 * 1024 * 1024,
+          })
+        }
+        for (const call of fixture.replayEvidence.calls) {
+          expect(call.env).not.toHaveProperty('NODE_OPTIONS')
+          expect(call.env).not.toHaveProperty('NODE_PATH')
+          expect(call.env).not.toHaveProperty('npm_config_registry')
+          expect(call.env).not.toHaveProperty('npm_package_name')
+          expect(call.env).not.toHaveProperty('INIT_CWD')
+          expect(call.env).not.toHaveProperty('HTTPS_PROXY')
+          expect(call.env).not.toHaveProperty('TOKEN')
+        }
+      } finally {
+        for (const [key, value] of Object.entries(dangerousEnvironment)) {
+          if (value === undefined) delete process.env[key]
+          else process.env[key] = value
+        }
+      }
+    })
+  }, 30_000)
+
+  test('B2b synthetic publisher seam produces one canonical, independently checkable proposal and adopts it on retry', async () => {
+    await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+      const before = await fixture.snapshotCommittedEvidence()
+      const first = await fixture.stageV2Proposal()
+      expect(first).toMatchObject({
+        status: 'PASS_STAGED_RC6_DECLARATION_INPUT_V2',
+        replayStatus: 'PASS_STAGED_REPLAY',
+        publicationStatus: 'PUBLISHED',
+      })
+
+      const pointerPath = resolve(
+        fixture.workspaceRoot,
+        '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json',
+      )
+      const pointerBytes = await readFile(pointerPath)
+      const pointer = JSON.parse(pointerBytes.toString('utf8'))
+      expect(pointerBytes.toString('utf8')).toBe(
+        `${acceptance.canonicalJsonBytes(pointer)}\n`,
+      )
+      expect(await lstat(pointerPath)).toMatchObject({ nlink: 1 })
+
+      const bundleRoot = resolve(
+        dirname(pointerPath),
+        pointer.bundleRelativePath,
+      )
+      const [receiptBytes, closureBytes] = await Promise.all([
+        readFile(resolve(bundleRoot, 'receipt.json')),
+        readFile(resolve(bundleRoot, 'rc6-declaration-closure.v2.json')),
+      ])
+      const receipt = JSON.parse(receiptBytes.toString('utf8'))
+      const closure = JSON.parse(closureBytes.toString('utf8'))
+      expect(receiptBytes.toString('utf8')).toBe(
+        `${acceptance.canonicalJsonBytes(receipt)}\n`,
+      )
+      expect(Object.keys(receipt).sort()).toEqual([
+        'acceptanceSourceSha256',
+        'closureSha256',
+        'compilePolicySha256',
+        'compileResults',
+        'compilerSealedAggregateSha256',
+        'compilerResultSha256',
+        'compilerSourceAggregateSha256',
+        'inputManifestSha256',
+        'npmPolicySha256',
+        'ownerMarker',
+        'payload',
+        'payloadIdentitySha256',
+        'result',
+        'runtime',
+        'schemaVersion',
+        'selectedSourcePayloadIdentitySha256',
+        'selectedSourcePointerSha256',
+        'selectedSourceReceiptSha256',
+        'verifierResultSha256',
+        'verifierSourceSha256',
+      ].sort())
+      const verifierIdentity = {
+        status: 'PASS_STAGED_REPLAY',
+        realpathsWithinStagingRoot: true,
+        storageSelectedOrImported: false,
+        fullDeepseekCount: closure.fullDeepseekCohort.length,
+        selectedDeclarationCount: closure.selectedDeclarationSubgraph.records.length,
+        verifierClosureSha256: createHash('sha256').update(acceptance.canonicalJsonBytes({
+          fullDeepseekCohort: closure.fullDeepseekCohort,
+          selectedDeclarationSubgraph: closure.selectedDeclarationSubgraph,
+        })).digest('hex'),
+        selectedDeclarationManifestsSha256: createHash('sha256').update(
+          acceptance.canonicalJsonBytes(closure.selectedDeclarationSubgraph.records),
+        ).digest('hex'),
+      }
+      expect(receipt.verifierResultSha256).toBe(
+        createHash('sha256')
+          .update(acceptance.canonicalJsonBytes(verifierIdentity))
+          .digest('hex'),
+      )
+      expect(receipt.compileResults).toEqual({
+        host: {
+          surface: 'host',
+          contractRelativePath: hostContractRelativePath,
+          relativeFileCount: 1,
+          relativeFileListSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          realpathsWithinReplayRoot: true,
+          contractListed: true,
+          storageDeclarationFilesListed: false,
+        },
+        client: {
+          surface: 'client',
+          contractRelativePath: clientContractRelativePath,
+          relativeFileCount: 1,
+          relativeFileListSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          realpathsWithinReplayRoot: true,
+          contractListed: true,
+          storageDeclarationFilesListed: false,
+        },
+      })
+      expect(receipt.compileResults.host.relativeFileListSha256).toBe(
+        createHash('sha256')
+          .update(acceptance.canonicalJsonBytes([hostContractRelativePath]))
+          .digest('hex'),
+      )
+      expect(receipt.compileResults.client.relativeFileListSha256).toBe(
+        createHash('sha256')
+          .update(acceptance.canonicalJsonBytes([clientContractRelativePath]))
+          .digest('hex'),
+      )
+      expect(receipt.compilerResultSha256).toBe(
+        createHash('sha256')
+          .update(acceptance.canonicalJsonBytes(receipt.compileResults))
+          .digest('hex'),
+      )
+      expect(JSON.stringify({ first, pointer, receipt, closure }))
+        .not.toMatch(/(?:\/Users\/|\/private\/|file:|[A-Za-z]:[\\/])/)
+
+      const second = await fixture.stageV2Proposal()
+      expect(second).toMatchObject({
+        status: 'PASS_STAGED_RC6_DECLARATION_INPUT_V2',
+        publicationStatus: 'ADOPTED_EXISTING',
+      })
+      expect(await readFile(pointerPath)).toEqual(pointerBytes)
+      expect((await lstat(pointerPath)).nlink).toBe(1)
+      expect(await fixture.snapshotCommittedEvidence()).toBe(before)
+    }, { publishSyntheticProposal: true })
+  }, 60_000)
+
+  test.skipIf(process.platform === 'win32')(
+    'B2b proposal pointer publishes and remains adoptable under a strict process umask',
+    async () => {
+      const childScript = resolve(
+        workspaceRoot,
+        'tests/integration/helpers/rc6-strict-umask-proposal-child.mjs',
+      )
+      const { stdout, stderr } = await execFileAsync(
+        process.execPath,
+        ['--experimental-strip-types', childScript, workspaceRoot],
+        {
+          cwd: workspaceRoot,
+          timeout: 60_000,
+          maxBuffer: 1024 * 1024,
+        },
+      )
+      expect(stderr).toBe('')
+      const evidence = JSON.parse(stdout)
+      expect(evidence).toEqual({
+        strictUmask: '0077',
+        firstPublicationStatus: 'PUBLISHED',
+        firstPointer: {
+          mode: 0o400,
+          nlink: '1',
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+        secondPublicationStatus: 'ADOPTED_EXISTING',
+        finalPointer: {
+          mode: 0o400,
+          nlink: '1',
+          sha256: evidence.firstPointer.sha256,
+          sameIdentity: true,
+        },
+      })
+      expect(evidence.firstPointer.mode & 0o222).toBe(0)
+      expect(evidence.finalPointer.mode & 0o222).toBe(0)
+    },
+    70_000,
+  )
+
+  test('B2b synthetic publisher seam converges concurrent producers onto one live proposal bundle', async () => {
+    await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+      const before = await fixture.snapshotCommittedEvidence()
+      const settlements = await Promise.allSettled([
+        fixture.stageV2Proposal(),
+        fixture.stageV2Proposal(),
+      ])
+      expect(settlements.every((entry) => entry.status === 'fulfilled')).toBe(true)
+      const results = settlements.map((entry) => (
+        entry.status === 'fulfilled' ? entry.value : undefined
+      ))
+      expect(results.map((result) => result?.publicationStatus).sort()).toEqual([
+        'ADOPTED_EXISTING',
+        'PUBLISHED',
+      ])
+
+      const pointerPath = resolve(
+        fixture.workspaceRoot,
+        '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json',
+      )
+      const pointer = JSON.parse(await readFile(pointerPath, 'utf8'))
+      expect((await lstat(pointerPath)).nlink).toBe(1)
+      const bundleParent = resolve(
+        fixture.workspaceRoot,
+        '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal-bundles',
+      )
+      const names = await readdir(bundleParent)
+      const liveBundles = names.filter((name) => /^bundle-[a-f0-9]{32}$/.test(name))
+      expect(liveBundles).toEqual([basename(pointer.bundleRelativePath)])
+      expect(await stat(resolve(bundleParent, liveBundles[0]))).toMatchObject({
+        mode: expect.any(Number),
+      })
+      expect(await fixture.snapshotCommittedEvidence()).toBe(before)
+    }, { publishSyntheticProposal: true })
+  }, 60_000)
+
+  test('B2b proposal publisher treats EEXIST reported after its real hardlink as its own publication', async () => {
+    await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+      expect(fixture.armProposalLinkAfterSuccessAsEexist).toBeTypeOf('function')
+      fixture.armProposalLinkAfterSuccessAsEexist?.()
+
+      const result = await fixture.stageV2Proposal()
+      expect(result).toMatchObject({
+        status: 'PASS_STAGED_RC6_DECLARATION_INPUT_V2',
+        publicationStatus: 'PUBLISHED',
+      })
+      expect(fixture.proposalFsFaultEvidence).toMatchObject({
+        injectedLinkAfterSuccessAsEexist: true,
+      })
+
+      const pointerPath = resolve(
+        fixture.workspaceRoot,
+        '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json',
+      )
+      const pointer = JSON.parse(await readFile(pointerPath, 'utf8'))
+      expect((await lstat(pointerPath)).nlink).toBe(1)
+      await expect(stat(resolve(dirname(pointerPath), pointer.bundleRelativePath)))
+        .resolves.toMatchObject({ mode: expect.any(Number) })
+      expect((await readdir(dirname(pointerPath))).filter(
+        (name) => /^\.rc6-declaration-v2-proposal-[a-f0-9]{32}\.tmp$/.test(name),
+      )).toEqual([])
+    }, {
+      publishSyntheticProposal: true,
+      enableProposalFsFaultSeam: true,
+    })
+  }, 60_000)
+
+  test('B2b proposal publisher treats an independently copied same-byte pointer followed by EEXIST as its own publication', async () => {
+    await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+      expect(fixture.armProposalIndependentPointerCopyAsEexist).toBeTypeOf('function')
+      fixture.armProposalIndependentPointerCopyAsEexist?.()
+
+      const result = await fixture.stageV2Proposal()
+      expect(result).toMatchObject({
+        status: 'PASS_STAGED_RC6_DECLARATION_INPUT_V2',
+        publicationStatus: 'PUBLISHED',
+      })
+      expect(fixture.proposalFsFaultEvidence).toMatchObject({
+        injectedIndependentPointerCopyAsEexist: true,
+        independentPointerHasDifferentInode: true,
+      })
+
+      const pointerPath = resolve(
+        fixture.workspaceRoot,
+        '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json',
+      )
+      const pointer = JSON.parse(await readFile(pointerPath, 'utf8'))
+      expect((await lstat(pointerPath)).nlink).toBe(1)
+      await expect(stat(resolve(dirname(pointerPath), pointer.bundleRelativePath)))
+        .resolves.toMatchObject({ mode: expect.any(Number) })
+      expect((await readdir(dirname(pointerPath))).filter(
+        (name) => /^\.rc6-declaration-v2-proposal-[a-f0-9]{32}\.tmp$/.test(name),
+      )).toEqual([])
+    }, {
+      publishSyntheticProposal: true,
+      enableProposalFsFaultSeam: true,
+    })
+  }, 60_000)
+
+  test('B2b proposal publisher reports an uncertain commit when its first post-link boundary check fails and recovers by adoption', async () => {
+    await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+      expect(fixture.armProposalBoundaryFailureAfterSuccessfulLink).toBeTypeOf('function')
+      fixture.armProposalBoundaryFailureAfterSuccessfulLink?.()
+
+      let firstError: unknown
+      try {
+        await fixture.stageV2Proposal()
+      } catch (error) {
+        firstError = error
+      }
+      expect(fixture.proposalFsFaultEvidence).toMatchObject({
+        successfulLinkBeforeBoundaryFailure: true,
+        injectedBoundaryFailureAfterSuccessfulLink: true,
+      })
+
+      const pointerPath = resolve(
+        fixture.workspaceRoot,
+        '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json',
+      )
+      const firstPointerBytes = await readFile(pointerPath)
+      const pointer = JSON.parse(firstPointerBytes.toString('utf8'))
+      const bundleRoot = resolve(dirname(pointerPath), pointer.bundleRelativePath)
+      await expect(stat(bundleRoot)).resolves.toMatchObject({ mode: expect.any(Number) })
+      expect((await lstat(pointerPath)).nlink).toBeGreaterThanOrEqual(1)
+
+      const recovered = await fixture.stageV2Proposal()
+      expect(recovered).toMatchObject({
+        status: 'PASS_STAGED_RC6_DECLARATION_INPUT_V2',
+        publicationStatus: 'ADOPTED_EXISTING',
+      })
+      expect(await readFile(pointerPath)).toEqual(firstPointerBytes)
+      expect((await lstat(pointerPath)).nlink).toBe(1)
+      await expect(stat(bundleRoot)).resolves.toMatchObject({ mode: expect.any(Number) })
+      expect((await readdir(dirname(pointerPath))).filter(
+        (name) => /^\.rc6-declaration-v2-proposal-[a-f0-9]{32}\.tmp$/.test(name),
+      )).toEqual([])
+
+      expect(firstError).toMatchObject({ code: 'PROPOSAL_COMMIT_UNCERTAIN' })
+    }, {
+      publishSyntheticProposal: true,
+      enableProposalFsFaultSeam: true,
+    })
+  }, 60_000)
+
+  test('B2b proposal publisher preserves a real link when both its wrapper and first post-link boundary check fail', async () => {
+    await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+      expect(fixture.armProposalLinkEioAndBoundaryFailureAfterSuccess).toBeTypeOf('function')
+      fixture.armProposalLinkEioAndBoundaryFailureAfterSuccess?.()
+
+      let firstError: unknown
+      try {
+        await fixture.stageV2Proposal()
+      } catch (error) {
+        firstError = error
+      }
+      expect(firstError).toMatchObject({ code: 'PROPOSAL_COMMIT_UNCERTAIN' })
+      expect(fixture.proposalFsFaultEvidence).toMatchObject({
+        successfulLinkBeforeBoundaryFailure: true,
+        injectedLinkEioAfterSuccess: true,
+        injectedBoundaryFailureAfterSuccessfulLink: true,
+      })
+
+      const pointerPath = resolve(
+        fixture.workspaceRoot,
+        '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json',
+      )
+      const firstPointerBytes = await readFile(pointerPath)
+      const pointer = JSON.parse(firstPointerBytes.toString('utf8'))
+      const bundleRoot = resolve(dirname(pointerPath), pointer.bundleRelativePath)
+      await expect(stat(bundleRoot)).resolves.toMatchObject({ mode: expect.any(Number) })
+      expect((await lstat(pointerPath)).nlink).toBe(2)
+      expect((await readdir(dirname(pointerPath))).filter(
+        (name) => /^\.rc6-declaration-v2-proposal-[a-f0-9]{32}\.tmp$/.test(name),
+      )).toHaveLength(1)
+
+      const recovered = await fixture.stageV2Proposal()
+      expect(recovered).toMatchObject({
+        status: 'PASS_STAGED_RC6_DECLARATION_INPUT_V2',
+        publicationStatus: 'ADOPTED_EXISTING',
+      })
+      expect(await readFile(pointerPath)).toEqual(firstPointerBytes)
+      expect((await lstat(pointerPath)).nlink).toBe(1)
+      await expect(stat(bundleRoot)).resolves.toMatchObject({ mode: expect.any(Number) })
+      expect((await readdir(dirname(pointerPath))).filter(
+        (name) => /^\.rc6-declaration-v2-proposal-[a-f0-9]{32}\.tmp$/.test(name),
+      )).toEqual([])
+    }, {
+      publishSyntheticProposal: true,
+      enableProposalFsFaultSeam: true,
+    })
+  }, 60_000)
+
+  test('B2b proposal pointer convergence accepts an ENOENT race after another producer removes its alias', async () => {
+    await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+      await fixture.stageV2Proposal()
+      const pointerPath = resolve(
+        fixture.workspaceRoot,
+        '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json',
+      )
+      const aliasPath = resolve(
+        dirname(pointerPath),
+        '.rc6-declaration-v2-proposal-11111111111111111111111111111111.tmp',
+      )
+      await link(pointerPath, aliasPath)
+      expect((await lstat(pointerPath)).nlink).toBe(2)
+      expect(fixture.armProposalAliasUnlinkAsEnoent).toBeTypeOf('function')
+      fixture.armProposalAliasUnlinkAsEnoent?.()
+
+      const result = await fixture.stageV2Proposal()
+      expect(result).toMatchObject({
+        status: 'PASS_STAGED_RC6_DECLARATION_INPUT_V2',
+        publicationStatus: 'ADOPTED_EXISTING',
+      })
+      expect(fixture.proposalFsFaultEvidence).toMatchObject({
+        injectedAliasUnlinkAsEnoent: true,
+      })
+      await expect(stat(aliasPath)).rejects.toMatchObject({ code: 'ENOENT' })
+      expect((await lstat(pointerPath)).nlink).toBe(1)
+      const pointer = JSON.parse(await readFile(pointerPath, 'utf8'))
+      await expect(stat(resolve(dirname(pointerPath), pointer.bundleRelativePath)))
+        .resolves.toMatchObject({ mode: expect.any(Number) })
+    }, {
+      publishSyntheticProposal: true,
+      enableProposalFsFaultSeam: true,
+    })
+  }, 60_000)
+
+  test('B2b bootstrap rejects verifier source bytes outside the pinned implementation', async () => {
+    await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+      await expect(fixture.stageV2Proposal()).rejects.toMatchObject({
+        code: 'VERIFIER_SOURCE_MISMATCH',
+      })
+      await expect(stat(resolve(
+        fixture.workspaceRoot,
+        '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json',
+      ))).rejects.toMatchObject({ code: 'ENOENT' })
+    }, {
+      verifierSourceTransform: (source) => `${source}\n// harmless but untrusted verifier drift\n`,
+    })
+  }, 30_000)
+
+  test('B2b bootstrap rejects acceptance source drift after module import before copied code can execute', async () => {
+    const sentinel = '__dshAcceptanceSourceDriftExecuted'
+    delete (globalThis as Record<string, unknown>)[sentinel]
+    try {
+      await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+        await fixture.mutateAcceptanceSourceAfterImport((source) => (
+          `${source}\nglobalThis.${sentinel} = true\n`
+        ))
+        await expect(fixture.stageV2Proposal()).rejects.toMatchObject({
+          code: 'VERIFIER_SOURCE_MISMATCH',
+        })
+        expect((globalThis as Record<string, unknown>)[sentinel]).toBeUndefined()
+        await expect(stat(resolve(
+          fixture.workspaceRoot,
+          '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json',
+        ))).rejects.toMatchObject({ code: 'ENOENT' })
+      })
+    } finally {
+      delete (globalThis as Record<string, unknown>)[sentinel]
+    }
+  }, 30_000)
+
+  test('B2b bootstrap rejects a byte-identical verifier inode replacement after preflight', async () => {
+    await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+      fixture.replaceCommittedFileWithSameBytesAfterReplay(resolve(
+        fixture.workspaceRoot,
+        'scripts/verify-rc6-declaration-closure.mjs',
+      ))
+      await expect(fixture.stageV2Proposal()).rejects.toMatchObject({
+        code: 'VERIFIER_SOURCE_MISMATCH',
+      })
+      await expect(stat(resolve(
+        fixture.workspaceRoot,
+        '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json',
+      ))).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+  }, 30_000)
+
+  test('B2b bootstrap publishes neither proposal when the injected replay seam fails', async () => {
+    await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+      const before = await fixture.snapshotCommittedEvidence()
+      fixture.failNextReplay()
+      await expect(fixture.stageV2Proposal()).rejects.toMatchObject({ code: 'OFFLINE_REPLAY_FAILED' })
+      expect(await fixture.snapshotCommittedEvidence()).toBe(before)
+      await expect(stat(resolve(fixture.workspaceRoot, '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json')))
+        .rejects.toMatchObject({ code: 'ENOENT' })
+    })
+  }, 30_000)
+
+  test('B2b bootstrap publishes neither proposal when declaration compilation fails', async () => {
+    await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+      const before = await fixture.snapshotCommittedEvidence()
+      fixture.failNextCompile()
+
+      await expect(fixture.stageV2Proposal()).rejects.toMatchObject({
+        code: 'DECLARATION_COMPILE_FAILED',
+      })
+
+      expect(fixture.historicalInputsIsolated).toBe(true)
+      expect(fixture.replayEvidence.calls).toHaveLength(3)
+      expect(fixture.replayEvidence.calls[0].args).toEqual([
+        fixture.fakeNpmCliPath,
+        '--version',
+      ])
+      expect(fixture.replayEvidence.calls[1].args[1]).toBe('ci')
+      expect(fixture.replayEvidence.calls[2].args[0]).toBe(
+        resolve(
+          fixture.replayEvidence.calls[1].cwd ?? '',
+          '.compiler/node_modules/typescript/bin/tsc',
+        ),
+      )
+      expect(await fixture.snapshotCommittedEvidence()).toBe(before)
+      await expect(stat(resolve(
+        fixture.workspaceRoot,
+        '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json',
+      ))).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+  }, 30_000)
+
+  test('B2b bootstrap rejects a byte-identical client overlay inode replacement during compile', async () => {
+    await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+      const before = await fixture.snapshotCommittedEvidence()
+      fixture.replaceClientOverlayWithSameBytesOnNextCompile()
+
+      await expect(fixture.stageV2Proposal()).rejects.toMatchObject({
+        code: 'COMPILER_PATH_CONTAINMENT',
+      })
+
+      expect(fixture.replayEvidence.calls).toHaveLength(4)
+      expect(fixture.replayEvidence.calls[3].args[2]).toBe(
+        resolve(
+          fixture.replayEvidence.calls[1].cwd ?? '',
+          'tsconfig.surface.client.overlay.json',
+        ),
+      )
+      expect(await fixture.snapshotCommittedEvidence()).toBe(before)
+      await expect(stat(resolve(
+        fixture.workspaceRoot,
+        '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json',
+      ))).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+  }, 30_000)
+
+  test('B2b bootstrap rejects a byte-identical committed evidence inode replacement', async () => {
+    await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+      const before = await fixture.snapshotCommittedEvidence()
+      fixture.replaceCommittedFileWithSameBytesAfterReplay(resolve(
+        fixture.workspaceRoot,
+        'tools/harness-rc6-declarations/input-manifest.json',
+      ))
+
+      await expect(fixture.stageV2Proposal()).rejects.toMatchObject({
+        code: 'COMMITTED_EVIDENCE_CHANGED',
+      })
+
+      expect(await fixture.snapshotCommittedEvidence()).toBe(before)
+      await expect(stat(resolve(
+        fixture.workspaceRoot,
+        '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json',
+      ))).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+  }, 30_000)
+
+  test.each([
+    ['status', (source: string) => source.replace(
+      "return {\n    status: 'PASS_STAGED_REPLAY',",
+      "return {\n    status: 'FAIL_SYNTHETIC_VERIFIER',",
+    )],
+    ['realpath locality', (source: string) => source.replace(
+      'realpathsWithinStagingRoot: true,',
+      'realpathsWithinStagingRoot: false,',
+    )],
+    ['storage selection', (source: string) => source.replace(
+      "realpathsWithinStagingRoot: true,\n    storage,",
+      "realpathsWithinStagingRoot: true,\n    storage: { selectedOrImported: true },",
+    )],
+    ['selected manifests', (source: string) => source.replace(
+      'selectedDeclarationManifests: closure.selectedDeclarationSubgraph.records,\n    realpathsWithinStagingRoot: true,',
+      'selectedDeclarationManifests: [],\n    realpathsWithinStagingRoot: true,',
+    )],
+  ])('B2b bootstrap rejects a non-success verifier %s result before proposal publication', async (_label, transform) => {
+    await withSynthetic169BootstrapProductionPath(workspaceRoot, async (fixture) => {
+      await expect(fixture.stageV2Proposal()).rejects.toMatchObject({
+        code: 'STAGED_REPLAY_VERIFICATION_FAILED',
+      })
+      await expect(stat(resolve(
+        fixture.workspaceRoot,
+        '.tmp/dsh-pm-workbench/rc6-declaration-v2-proposal.json',
+      ))).rejects.toMatchObject({ code: 'ENOENT' })
+    }, { verifierSourceTransform: transform, trustVerifierTransform: true })
+  }, 30_000)
+
   test('makes the current v1 CLI gate nonzero and path-free JSON only', async () => {
     const script = resolve(workspaceRoot, 'scripts/accept-rc6-declaration-input.mjs')
     await expect(execFileAsync(process.execPath, [script], { cwd: workspaceRoot })).rejects.toMatchObject({
@@ -1474,6 +2701,24 @@ describe('rc.6 accepted declaration input', () => {
         rootPackageLock,
       }),
     ).not.toThrow()
+  })
+
+  test('B2b v2 identity keeps only the seven logical selected-entry fields and excludes physical index checksums', async () => {
+    const [currentInput, packageJson, packageLock, rootPackageLock] = await Promise.all([
+      readJson('tools/harness-rc6-declarations/input-manifest.json'),
+      readJson('tools/harness-rc6-declarations/package.json'),
+      readJson('tools/harness-rc6-declarations/package-lock.json'),
+      readJson('package-lock.json'),
+    ])
+    const input = makeSyntheticV2Input({ currentInput, packageLock })
+    expect(input.selectedCache.entries).toHaveLength(169)
+    expect(input.selectedCache.entries.every((entry: any) => (
+      Object.keys(entry).sort().join(',') === 'byteLength,contentDigest,integrity,key,lockPath,name,version'
+      && !Object.hasOwn(entry, 'indexChecksum')
+    ))).toBe(true)
+    expect(input.selectedCacheIndexSha256).toBe('73e76d127ab8188d8005e4becb750bbe9cfec30988e501185b13558f4c6cd3f6')
+    expect(input.selectedContentAggregateSha256).toBe('3a8c2e3ba2bb7e07d3cc51212e9ae3dd4925e522d9c9c87acac16fee122757dc')
+    expect(() => acceptance.validateInputManifest({ inputManifest: input, packageJson, packageLock, rootPackageLock })).not.toThrow()
   })
 
   test.each([
@@ -1539,7 +2784,6 @@ describe('rc.6 accepted declaration input', () => {
 
   test.each([
     ['byteLength', 1],
-    ['indexChecksum', '0000000000000000000000000000000000000000'],
   ])('binds acceptance-derived %s to its frozen aggregate even after self-hash recomputation', async (field, value) => {
     const [currentInput, packageJson, packageLock, rootPackageLock] = await Promise.all([
       readJson('tools/harness-rc6-declarations/input-manifest.json'),
@@ -1559,6 +2803,7 @@ describe('rc.6 accepted declaration input', () => {
   test.each([
     ['extra top-level key', (input: Record<string, unknown>) => { input.extra = true }],
     ['extra entry key', (input: Record<string, unknown>) => { (input.selectedCache as { entries: Array<Record<string, unknown>> }).entries[0].extra = true }],
+    ['legacy physical index checksum', (input: Record<string, unknown>) => { (input.selectedCache as { entries: Array<Record<string, unknown>> }).entries[0].indexChecksum = '0'.repeat(40) }],
     ['absolute path field', (input: Record<string, unknown>) => { input.sourcePath = '/private/forged' }],
     ['file URL cache key', (input: Record<string, unknown>) => { (input.selectedCache as { entries: Array<Record<string, unknown>> }).entries[0].key = 'file:///forged' }],
   ])('rejects %s', async (_label, mutate) => {
@@ -1651,6 +2896,23 @@ describe('rc.6 accepted declaration input', () => {
     expect(() => acceptance.validateInputManifest({
       inputManifest: makeSyntheticV2Input({ currentInput, packageLock }), packageJson, packageLock, rootPackageLock: changedRootLock,
     })).toThrow()
+  })
+
+  test('rejects changed client compiler dependency metadata in the root lock', async () => {
+    const [currentInput, packageJson, packageLock, rootPackageLock] = await Promise.all([
+      readJson('tools/harness-rc6-declarations/input-manifest.json'),
+      readJson('tools/harness-rc6-declarations/package.json'),
+      readJson('tools/harness-rc6-declarations/package-lock.json'),
+      readJson('package-lock.json'),
+    ])
+    const changedRootLock = structuredClone(rootPackageLock)
+    changedRootLock.packages['node_modules/@types/react'].dependencies.csstype = '*'
+    expect(() => acceptance.validateInputManifest({
+      inputManifest: makeSyntheticV2Input({ currentInput, packageLock }),
+      packageJson,
+      packageLock,
+      rootPackageLock: changedRootLock,
+    })).toThrowError(expect.objectContaining({ code: 'ROOT_LOCK_TOOLCHAIN_MISMATCH' }))
   })
 
   test.each([

@@ -530,5 +530,6 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1')(
       await rm(fixtureRoot, { recursive: true, force: true })
     }
   },
-  120_000,
+  // The relocated child runs the complete suite before its build and package checks.
+  600_000,
 )

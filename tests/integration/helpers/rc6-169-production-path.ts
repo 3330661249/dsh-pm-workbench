@@ -22,6 +22,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { constants as fsConstants, type BigIntStats } from 'node:fs'
 import {
   chmod,
+  copyFile,
   link,
   lstat,
   mkdir,
@@ -69,6 +70,17 @@ const EXPECTED_PACKAGE_LOCK_CANONICAL_SHA256 =
   'd99f9a20b594ca3bd825d33a17c5f4f3953de3589c2df7fd5d87e77cbea2ecd1'
 const SOURCE_ONLY_METADATA_CANARY = 'dsh-source-only-metadata-canary-v1'
 const SYNTHETIC_CONTENT_DOMAIN = 'dsh-pm-workbench/rc6-169-production-path/v1'
+const CLIENT_COMPILER_OVERLAY_RELATIVE = 'tsconfig.surface.client.overlay.json'
+const CLIENT_COMPILER_OVERLAY = {
+  extends: './tsconfig.surface.client.json',
+  compilerOptions: {
+    paths: {
+      react: ['./.compiler/node_modules/@types/react/index.d.ts'],
+      'prop-types': ['./.compiler/node_modules/@types/prop-types/index.d.ts'],
+      csstype: ['./.compiler/node_modules/csstype/index.d.ts'],
+    },
+  },
+}
 
 type JsonPrimitive = null | boolean | number | string
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue }
@@ -108,7 +120,90 @@ type PrepareResult = {
 
 type AcceptanceModule = {
   prepareSelectedSource(options: { workspaceRoot: string }): Promise<PrepareResult>
+  stageRc6DeclarationInputV2(options: { workspaceRoot: string }): Promise<any>
   mapPublicInputError(error: unknown): { status: string; reasonCode: string }
+}
+
+type ReplayCallEvidence = {
+  file: string
+  args: string[]
+  env: Record<string, string>
+  cwd: string | null
+  timeout: number | null
+  maxBuffer: number | null
+}
+
+type ReplaySeamModule = {
+  replayEvidence: { calls: ReplayCallEvidence[] }
+  failNextReplay(): void
+  failNextCompile(): void
+  injectStorageOnNextCompile(
+    surface: 'host' | 'client',
+    packageName: 'dsh-storage' | 'dsh-storage-domain',
+    nestedPath: string,
+  ): void
+  replaceClientOverlayWithSameBytesOnNextCompile(): void
+  replaceCommittedFileWithSameBytesAfterReplay(path: string): void
+  mutateAcceptanceSourceAfterImport(transform: (source: string) => string): Promise<void>
+}
+
+type ProposalFsFaultEvidence = {
+  armedLinkAfterSuccessAsEexist: boolean
+  armedIndependentPointerCopyAsEexist: boolean
+  armedBoundaryFailureAfterSuccessfulLink: boolean
+  armedLinkEioAndBoundaryFailureAfterSuccess: boolean
+  armedAliasUnlinkAsEnoent: boolean
+  proposalLinkCalls: number
+  injectedLinkAfterSuccessAsEexist: boolean
+  injectedIndependentPointerCopyAsEexist: boolean
+  independentPointerHasDifferentInode: boolean
+  successfulLinkBeforeBoundaryFailure: boolean
+  injectedLinkEioAfterSuccess: boolean
+  injectedBoundaryFailureAfterSuccessfulLink: boolean
+  injectedAliasUnlinkAsEnoent: boolean
+}
+
+type ProposalFsFaultModule = {
+  proposalFsFaultEvidence: ProposalFsFaultEvidence
+  armProposalLinkAfterSuccessAsEexist(): void
+  armProposalIndependentPointerCopyAsEexist(): void
+  armProposalBoundaryFailureAfterSuccessfulLink(): void
+  armProposalLinkEioAndBoundaryFailureAfterSuccess(): void
+  armProposalAliasUnlinkAsEnoent(): void
+}
+
+export type Synthetic169BootstrapFixture = {
+  workspaceRoot: string
+  selectedContentBytes: number
+  fakeNpmCliPath: string
+  selectedSourceBundleRoot: string
+  historicalInputsIsolated: true
+  replayEvidence: { calls: ReplayCallEvidence[] }
+  snapshotCommittedEvidence(): Promise<string>
+  stageV2Proposal(): Promise<any>
+  failNextReplay(): void
+  failNextCompile(): void
+  injectStorageOnNextCompile(
+    surface: 'host' | 'client',
+    packageName: 'dsh-storage' | 'dsh-storage-domain',
+    nestedPath: string,
+  ): void
+  replaceClientOverlayWithSameBytesOnNextCompile(): void
+  replaceCommittedFileWithSameBytesAfterReplay(path: string): void
+  mutateAcceptanceSourceAfterImport(transform: (source: string) => string): Promise<void>
+  proposalFsFaultEvidence?: ProposalFsFaultEvidence
+  armProposalLinkAfterSuccessAsEexist?: () => void
+  armProposalIndependentPointerCopyAsEexist?: () => void
+  armProposalBoundaryFailureAfterSuccessfulLink?: () => void
+  armProposalLinkEioAndBoundaryFailureAfterSuccess?: () => void
+  armProposalAliasUnlinkAsEnoent?: () => void
+}
+
+type Synthetic169BootstrapOptions = {
+  verifierSourceTransform?: (source: string) => string
+  trustVerifierTransform?: boolean
+  publishSyntheticProposal?: boolean
+  enableProposalFsFaultSeam?: boolean
 }
 
 type LinkFaultMode = 'before-real-link' | 'after-real-link'
@@ -192,6 +287,7 @@ export type Synthetic169Publication = {
 }
 
 export type Synthetic169ProductionFixture = {
+  workspaceRoot: string
   selectedContentBytes: number
   sourceCacheTreeWitnessSha256: string
   packageJsonCanonicalSha256: string
@@ -624,6 +720,70 @@ async function snapshotReadOnlyTreeIdentity(
   }]
 }
 
+async function snapshotPortableCompilerTree(
+  root: string,
+  path: string = root,
+): Promise<Array<Record<string, JsonPrimitive>>> {
+  const entry = await lstat(path)
+  const logicalPath = relative(root, path).split(sep).join('/') || '.'
+  if (entry.isSymbolicLink()) fail(`synthetic compiler tree contains a symlink: ${logicalPath}`)
+  if (entry.isDirectory()) {
+    const records: Array<Record<string, JsonPrimitive>> = [{
+      path: logicalPath,
+      type: 'directory',
+      mode: entry.mode & 0o777,
+    }]
+    for (const name of (await readdir(path)).sort(compareUtf8)) {
+      records.push(...await snapshotPortableCompilerTree(root, resolve(path, name)))
+    }
+    return records
+  }
+  if (!entry.isFile() || entry.nlink !== 1) {
+    fail(`synthetic compiler tree contains a special or hardlinked file: ${logicalPath}`)
+  }
+  const source = await readStableRegularFile(path)
+  return [{
+    path: logicalPath,
+    type: 'file',
+    mode: source.witness.mode,
+    size: Number(source.witness.size),
+    sha256: source.witness.sha256,
+  }]
+}
+
+async function syntheticCompilerSourceAggregate(
+  workspaceRoot: string,
+  rootPackageLock: JsonObject,
+): Promise<string> {
+  if (!isRecord(rootPackageLock.packages)) fail('root lock compiler packages map is missing')
+  const specs = [
+    ['node_modules/typescript', '6.0.3'],
+    ['node_modules/@types/node', '24.13.3'],
+    ['node_modules/undici-types', '7.18.2'],
+    ['node_modules/@types/react', '18.3.31'],
+    ['node_modules/@types/prop-types', '15.7.15'],
+    ['node_modules/csstype', '3.2.3'],
+  ] as const
+  const packages = []
+  for (const [lockPath, version] of specs) {
+    const lock = rootPackageLock.packages[lockPath]
+    if (!isRecord(lock) || lock.version !== version || typeof lock.integrity !== 'string') {
+      fail(`root lock compiler identity changed: ${lockPath}`)
+    }
+    const inventory = (await snapshotPortableCompilerTree(resolve(workspaceRoot, lockPath)))
+      .sort((left, right) => compareUtf8(String(left.path), String(right.path)))
+    packages.push({
+      lockPath,
+      version,
+      integrity: lock.integrity,
+      inventoryCount: inventory.length,
+      inventorySha256: sha256(canonicalJsonBytes(inventory)),
+    })
+  }
+  packages.sort((left, right) => compareUtf8(left.lockPath, right.lockPath))
+  return sha256(canonicalJsonBytes(packages))
+}
+
 async function materializeSyntheticCache(
   cacheRoot: string,
   entries: SyntheticLockEntry[],
@@ -840,6 +1000,315 @@ function patchFsPromisesImportForLinkFault(source: string): string {
     fail('link-fault import redirection is not unique and reversible')
   }
   return patched
+}
+
+function applyUniqueReversibleReplacements(
+  source: string,
+  replacements: Array<{ label: string; before: string; after: string }>,
+): string {
+  let patched = source
+  const applied: Array<{ label: string; before: string; after: string }> = []
+  for (const replacement of replacements) {
+    if (replacement.before === replacement.after
+      || countSubstring(patched, replacement.before) !== 1
+      || countSubstring(patched, replacement.after) !== 0) {
+      fail(`bootstrap ${replacement.label} patch is not one unique effective replacement`)
+    }
+    patched = patched.replace(replacement.before, replacement.after)
+    if (countSubstring(patched, replacement.after) !== 1) {
+      fail(`bootstrap ${replacement.label} patch did not produce one exact anchor`)
+    }
+    applied.push(replacement)
+  }
+
+  let restored = patched
+  for (const replacement of [...applied].reverse()) {
+    if (countSubstring(restored, replacement.after) !== 1) {
+      fail(`bootstrap ${replacement.label} patch is not reversibly bound`)
+    }
+    restored = restored.replace(replacement.after, replacement.before)
+  }
+  if (restored !== source) fail('bootstrap production patch is not exactly reversible')
+  return patched
+}
+
+function stampNormalizedAcceptanceSource(source: string): string {
+  const pattern = /const EXPECTED_ACCEPTANCE_SOURCE_NORMALIZED_SHA256 = '[a-f0-9]{64}'/g
+  const matches = [...source.matchAll(pattern)]
+  if (matches.length !== 1) fail('expected exactly one acceptance source self-hash stamp')
+  const placeholder = `const EXPECTED_ACCEPTANCE_SOURCE_NORMALIZED_SHA256 = '${'0'.repeat(64)}'`
+  const normalized = source.replace(pattern, placeholder)
+  const digest = sha256(Buffer.from(normalized, 'utf8'))
+  const stamped = normalized.replace(
+    placeholder,
+    `const EXPECTED_ACCEPTANCE_SOURCE_NORMALIZED_SHA256 = '${digest}'`,
+  )
+  if (countSubstring(stamped, digest) !== 1
+    || stamped.replace(digest, '0'.repeat(64)) !== normalized) {
+    fail('acceptance source self-hash stamp is not unique and reversible')
+  }
+  return stamped
+}
+
+function patchBootstrapProductionScript({
+  source,
+  selectedContentBytes,
+  packageLockRawSha256,
+  packageLockCanonicalSha256,
+  committedV1RawSha256,
+  selectedCacheIndexSha256,
+  selectedContentAggregateSha256,
+  compilerSourceAggregateSha256,
+  verifierSourceSha256,
+  fakeNpmCliPath,
+  publishSyntheticProposal = false,
+  fsPromisesModuleSpecifier,
+}: {
+  source: string
+  selectedContentBytes: number
+  packageLockRawSha256: string
+  packageLockCanonicalSha256: string
+  committedV1RawSha256: string
+  selectedCacheIndexSha256: string
+  selectedContentAggregateSha256: string
+  compilerSourceAggregateSha256: string
+  verifierSourceSha256?: string
+  fakeNpmCliPath: string
+  publishSyntheticProposal?: boolean
+  fsPromisesModuleSpecifier?: string
+}): string {
+  for (const [label, value] of Object.entries({
+    packageLockRawSha256,
+    committedV1RawSha256,
+    selectedCacheIndexSha256,
+    selectedContentAggregateSha256,
+    compilerSourceAggregateSha256,
+  })) {
+    if (!/^[a-f0-9]{64}$/.test(value)) fail(`bootstrap ${label} is not a SHA-256`)
+  }
+  const selectedPatched = patchProductionScript(
+    source,
+    selectedContentBytes,
+    packageLockCanonicalSha256,
+  )
+  const replacements = [
+    {
+      label: 'committed v1 raw hash',
+      before: "const EXPECTED_COMMITTED_V1_INPUT_RAW_SHA256 = 'eaa89753953535e0a231ac99d3053de75d8fb67c2d73f7b9bcae9a2997d7e489'",
+      after: `const EXPECTED_COMMITTED_V1_INPUT_RAW_SHA256 = '${committedV1RawSha256}'`,
+    },
+    {
+      label: 'compiler source aggregate',
+      before: "const EXPECTED_COMPILER_SOURCE_AGGREGATE_SHA256 = '44535345dd7a3448bac9206c60ad352f67c265708d410c4c5e20dad0de83d943'",
+      after: `const EXPECTED_COMPILER_SOURCE_AGGREGATE_SHA256 = '${compilerSourceAggregateSha256}'`,
+    },
+    ...(verifierSourceSha256
+      && verifierSourceSha256 !== '1cd80842bb5b1d8b6b74d9a818bdd827d85a3e0e1e63003e665864ce28096a37'
+      ? [{
+          label: 'verifier source hash',
+          before: "const EXPECTED_VERIFIER_SOURCE_SHA256 = '1cd80842bb5b1d8b6b74d9a818bdd827d85a3e0e1e63003e665864ce28096a37'",
+          after: `const EXPECTED_VERIFIER_SOURCE_SHA256 = '${verifierSourceSha256}'`,
+        }]
+      : []),
+    {
+      label: 'replay evidence kind',
+      before: "const REPLAY_EVIDENCE_KIND = 'REAL_NPM_CLI'",
+      after: "const REPLAY_EVIDENCE_KIND = 'SYNTHETIC_CHILD_PROCESS_SEAM'",
+    },
+    ...(publishSyntheticProposal
+      ? [{
+          label: 'synthetic proposal publication gate',
+          before: "if (REPLAY_EVIDENCE_KIND !== 'REAL_NPM_CLI') {\n      await assertPreCommit()\n      return {",
+          after: "if (REPLAY_EVIDENCE_KIND === 'SYNTHETIC_CHILD_PROCESS_SEAM' && false) {\n      await assertPreCommit()\n      return {",
+        }]
+      : []),
+    {
+      label: 'v2 selected-index hash',
+      before: "const V2_SELECTED_INDEX_SHA256 = '73e76d127ab8188d8005e4becb750bbe9cfec30988e501185b13558f4c6cd3f6'",
+      after: `const V2_SELECTED_INDEX_SHA256 = '${selectedCacheIndexSha256}'`,
+    },
+    {
+      label: 'v2 selected-content hash',
+      before: "const V2_SELECTED_CONTENT_AGGREGATE_SHA256 = '3a8c2e3ba2bb7e07d3cc51212e9ae3dd4925e522d9c9c87acac16fee122757dc'",
+      after: `const V2_SELECTED_CONTENT_AGGREGATE_SHA256 = '${selectedContentAggregateSha256}'`,
+    },
+    {
+      label: 'accepted package-lock raw hash',
+      before: `inputManifest.packageLockSha256 !== '${EXPECTED_PACKAGE_LOCK_RAW_SHA256}'`,
+      after: `inputManifest.packageLockSha256 !== '${packageLockRawSha256}'`,
+    },
+    {
+      label: 'child-process import',
+      before: "import { execFile } from 'node:child_process'",
+      after: "import { execFile } from './child-process-replay-seam.mjs'",
+    },
+    ...(fsPromisesModuleSpecifier
+      ? [{
+          label: 'fs promises fault seam',
+          before: "} from 'node:fs/promises'",
+          after: `} from ${JSON.stringify(fsPromisesModuleSpecifier)}`,
+        }]
+      : []),
+    {
+      label: 'npm CLI location',
+      before: "const NPM_CLI_RELATIVE_FROM_NODE = '../lib/node_modules/npm/bin/npm-cli.js'",
+      after: `const NPM_CLI_RELATIVE_FROM_NODE = ${JSON.stringify(fakeNpmCliPath)}`,
+    },
+  ]
+  return stampNormalizedAcceptanceSource(
+    applyUniqueReversibleReplacements(selectedPatched, replacements),
+  )
+}
+
+function proposalFsFaultSeamSource(): string {
+  return `export * from 'node:fs/promises'
+
+import { constants as fsConstants } from 'node:fs'
+import {
+  copyFile as realCopyFile,
+  link as realLink,
+  lstat as realLstat,
+  unlink as realUnlink,
+} from 'node:fs/promises'
+import { basename } from 'node:path'
+
+let injectLinkAfterSuccessAsEexist = false
+let injectIndependentPointerCopyAsEexist = false
+let injectBoundaryFailureAfterSuccessfulLink = false
+let injectLinkEioAndBoundaryFailureAfterSuccess = false
+let failNextBoundaryLstat = false
+let injectAliasUnlinkAsEnoent = false
+
+export const proposalFsFaultEvidence = {
+  armedLinkAfterSuccessAsEexist: false,
+  armedIndependentPointerCopyAsEexist: false,
+  armedBoundaryFailureAfterSuccessfulLink: false,
+  armedLinkEioAndBoundaryFailureAfterSuccess: false,
+  armedAliasUnlinkAsEnoent: false,
+  proposalLinkCalls: 0,
+  injectedLinkAfterSuccessAsEexist: false,
+  injectedIndependentPointerCopyAsEexist: false,
+  independentPointerHasDifferentInode: false,
+  successfulLinkBeforeBoundaryFailure: false,
+  injectedLinkEioAfterSuccess: false,
+  injectedBoundaryFailureAfterSuccessfulLink: false,
+  injectedAliasUnlinkAsEnoent: false,
+}
+
+export function armProposalLinkAfterSuccessAsEexist() {
+  if (injectLinkAfterSuccessAsEexist) throw new Error('proposal link fault already armed')
+  injectLinkAfterSuccessAsEexist = true
+  proposalFsFaultEvidence.armedLinkAfterSuccessAsEexist = true
+}
+
+export function armProposalIndependentPointerCopyAsEexist() {
+  if (injectIndependentPointerCopyAsEexist) {
+    throw new Error('proposal independent pointer copy fault already armed')
+  }
+  injectIndependentPointerCopyAsEexist = true
+  proposalFsFaultEvidence.armedIndependentPointerCopyAsEexist = true
+}
+
+export function armProposalBoundaryFailureAfterSuccessfulLink() {
+  if (injectBoundaryFailureAfterSuccessfulLink || failNextBoundaryLstat) {
+    throw new Error('proposal post-link boundary fault already armed')
+  }
+  injectBoundaryFailureAfterSuccessfulLink = true
+  proposalFsFaultEvidence.armedBoundaryFailureAfterSuccessfulLink = true
+}
+
+export function armProposalLinkEioAndBoundaryFailureAfterSuccess() {
+  if (injectLinkEioAndBoundaryFailureAfterSuccess || failNextBoundaryLstat) {
+    throw new Error('proposal combined link and boundary fault already armed')
+  }
+  injectLinkEioAndBoundaryFailureAfterSuccess = true
+  proposalFsFaultEvidence.armedLinkEioAndBoundaryFailureAfterSuccess = true
+}
+
+export function armProposalAliasUnlinkAsEnoent() {
+  if (injectAliasUnlinkAsEnoent) throw new Error('proposal unlink fault already armed')
+  injectAliasUnlinkAsEnoent = true
+  proposalFsFaultEvidence.armedAliasUnlinkAsEnoent = true
+}
+
+function isProposalPointerLink(source, target) {
+  return /^\\.rc6-declaration-v2-proposal-[a-f0-9]{32}\\.tmp$/.test(basename(source))
+    && basename(target) === 'rc6-declaration-v2-proposal.json'
+}
+
+function isProposalPointerTemporary(path) {
+  return /^\\.rc6-declaration-v2-proposal-[a-f0-9]{32}\\.tmp$/.test(basename(path))
+}
+
+export async function link(source, target) {
+  if (isProposalPointerLink(source, target)) {
+    proposalFsFaultEvidence.proposalLinkCalls += 1
+    if (injectLinkAfterSuccessAsEexist) {
+      injectLinkAfterSuccessAsEexist = false
+      await realLink(source, target)
+      proposalFsFaultEvidence.injectedLinkAfterSuccessAsEexist = true
+      throw Object.assign(new Error('synthetic EEXIST after successful proposal link'), {
+        code: 'EEXIST',
+      })
+    }
+    if (injectIndependentPointerCopyAsEexist) {
+      injectIndependentPointerCopyAsEexist = false
+      await realCopyFile(source, target, fsConstants.COPYFILE_EXCL)
+      const [sourceStat, targetStat] = await Promise.all([
+        realLstat(source, { bigint: true }),
+        realLstat(target, { bigint: true }),
+      ])
+      proposalFsFaultEvidence.injectedIndependentPointerCopyAsEexist = true
+      proposalFsFaultEvidence.independentPointerHasDifferentInode =
+        sourceStat.dev !== targetStat.dev || sourceStat.ino !== targetStat.ino
+      throw Object.assign(new Error('synthetic EEXIST after independent proposal pointer copy'), {
+        code: 'EEXIST',
+      })
+    }
+    if (injectBoundaryFailureAfterSuccessfulLink) {
+      injectBoundaryFailureAfterSuccessfulLink = false
+      await realLink(source, target)
+      proposalFsFaultEvidence.successfulLinkBeforeBoundaryFailure = true
+      failNextBoundaryLstat = true
+      return
+    }
+    if (injectLinkEioAndBoundaryFailureAfterSuccess) {
+      injectLinkEioAndBoundaryFailureAfterSuccess = false
+      await realLink(source, target)
+      proposalFsFaultEvidence.successfulLinkBeforeBoundaryFailure = true
+      proposalFsFaultEvidence.injectedLinkEioAfterSuccess = true
+      failNextBoundaryLstat = true
+      throw Object.assign(new Error('synthetic EIO after successful proposal link'), {
+        code: 'EIO',
+      })
+    }
+  }
+  return realLink(source, target)
+}
+
+export async function lstat(path, options) {
+  if (failNextBoundaryLstat) {
+    failNextBoundaryLstat = false
+    proposalFsFaultEvidence.injectedBoundaryFailureAfterSuccessfulLink = true
+    throw Object.assign(new Error('synthetic proposal post-link boundary failure'), {
+      code: 'EIO',
+    })
+  }
+  return realLstat(path, options)
+}
+
+export async function unlink(path) {
+  if (injectAliasUnlinkAsEnoent && isProposalPointerTemporary(path)) {
+    injectAliasUnlinkAsEnoent = false
+    await realUnlink(path)
+    proposalFsFaultEvidence.injectedAliasUnlinkAsEnoent = true
+    throw Object.assign(new Error('synthetic ENOENT after raced proposal alias unlink'), {
+      code: 'ENOENT',
+    })
+  }
+  return realUnlink(path)
+}
+`
 }
 
 function linkFaultWrapperSource(mode: LinkFaultMode): string {
@@ -1147,20 +1616,15 @@ function buildExpectedDescriptor({
     key: entry.key,
     contentDigest: entry.integrity,
   }))
-  const selectedIndex = entries.map((entry) => {
-    const record = frozenIndexRecord(entry)
-    const json = canonicalJsonBytes(record)
-    return {
-      lockPath: entry.lockPath,
-      name: entry.name,
-      version: entry.version,
-      integrity: entry.integrity,
-      key: entry.key,
-      indexChecksum: sha1(json),
-      byteLength: entry.contentBytes.length,
-      contentDigest: entry.integrity,
-    }
-  })
+  const selectedIndex = entries.map((entry) => ({
+    lockPath: entry.lockPath,
+    name: entry.name,
+    version: entry.version,
+    integrity: entry.integrity,
+    key: entry.key,
+    byteLength: entry.contentBytes.length,
+    contentDigest: entry.integrity,
+  }))
   const contentAggregate = entries.map((entry) => ({
     lockPath: entry.lockPath,
     contentDigest: entry.integrity,
@@ -1619,6 +2083,7 @@ async function setupAndRun(
     'selectCacheIndexRecord',
     'snapshotSelectedCacheFixtureOnly',
     'snapshotSelectedCacheSelectedOnlyForTest',
+    'stageRc6DeclarationInputV2',
     'validateInputManifest',
     'validateProductionBoundary',
   ].sort(compareUtf8)
@@ -1941,6 +2406,7 @@ async function setupAndRun(
     }
   }
   return {
+    workspaceRoot: owner.root,
     selectedContentBytes: synthetic.selectedContentBytes,
     sourceCacheTreeWitnessSha256: sha256(sourceCacheTreeBeforeBytes),
     packageJsonCanonicalSha256,
@@ -1952,6 +2418,397 @@ async function setupAndRun(
     prepareAgainAfterAddingPointerTemporaryAlias,
     ...(concurrentSettlements ? { concurrentSettlements } : {}),
   }
+}
+
+function parseProductionBoundaryFiles(source: string): Array<{ path: string; sha256: string }> {
+  const match = singleMatch(
+    source,
+    /^const PRODUCTION_BOUNDARY_LINES = `([^`]*)`$/gm,
+    'production-boundary file list',
+  )
+  const records = match[1].split('\n').map((line) => {
+    const separator = line.lastIndexOf(' ')
+    if (separator < 1) fail('invalid production-boundary fixture line')
+    const path = line.slice(0, separator)
+    const digest = line.slice(separator + 1)
+    if (path.startsWith('/') || path.includes('\\') || path.split('/').includes('..')
+      || !/^[a-f0-9]{64}$/.test(digest)) {
+      fail('unsafe production-boundary fixture line')
+    }
+    return { path, sha256: digest }
+  })
+  if (records.length === 0
+    || new Set(records.map(({ path }) => path)).size !== records.length) {
+    fail('production-boundary fixture list is empty or duplicated')
+  }
+  return records
+}
+
+async function copyVerifiedFixtureFile({
+  repositoryRoot,
+  workspaceRoot,
+  relativePath,
+  expectedSha256,
+}: {
+  repositoryRoot: string
+  workspaceRoot: string
+  relativePath: string
+  expectedSha256?: string
+}): Promise<SourceWitness> {
+  const source = await readStableRegularFile(resolve(repositoryRoot, relativePath))
+  if (expectedSha256 && source.witness.sha256 !== expectedSha256) {
+    fail(`committed fixture source hash changed: ${relativePath}`)
+  }
+  const destination = resolve(workspaceRoot, relativePath)
+  const escaped = relative(workspaceRoot, destination)
+  if (escaped === '' || escaped === '..' || escaped.startsWith(`..${sep}`)) {
+    fail(`committed fixture destination escapes the owner root: ${relativePath}`)
+  }
+  await writeExclusiveFile(destination, source.bytes, source.witness.mode)
+  const copied = await readStableRegularFile(destination)
+  if (!copied.bytes.equals(source.bytes)) fail(`committed fixture copy changed bytes: ${relativePath}`)
+  return source.witness
+}
+
+function buildSyntheticV1BootstrapManifest({
+  committedInput,
+  entries,
+  packageLockRawSha256,
+  selectedContentBytes,
+}: {
+  committedInput: JsonObject
+  entries: SyntheticLockEntry[]
+  packageLockRawSha256: string
+  selectedContentBytes: number
+}): JsonObject {
+  const synthetic = structuredClone(committedInput)
+  const selectedEntries = entries.map((entry) => {
+    const indexJson = canonicalJsonBytes(frozenIndexRecord(entry))
+    return {
+      lockPath: entry.lockPath,
+      name: entry.name,
+      version: entry.version,
+      integrity: entry.integrity,
+      key: entry.key,
+      indexChecksum: sha1(indexJson),
+      byteLength: entry.contentBytes.length,
+      contentDigest: entry.integrity,
+    }
+  })
+  const legacyCollator = new Intl.Collator()
+  const legacyContentAggregate = selectedEntries
+    .map(({ contentDigest, byteLength }) => ({ contentDigest, byteLength }))
+    .sort((left, right) => left.contentDigest === right.contentDigest
+      ? left.byteLength - right.byteLength
+      : legacyCollator.compare(left.contentDigest, right.contentDigest))
+  synthetic.packageLockSha256 = packageLockRawSha256
+  synthetic.selectedCache = {
+    entries: selectedEntries,
+    totalBytes: selectedContentBytes,
+  }
+  synthetic.selectedCacheIndexSha256 = sha256(prettyJsonBytes(selectedEntries))
+  synthetic.selectedContentAggregateSha256 = sha256(prettyJsonBytes(legacyContentAggregate))
+  return synthetic
+}
+
+function replayInstallPlan(packageLock: JsonObject): Array<{
+  lockPath: string
+  manifest: JsonObject
+}> {
+  if (!isRecord(packageLock.packages)) fail('synthetic replay lock packages map is missing')
+  return Object.entries(packageLock.packages)
+    .filter(([lockPath]) => lockPath !== '')
+    .sort(([left], [right]) => compareUtf8(left, right))
+    .map(([lockPath, value]) => {
+      if (!isRecord(value) || typeof value.version !== 'string') {
+        fail(`synthetic replay lock record is invalid: ${lockPath}`)
+      }
+      const manifest: JsonObject = {
+        name: packageNameFromLockPath(lockPath),
+        version: value.version,
+      }
+      for (const field of [
+        'dependencies',
+        'optionalDependencies',
+        'peerDependencies',
+        'peerDependenciesMeta',
+      ] as const) {
+        if (isRecord(value[field])) manifest[field] = structuredClone(value[field]) as JsonObject
+      }
+      return { lockPath, manifest }
+    })
+}
+
+function replayChildProcessSeamSource(
+  installPlan: ReturnType<typeof replayInstallPlan>,
+): string {
+  return `import { lstat, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { dirname, relative, resolve, sep } from 'node:path'
+
+const installPlan = ${JSON.stringify(installPlan)}
+const expectedClientCompilerOverlayRelative = ${JSON.stringify(CLIENT_COMPILER_OVERLAY_RELATIVE)}
+const expectedClientCompilerOverlayBytes = ${JSON.stringify(`${canonicalJsonBytes(CLIENT_COMPILER_OVERLAY)}\n`)}
+let failNextCi = false
+let failNextTsc = false
+let storageCompileInjection = null
+let replaceClientOverlayOnNextCompile = false
+let replaceCommittedPathAfterCi = null
+
+export const replayEvidence = { calls: [] }
+
+export function failNextReplay() {
+  if (failNextCi) throw new Error('synthetic replay failure is already armed')
+  failNextCi = true
+}
+
+export function failNextCompile() {
+  if (failNextTsc) throw new Error('synthetic compile failure is already armed')
+  failNextTsc = true
+}
+
+export function injectStorageOnNextCompile(surface, packageName, nestedPath) {
+  if (storageCompileInjection !== null
+    || (surface !== 'host' && surface !== 'client')
+    || (packageName !== 'dsh-storage' && packageName !== 'dsh-storage-domain')
+    || typeof nestedPath !== 'string'
+    || nestedPath === ''
+    || nestedPath.split(/[\\/]/u).some((segment) => segment === '' || segment === '..')) {
+    throw new Error('synthetic storage compile injection is already armed or invalid')
+  }
+  storageCompileInjection = { surface, packageName, nestedPath }
+}
+
+export function replaceClientOverlayWithSameBytesOnNextCompile() {
+  if (replaceClientOverlayOnNextCompile) {
+    throw new Error('synthetic client overlay replacement is already armed')
+  }
+  replaceClientOverlayOnNextCompile = true
+}
+
+export function replaceCommittedFileWithSameBytesAfterReplay(path) {
+  if (replaceCommittedPathAfterCi !== null || typeof path !== 'string' || path === '') {
+    throw new Error('synthetic committed replacement is already armed or invalid')
+  }
+  replaceCommittedPathAfterCi = path
+}
+
+function result(stdout = '') {
+  return { stdout, stderr: '' }
+}
+
+function argumentValue(args, prefix) {
+  const matches = args.filter((value) => value.startsWith(prefix))
+  if (matches.length !== 1 || matches[0].length === prefix.length) {
+    throw new Error('synthetic replay received an invalid ' + prefix + ' argument')
+  }
+  return matches[0].slice(prefix.length)
+}
+
+async function materializeInstall(prefix) {
+  for (const entry of installPlan) {
+    const packageRoot = resolve(prefix, entry.lockPath)
+    const escaped = relative(prefix, packageRoot)
+    if (escaped === '' || escaped === '..' || escaped.startsWith('..' + sep)) {
+      throw new Error('synthetic install path escaped its replay root')
+    }
+    await mkdir(packageRoot, { recursive: true, mode: 0o700 })
+    await writeFile(
+      resolve(packageRoot, 'package.json'),
+      JSON.stringify(entry.manifest, null, 2) + '\\n',
+      { flag: 'wx', mode: 0o600 },
+    )
+    if (entry.lockPath === 'node_modules/typescript') {
+      const tscPath = resolve(packageRoot, 'bin/tsc')
+      await mkdir(dirname(tscPath), { recursive: true, mode: 0o700 })
+      await writeFile(tscPath, "throw new Error('SYNTHETIC_TSC_MUST_NOT_EXECUTE')\\n", {
+        flag: 'wx',
+        mode: 0o600,
+      })
+    }
+  }
+}
+
+export function execFile(file, args, options, callback) {
+  if (typeof options === 'function') {
+    callback = options
+    options = {}
+  }
+  const capturedArgs = Array.isArray(args) ? args.map(String) : []
+  const capturedEnv = {}
+  for (const [key, value] of Object.entries(options?.env ?? {})) {
+    if (typeof value === 'string') capturedEnv[key] = value
+  }
+  replayEvidence.calls.push({
+    file: String(file),
+    args: capturedArgs,
+    env: capturedEnv,
+    cwd: typeof options?.cwd === 'string' ? options.cwd : null,
+    timeout: Number.isSafeInteger(options?.timeout) ? options.timeout : null,
+    maxBuffer: Number.isSafeInteger(options?.maxBuffer) ? options.maxBuffer : null,
+  })
+
+  Promise.resolve().then(async () => {
+    if (capturedArgs.length === 2 && capturedArgs[1] === '--version') {
+      return result('11.9.0\\n')
+    }
+    if (capturedArgs[1] === 'ci') {
+      if (failNextCi) {
+        failNextCi = false
+        throw Object.assign(new Error('synthetic npm ci failure'), { code: 1 })
+      }
+      await materializeInstall(argumentValue(capturedArgs, '--prefix='))
+      if (replaceCommittedPathAfterCi !== null) {
+        const target = replaceCommittedPathAfterCi
+        replaceCommittedPathAfterCi = null
+        const bytes = await readFile(target)
+        const targetStat = await lstat(target)
+        const temporary = target + '.byte-identical-replacement'
+        await writeFile(temporary, bytes, { flag: 'wx', mode: targetStat.mode & 0o777 })
+        await rename(temporary, target)
+      }
+      return result()
+    }
+    if (capturedArgs[0]?.endsWith('/node_modules/typescript/bin/tsc')
+      || capturedArgs[0]?.endsWith('\\\\node_modules\\\\typescript\\\\bin\\\\tsc')) {
+      if (capturedArgs[1] !== '-p' || typeof capturedArgs[2] !== 'string') {
+        throw new Error('synthetic tsc received an invalid project argument')
+      }
+      const isClientCompile = capturedArgs[2].endsWith(sep + expectedClientCompilerOverlayRelative)
+      const isHostCompile = capturedArgs[2].endsWith(sep + 'tsconfig.surface.host.json')
+      if (!isClientCompile && !isHostCompile) {
+        throw new Error('synthetic tsc received an unknown project path')
+      }
+      const compileSurface = isClientCompile ? 'client' : 'host'
+      if (isClientCompile) {
+        if (relative(options.cwd, capturedArgs[2]) !== expectedClientCompilerOverlayRelative) {
+          throw new Error('synthetic client overlay escaped replay root')
+        }
+        const overlayBytes = await readFile(capturedArgs[2], 'utf8')
+        if (overlayBytes !== expectedClientCompilerOverlayBytes
+          || /(?:\\/Users\\/|\\/private\\/|file:|[A-Za-z]:[\\\\/])/.test(overlayBytes)) {
+          throw new Error('synthetic client overlay bytes are not exact and path-free')
+        }
+      }
+      if (failNextTsc) {
+        failNextTsc = false
+        throw Object.assign(new Error('synthetic tsc failure'), { code: 1 })
+      }
+      if (replaceClientOverlayOnNextCompile
+        && isClientCompile) {
+        replaceClientOverlayOnNextCompile = false
+        const overlayBytes = await readFile(capturedArgs[2])
+        const overlayStat = await lstat(capturedArgs[2])
+        const temporary = capturedArgs[2] + '.byte-identical-replacement'
+        await writeFile(temporary, overlayBytes, {
+          flag: 'wx',
+          mode: overlayStat.mode & 0o777,
+        })
+        await rename(temporary, capturedArgs[2])
+      }
+      const contractRelativePath = compileSurface === 'host'
+        ? 'tools/harness-rc6-declarations/contracts/harness-host-rc6-surface.ts'
+        : 'tools/harness-rc6-declarations/contracts/harness-client-rc6-surface.ts'
+      const outputPaths = [resolve(options.cwd, contractRelativePath)]
+      if (storageCompileInjection?.surface === compileSurface) {
+        const injection = storageCompileInjection
+        storageCompileInjection = null
+        const storagePath = resolve(
+          options.cwd,
+          'node_modules/@deepseek-ai',
+          injection.packageName,
+          injection.nestedPath,
+        )
+        const storageRelative = relative(options.cwd, storagePath)
+        if (storageRelative === ''
+          || storageRelative === '..'
+          || storageRelative.startsWith('..' + sep)) {
+          throw new Error('synthetic storage compile injection escaped replay root')
+        }
+        await mkdir(dirname(storagePath), { recursive: true, mode: 0o700 })
+        await writeFile(storagePath, 'export {}\\n', { flag: 'wx', mode: 0o600 })
+        outputPaths.push(storagePath)
+      }
+      return result(outputPaths.join('\\n') + '\\n')
+    }
+    throw new Error('unexpected child-process invocation reached the synthetic replay seam')
+  }).then(
+    (value) => callback(null, value),
+    (error) => callback(error),
+  )
+}
+`
+}
+
+async function locateExactRuntimeNpmCli(expectedSha256: string): Promise<StableSourceFile> {
+  const candidates = [
+    process.env.npm_execpath,
+    resolve(dirname(process.execPath), '../lib/node_modules/npm/bin/npm-cli.js'),
+  ].filter((value): value is string => typeof value === 'string' && value !== '')
+  const visited = new Set<string>()
+  for (const candidate of candidates) {
+    let canonical: string
+    try {
+      canonical = await realpath(candidate)
+    } catch {
+      continue
+    }
+    if (visited.has(canonical)) continue
+    visited.add(canonical)
+    const source = await readStableRegularFile(canonical).catch(() => undefined)
+    if (source && source.witness.sha256 === expectedSha256
+      && canonical.split(sep).at(-1) === 'npm-cli.js') {
+      return source
+    }
+  }
+  fail('exact npm CLI bytes required by the committed runtime were not found')
+}
+
+async function rewriteOwnedReadOnlyFile(path: string, bytes: Buffer): Promise<void> {
+  const before = await lstat(path, { bigint: true })
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) {
+    fail('refusing to rewrite a non-owned synthetic fixture file')
+  }
+  await chmod(path, 0o600)
+  let handle
+  try {
+    handle = await open(
+      path,
+      fsConstants.O_WRONLY | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW,
+    )
+    await handle.writeFile(bytes)
+  } finally {
+    await handle?.close()
+    await chmod(path, 0o444).catch(() => {})
+  }
+  const after = await readStableRegularFile(path)
+  if (!after.bytes.equals(bytes) || after.witness.mode !== 0o444) {
+    fail('rewritten synthetic fixture file does not match requested bytes')
+  }
+}
+
+async function snapshotCommittedFixtureEvidence(
+  workspaceRoot: string,
+  relativePaths: string[],
+  selectedSourceBundleRoot: string,
+): Promise<string> {
+  const records = []
+  for (const relativePath of [...new Set(relativePaths)].sort(compareUtf8)) {
+    const stable = await readStableRegularFile(resolve(workspaceRoot, relativePath))
+    records.push({
+      path: relativePath,
+      sha256: stable.witness.sha256,
+      size: stable.witness.size,
+      mode: stable.witness.mode,
+      nlink: stable.witness.nlink,
+    })
+  }
+  const pointer = await readStableRegularFile(resolve(workspaceRoot, POINTER_RELATIVE_PATH))
+  const { path: _pointerPath, ...pointerIdentity } = pointer.witness
+  return canonicalJsonBytes({
+    committedFiles: records,
+    stablePointer: pointerIdentity,
+    selectedSourceBundle: await snapshotReadOnlyTreeIdentity(selectedSourceBundleRoot),
+  })
 }
 
 /**
@@ -2024,6 +2881,390 @@ export async function withSynthetic169ProductionPath<T>(
   inspect: (fixture: Synthetic169ProductionFixture) => T | Promise<T>,
 ): Promise<T> {
   return withSynthetic169ProductionMode(repositoryRoot, inspect, 'single')
+}
+
+export async function withSynthetic169BootstrapProductionPath<T>(
+  repositoryRoot: string,
+  inspect: (fixture: Synthetic169BootstrapFixture) => T | Promise<T>,
+  options: Synthetic169BootstrapOptions = {},
+): Promise<T> {
+  if (typeof inspect !== 'function') fail('a bootstrap assertion callback is required')
+  const productionSource = await readStableRegularFile(
+    resolve(repositoryRoot, PRODUCTION_SCRIPT_RELATIVE_PATH),
+  )
+  const boundaryFiles = parseProductionBoundaryFiles(
+    productionSource.bytes.toString('utf8'),
+  )
+  const copiedCommittedPaths = [
+    ...boundaryFiles.map(({ path }) => path),
+    'tools/harness-rc6-declarations/input-manifest.json',
+    PACKAGE_JSON_RELATIVE_PATH,
+    PACKAGE_LOCK_RELATIVE_PATH,
+    'tools/harness-rc6-declarations/contracts/harness-host-rc6-surface.ts',
+    'tools/harness-rc6-declarations/contracts/harness-client-rc6-surface.ts',
+    'tsconfig.surface.host.json',
+    'tsconfig.surface.client.json',
+    'research/2026-09-05-rc6-declaration-closure.json',
+    PRODUCTION_SCRIPT_RELATIVE_PATH,
+    'scripts/verify-rc6-declaration-closure.mjs',
+  ]
+
+  return withSynthetic169ProductionPath(repositoryRoot, async (baseFixture) => {
+    // macOS exposes the temporary directory through /var while realpath uses
+    // /private/var.  The production bootstrap compares compiler realpaths to
+    // the supplied workspace root, so expose and consume the canonical owner
+    // root rather than relying on those two spellings being interchangeable.
+    const workspaceRoot = await realpath(baseFixture.workspaceRoot)
+    const originalPackageLockSource = await readStableRegularFile(
+      resolve(repositoryRoot, PACKAGE_LOCK_RELATIVE_PATH),
+    )
+    const originalPackageLock = parseJsonObject(
+      originalPackageLockSource.bytes,
+      'committed package-lock skeleton',
+    )
+    const rootCompilerPackageLock = parseJsonObject(
+      (await readStableRegularFile(resolve(repositoryRoot, 'package-lock.json'))).bytes,
+      'root compiler package-lock',
+    )
+    const synthetic = cloneLockWithSyntheticIntegrity(originalPackageLock)
+    const syntheticPackageLockBytes = Buffer.from(prettyJsonBytes(synthetic.packageLock), 'utf8')
+    const syntheticPackageLockRawSha256 = sha256(syntheticPackageLockBytes)
+    const candidateLock = await readStableRegularFile(
+      resolve(baseFixture.workspaceRoot, CANDIDATE_RELATIVE_PATH, 'package-lock.json'),
+    )
+    if (!candidateLock.bytes.equals(syntheticPackageLockBytes)
+      || synthetic.selectedContentBytes !== baseFixture.selectedContentBytes) {
+      fail('bootstrap fixture did not reuse the verified 169-entry synthetic preparation')
+    }
+
+    for (const boundary of boundaryFiles) {
+      await copyVerifiedFixtureFile({
+        repositoryRoot,
+        workspaceRoot: baseFixture.workspaceRoot,
+        relativePath: boundary.path,
+        expectedSha256: boundary.sha256,
+      })
+    }
+    await copyVerifiedFixtureFile({
+      repositoryRoot,
+      workspaceRoot: baseFixture.workspaceRoot,
+      relativePath: PACKAGE_JSON_RELATIVE_PATH,
+      expectedSha256: EXPECTED_PACKAGE_JSON_RAW_SHA256,
+    })
+    for (const relativePath of [
+      'tools/harness-rc6-declarations/contracts/harness-host-rc6-surface.ts',
+      'tools/harness-rc6-declarations/contracts/harness-client-rc6-surface.ts',
+      'tsconfig.surface.host.json',
+      'tsconfig.surface.client.json',
+      'research/2026-09-05-rc6-declaration-closure.json',
+      'scripts/verify-rc6-declaration-closure.mjs',
+    ]) {
+      await copyVerifiedFixtureFile({
+        repositoryRoot,
+        workspaceRoot: baseFixture.workspaceRoot,
+        relativePath,
+      })
+    }
+    let transformedVerifierSourceSha256
+    if (options.verifierSourceTransform) {
+      const verifierPath = resolve(
+        baseFixture.workspaceRoot,
+        'scripts/verify-rc6-declaration-closure.mjs',
+      )
+      const verifierSource = await readStableRegularFile(verifierPath)
+      const transformed = options.verifierSourceTransform(verifierSource.bytes.toString('utf8'))
+      if (typeof transformed !== 'string' || transformed === verifierSource.bytes.toString('utf8')) {
+        fail('synthetic verifier transform must produce different source')
+      }
+      await rewriteOwnedReadOnlyFile(verifierPath, Buffer.from(transformed, 'utf8'))
+      transformedVerifierSourceSha256 = sha256(Buffer.from(transformed, 'utf8'))
+    }
+
+    const committedInputSource = await readStableRegularFile(resolve(
+      repositoryRoot,
+      'tools/harness-rc6-declarations/input-manifest.json',
+    ))
+    const committedInput = parseJsonObject(committedInputSource.bytes, 'committed v1 input manifest')
+    if (committedInput.schemaVersion !== '1'
+      || !isRecord(committedInput.runtime)
+      || !isRecord(committedInput.runtime.npm)
+      || typeof committedInput.runtime.npm.cliSha256 !== 'string') {
+      fail('committed bootstrap input no longer contains the expected v1 runtime')
+    }
+    const syntheticV1 = buildSyntheticV1BootstrapManifest({
+      committedInput,
+      entries: synthetic.entries,
+      packageLockRawSha256: syntheticPackageLockRawSha256,
+      selectedContentBytes: synthetic.selectedContentBytes,
+    })
+    const syntheticV1Bytes = Buffer.from(prettyJsonBytes(syntheticV1), 'utf8')
+    await writeExclusiveFile(
+      resolve(baseFixture.workspaceRoot, 'tools/harness-rc6-declarations/input-manifest.json'),
+      syntheticV1Bytes,
+      committedInputSource.witness.mode,
+    )
+    await writeExclusiveFile(
+      resolve(baseFixture.workspaceRoot, PACKAGE_LOCK_RELATIVE_PATH),
+      syntheticPackageLockBytes,
+      originalPackageLockSource.witness.mode,
+    )
+
+    const exactNpmCli = await locateExactRuntimeNpmCli(
+      committedInput.runtime.npm.cliSha256,
+    )
+    const runtimeRoot = resolve(workspaceRoot, 'synthetic-runtime')
+    await mkdir(runtimeRoot, { mode: 0o700 })
+    const fakeNpmCliPath = resolve(runtimeRoot, 'npm-cli.js')
+    await copyFile(exactNpmCli.witness.path, fakeNpmCliPath, fsConstants.COPYFILE_EXCL)
+    await chmod(fakeNpmCliPath, 0o444)
+    const fakeNpmCli = await readStableRegularFile(fakeNpmCliPath)
+    if (!fakeNpmCli.bytes.equals(exactNpmCli.bytes)
+      || fakeNpmCli.witness.sha256 !== committedInput.runtime.npm.cliSha256
+      || fakeNpmCli.witness.mode !== 0o444) {
+      fail('synthetic npm CLI identity copy does not match the committed runtime')
+    }
+    const syntheticTscPath = resolve(
+      workspaceRoot,
+      'node_modules/typescript/bin/tsc',
+    )
+    await writeExclusiveFile(
+      syntheticTscPath,
+      "throw new Error('SYNTHETIC_WORKSPACE_TSC_MUST_NOT_EXECUTE')\n",
+      0o444,
+    )
+    for (const [relativePath, manifest] of [
+      [
+        'node_modules/typescript/package.json',
+        { name: 'typescript', version: '6.0.3' },
+      ],
+      [
+        'node_modules/@types/node/package.json',
+        { name: '@types/node', version: '24.13.3' },
+      ],
+      [
+        'node_modules/undici-types/package.json',
+        { name: 'undici-types', version: '7.18.2' },
+      ],
+      [
+        'node_modules/@types/react/package.json',
+        { name: '@types/react', version: '18.3.31' },
+      ],
+      [
+        'node_modules/@types/prop-types/package.json',
+        { name: '@types/prop-types', version: '15.7.15' },
+      ],
+      [
+        'node_modules/csstype/package.json',
+        { name: 'csstype', version: '3.2.3' },
+      ],
+    ] as const) {
+      await writeExclusiveFile(
+        resolve(workspaceRoot, relativePath),
+        prettyJsonBytes(manifest),
+        0o444,
+      )
+    }
+    for (const relativePath of [
+      'node_modules/@types/react/index.d.ts',
+      'node_modules/@types/prop-types/index.d.ts',
+      'node_modules/csstype/index.d.ts',
+    ]) {
+      await writeExclusiveFile(
+        resolve(workspaceRoot, relativePath),
+        'export {}\n',
+        0o444,
+      )
+    }
+    const compilerSourceAggregateSha256 = await syntheticCompilerSourceAggregate(
+      workspaceRoot,
+      rootCompilerPackageLock,
+    )
+
+    const descriptor = baseFixture.publication.descriptor
+    const selectedCacheIndexSha256 = descriptor.selectedCacheIndexSha256
+    const selectedContentAggregateSha256 = descriptor.selectedContentAggregateSha256
+    if (typeof selectedCacheIndexSha256 !== 'string'
+      || typeof selectedContentAggregateSha256 !== 'string') {
+      fail('verified synthetic publication is missing logical selected-cache hashes')
+    }
+    let proposalFsFault: ProposalFsFaultModule | undefined
+    let fsPromisesModuleSpecifier: string | undefined
+    if (options.enableProposalFsFaultSeam) {
+      const proposalFsFaultPath = resolve(
+        workspaceRoot,
+        'scripts/proposal-fs-promises-fault.mjs',
+      )
+      await writeExclusiveFile(
+        proposalFsFaultPath,
+        proposalFsFaultSeamSource(),
+        0o444,
+      )
+      fsPromisesModuleSpecifier = pathToFileURL(proposalFsFaultPath).href
+      const imported: unknown = await import(fsPromisesModuleSpecifier)
+      if (!isRecord(imported)
+        || !isRecord(imported.proposalFsFaultEvidence)
+        || typeof imported.armProposalLinkAfterSuccessAsEexist !== 'function'
+        || typeof imported.armProposalIndependentPointerCopyAsEexist !== 'function'
+        || typeof imported.armProposalBoundaryFailureAfterSuccessfulLink !== 'function'
+        || typeof imported.armProposalLinkEioAndBoundaryFailureAfterSuccess !== 'function'
+        || typeof imported.armProposalAliasUnlinkAsEnoent !== 'function') {
+        fail('proposal fs fault seam has an invalid public surface')
+      }
+      proposalFsFault = imported as ProposalFsFaultModule
+    }
+    const patchedProductionSource = patchBootstrapProductionScript({
+      source: productionSource.bytes.toString('utf8'),
+      selectedContentBytes: synthetic.selectedContentBytes,
+      packageLockRawSha256: syntheticPackageLockRawSha256,
+      packageLockCanonicalSha256: baseFixture.packageLockCanonicalSha256,
+      committedV1RawSha256: sha256(syntheticV1Bytes),
+      selectedCacheIndexSha256,
+      selectedContentAggregateSha256,
+      compilerSourceAggregateSha256,
+      verifierSourceSha256: options.trustVerifierTransform
+        ? transformedVerifierSourceSha256
+        : undefined,
+      fakeNpmCliPath,
+      publishSyntheticProposal: options.publishSyntheticProposal,
+      fsPromisesModuleSpecifier,
+    })
+    const copiedProductionPath = resolve(
+      workspaceRoot,
+      PRODUCTION_SCRIPT_RELATIVE_PATH,
+    )
+    await rewriteOwnedReadOnlyFile(
+      copiedProductionPath,
+      Buffer.from(patchedProductionSource, 'utf8'),
+    )
+
+    const wrapperPath = resolve(
+      workspaceRoot,
+      'scripts/child-process-replay-seam.mjs',
+    )
+    await writeExclusiveFile(
+      wrapperPath,
+      replayChildProcessSeamSource(replayInstallPlan(synthetic.packageLock)),
+      0o444,
+    )
+    const wrapperImported: unknown = await import(pathToFileURL(wrapperPath).href)
+    if (!isRecord(wrapperImported)
+      || !isRecord(wrapperImported.replayEvidence)
+      || !Array.isArray(wrapperImported.replayEvidence.calls)
+      || typeof wrapperImported.failNextReplay !== 'function'
+      || typeof wrapperImported.failNextCompile !== 'function'
+      || typeof wrapperImported.injectStorageOnNextCompile !== 'function'
+      || typeof wrapperImported.replaceClientOverlayWithSameBytesOnNextCompile !== 'function'
+      || typeof wrapperImported.replaceCommittedFileWithSameBytesAfterReplay !== 'function') {
+      fail('synthetic child-process replay seam has an invalid public surface')
+    }
+    const replaySeam = wrapperImported as ReplaySeamModule
+
+    const acceptanceUrl = pathToFileURL(copiedProductionPath)
+    acceptanceUrl.searchParams.set('syntheticBootstrapOwner', randomUUID())
+    const acceptanceImported: unknown = await import(acceptanceUrl.href)
+    if (!isRecord(acceptanceImported)
+      || typeof acceptanceImported.stageRc6DeclarationInputV2 !== 'function') {
+      fail('bootstrap production copy does not export stageRc6DeclarationInputV2')
+    }
+    const acceptance = acceptanceImported as AcceptanceModule
+    const pointerBundleRelativePath = baseFixture.publication.pointer.bundleRelativePath
+    if (typeof pointerBundleRelativePath !== 'string') {
+      fail('verified synthetic pointer is missing its bundle-relative path')
+    }
+    const selectedSourceBundleRoot = resolve(
+      dirname(resolve(workspaceRoot, POINTER_RELATIVE_PATH)),
+      pointerBundleRelativePath,
+    )
+    if (relative(workspaceRoot, selectedSourceBundleRoot).startsWith(`..${sep}`)) {
+      fail('verified synthetic bundle path escapes the owner root')
+    }
+
+    const candidateRoot = resolve(workspaceRoot, CANDIDATE_RELATIVE_PATH)
+    const candidateParent = dirname(candidateRoot)
+    const candidateParentMode = (await lstat(candidateParent)).mode & 0o777
+    const isolatedCandidateRoot = resolve(
+      candidateParent,
+      `.isolated-declaration-input-candidate-${randomUUID()}`,
+    )
+    await chmod(candidateParent, 0o755)
+    await chmod(candidateRoot, 0o755)
+    try {
+      await rename(candidateRoot, isolatedCandidateRoot)
+    } finally {
+      await chmod(candidateParent, candidateParentMode)
+    }
+    await chmod(isolatedCandidateRoot, 0o555)
+    const inputRoot = resolve(workspaceRoot, 'synthetic-inputs')
+    const sourceCacheRoot = resolve(inputRoot, '_cacache')
+    const isolatedSourceCacheRoot = resolve(
+      inputRoot,
+      `.isolated-source-cache-${randomUUID()}`,
+    )
+    await chmod(inputRoot, 0o755)
+    await chmod(sourceCacheRoot, 0o755)
+    try {
+      await rename(sourceCacheRoot, isolatedSourceCacheRoot)
+    } finally {
+      await chmod(inputRoot, 0o555)
+    }
+    await chmod(isolatedSourceCacheRoot, 0o555)
+    if (!await pathIsMissing(candidateRoot) || !await pathIsMissing(sourceCacheRoot)) {
+      fail('bootstrap fixture did not isolate candidate and source cache before stage')
+    }
+
+    const fixture: Synthetic169BootstrapFixture = {
+      workspaceRoot,
+      selectedContentBytes: baseFixture.selectedContentBytes,
+      fakeNpmCliPath,
+      selectedSourceBundleRoot,
+      historicalInputsIsolated: true,
+      replayEvidence: replaySeam.replayEvidence,
+      snapshotCommittedEvidence: () => snapshotCommittedFixtureEvidence(
+        workspaceRoot,
+        copiedCommittedPaths,
+        selectedSourceBundleRoot,
+      ),
+      stageV2Proposal: () => acceptance.stageRc6DeclarationInputV2({
+        workspaceRoot,
+      }),
+      failNextReplay: () => replaySeam.failNextReplay(),
+      failNextCompile: () => replaySeam.failNextCompile(),
+      injectStorageOnNextCompile: (surface, packageName, nestedPath) =>
+        replaySeam.injectStorageOnNextCompile(surface, packageName, nestedPath),
+      replaceClientOverlayWithSameBytesOnNextCompile: () =>
+        replaySeam.replaceClientOverlayWithSameBytesOnNextCompile(),
+      replaceCommittedFileWithSameBytesAfterReplay: (path) =>
+        replaySeam.replaceCommittedFileWithSameBytesAfterReplay(path),
+      mutateAcceptanceSourceAfterImport: async (transform) => {
+        const current = await readStableRegularFile(copiedProductionPath)
+        const transformed = transform(current.bytes.toString('utf8'))
+        if (typeof transformed !== 'string'
+          || transformed === current.bytes.toString('utf8')) {
+          fail('acceptance source mutation must produce different source')
+        }
+        await rewriteOwnedReadOnlyFile(
+          copiedProductionPath,
+          Buffer.from(transformed, 'utf8'),
+        )
+      },
+      ...(proposalFsFault
+        ? {
+            proposalFsFaultEvidence: proposalFsFault.proposalFsFaultEvidence,
+            armProposalLinkAfterSuccessAsEexist: () =>
+              proposalFsFault?.armProposalLinkAfterSuccessAsEexist(),
+            armProposalIndependentPointerCopyAsEexist: () =>
+              proposalFsFault?.armProposalIndependentPointerCopyAsEexist(),
+            armProposalBoundaryFailureAfterSuccessfulLink: () =>
+              proposalFsFault?.armProposalBoundaryFailureAfterSuccessfulLink(),
+            armProposalLinkEioAndBoundaryFailureAfterSuccess: () =>
+              proposalFsFault?.armProposalLinkEioAndBoundaryFailureAfterSuccess(),
+            armProposalAliasUnlinkAsEnoent: () =>
+              proposalFsFault?.armProposalAliasUnlinkAsEnoent(),
+          }
+        : {}),
+    }
+    return inspect(fixture)
+  })
 }
 
 export async function withSynthetic169ConcurrentProductionPath<T>(

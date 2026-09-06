@@ -6,7 +6,132 @@ const workspaceRoot = resolve(import.meta.dirname, '../..')
 const closure = await import('../../scripts/verify-rc6-declaration-closure.mjs')
 const eligibility = await closure.getLocalReplayEligibility({ workspaceRoot })
 
+type DependencyManifestFixture = {
+  name: string
+  version: string
+  dependencies?: Record<string, string>
+  optionalDependencies?: Record<string, string>
+  peerDependencies?: Record<string, string>
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>
+}
+
+type InstalledPlacementFixture = {
+  packageLock: {
+    packages: Record<string, {
+      version?: string
+      integrity?: string
+      dependencies?: Record<string, string>
+      optionalDependencies?: Record<string, string>
+      peerDependencies?: Record<string, string>
+      peerDependenciesMeta?: Record<string, { optional?: boolean }>
+    }>
+  }
+  installed: Array<{
+    lockPath: string
+    manifestPath: string
+    manifest: DependencyManifestFixture
+  }>
+}
+
+function installedPlacementFixture(): InstalledPlacementFixture {
+  return {
+    packageLock: {
+      packages: {
+        '': {},
+        'node_modules/@deepseek-ai/cordis': {
+          version: '4.0.1',
+          integrity: 'sha512-cordis',
+          dependencies: {
+            '@deepseek-ai/cosmokit': '^1.8.2',
+            '@standard-schema/spec': '^1.1.0',
+          },
+          optionalDependencies: {},
+          peerDependencies: {
+            '@deepseek-ai/cordis-plugin-include': '^1.0.6',
+            '@deepseek-ai/cordis-plugin-loader': '^1.0.2',
+          },
+          peerDependenciesMeta: {
+            '@deepseek-ai/cordis-plugin-include': { optional: true },
+            '@deepseek-ai/cordis-plugin-loader': { optional: true },
+          },
+        },
+        'node_modules/@deepseek-ai/schemastery': {
+          version: '3.18.1',
+          integrity: 'sha512-schemastery',
+        },
+        'node_modules/katex/node_modules/commander': {
+          version: '8.3.0',
+          integrity: 'sha512-commander',
+        },
+      },
+    },
+    installed: [
+      {
+        lockPath: 'node_modules/@deepseek-ai/cordis',
+        manifestPath: '/fixture/node_modules/@deepseek-ai/cordis/package.json',
+        manifest: {
+          name: '@deepseek-ai/cordis',
+          version: '4.0.1',
+          dependencies: {
+            '@standard-schema/spec': '^1.1.0',
+            '@deepseek-ai/cosmokit': '^1.8.2',
+          },
+          peerDependencies: {
+            '@deepseek-ai/cordis-plugin-loader': '^1.0.2',
+            '@deepseek-ai/cordis-plugin-include': '^1.0.6',
+          },
+          peerDependenciesMeta: {
+            '@deepseek-ai/cordis-plugin-loader': { optional: true },
+            '@deepseek-ai/cordis-plugin-include': { optional: true },
+          },
+        },
+      },
+      {
+        lockPath: 'node_modules/@deepseek-ai/schemastery',
+        manifestPath: '/fixture/node_modules/@deepseek-ai/schemastery/package.json',
+        manifest: { name: '@deepseek-ai/schemastery', version: '3.18.1' },
+      },
+      {
+        lockPath: 'node_modules/katex/node_modules/commander',
+        manifestPath: '/fixture/node_modules/katex/node_modules/commander/package.json',
+        manifest: { name: 'commander', version: '8.3.0' },
+      },
+    ],
+  }
+}
+
 describe('rc.6 declaration dependency boundary', () => {
+  test('accepts canonical dependency metadata across key order and missing empty fields', () => {
+    expect(() => closure.assertInstalledPlacement(installedPlacementFixture())).not.toThrow()
+  })
+
+  test('rejects an installed manifest with a dependency deleted from the lock record', () => {
+    const fixture = installedPlacementFixture()
+    delete fixture.installed[0]!.manifest.dependencies!['@standard-schema/spec']
+
+    expect(() => closure.assertInstalledPlacement(fixture)).toThrowError(
+      'INSTALLED_LOCK_DEPENDENCY_METADATA_MISMATCH: node_modules/@deepseek-ai/cordis:dependencies',
+    )
+  })
+
+  test('rejects an installed manifest with a dependency added beyond the lock record', () => {
+    const fixture = installedPlacementFixture()
+    fixture.installed[0]!.manifest.dependencies!['unexpected-package'] = '1.0.0'
+
+    expect(() => closure.assertInstalledPlacement(fixture)).toThrowError(
+      'INSTALLED_LOCK_DEPENDENCY_METADATA_MISMATCH: node_modules/@deepseek-ai/cordis:dependencies',
+    )
+  })
+
+  test('rejects an installed manifest with mutated peer dependency metadata', () => {
+    const fixture = installedPlacementFixture()
+    fixture.installed[0]!.manifest.peerDependenciesMeta!['@deepseek-ai/cordis-plugin-loader']!.optional = false
+
+    expect(() => closure.assertInstalledPlacement(fixture)).toThrowError(
+      'INSTALLED_LOCK_DEPENDENCY_METADATA_MISMATCH: node_modules/@deepseek-ai/cordis:peerDependenciesMeta',
+    )
+  })
+
   test('audits the committed closure without requiring any local cache or accepted installation', async () => {
     const audit = await closure.inspectCommittedDeclarationClosure({ workspaceRoot })
 
@@ -35,7 +160,7 @@ describe('rc.6 declaration dependency boundary', () => {
       expect(replay.status).toBe('PASS_LOCAL_REPLAY')
       expect(replay.selectedDeclarationManifests).toHaveLength(5)
       expect(replay.storage?.selectedOrImported).toBe(false)
-      expect(replay.cacheReadOnly).toBe(true)
+      expect(replay.selectedCacheReadOnly).toBe(true)
       expect(replay.realpathsWithinAcceptedRoot).toBe(true)
     },
   )
