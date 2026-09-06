@@ -894,7 +894,7 @@ async function listTreeFiles(root) {
   const found = []
   async function visit(directory, prefix = '') {
     const entries = await readdir(directory, { withFileTypes: true })
-    entries.sort((left, right) => left.name.localeCompare(right.name, 'en'))
+    entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
     for (const entry of entries) {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name
       const absolute = path.join(directory, entry.name)
@@ -1177,7 +1177,7 @@ export function validateObservedPackageFile(observed, expected, code = 'STAGE2_P
   return observed
 }
 
-async function stageVerifiedPackage(run, verification, allowlist) {
+export async function stageVerifiedPackage(run, verification, allowlist) {
   validatePackageVerificationReceipt(verification, allowlist)
   for (const file of verification.files) {
     const destination = path.join(run.packageSourceRoot, ...file.path.split('/'))

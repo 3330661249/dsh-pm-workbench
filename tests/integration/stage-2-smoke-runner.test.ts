@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { link, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { link, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -25,6 +25,7 @@ import {
   parseStage2Args,
   renderPnpmShim,
   runStage2Cli,
+  stageVerifiedPackage,
   proveNoOpenHandles,
   isStrictLsofNoMatch,
   isWorkbenchClientBundleUrl,
@@ -898,6 +899,43 @@ describe('owned cleanup and independent result verification', () => {
       ...verification,
       outputHashes: { ...verification.outputHashes, 'lib/client.js': HASH_C },
     }, allowlist)).toThrow(/STAGE2_BUILD_OUTPUT_HASH_INVALID/)
+  })
+
+  it('stages the frozen mixed-case nine-file allowlist without mistaking enumeration order for drift', async () => {
+    const fixture = await realpath(await mkdtemp(path.join(tmpdir(), 'stage2-package-stage-order-')))
+    const allowlist = [
+      'LICENSE',
+      'README.md',
+      'cordis.patch.yml',
+      'docs/compatibility.md',
+      'docs/privacy.md',
+      'docs/third-party.md',
+      'lib/client.js',
+      'lib/index.js',
+      'package.json',
+    ]
+    const files = allowlist.map((file) => {
+      const bytes = Buffer.from(file === 'package.json' ? '{}' : file)
+      return { path: file, mode: 0o644, size: bytes.byteLength, sha256: digest(bytes), bytes }
+    })
+    const verification = {
+      name: '@knight/dsh-pm-workbench',
+      version: '0.1.0',
+      bundledZod: true,
+      runtimeDependencies: 0,
+      files,
+      outputHashes: {
+        'lib/client.js': files[6].sha256,
+        'lib/index.js': files[7].sha256,
+      },
+    }
+
+    try {
+      await expect(stageVerifiedPackage({ packageSourceRoot: fixture }, verification, allowlist))
+        .resolves.toBe(verification)
+    } finally {
+      await rm(fixture, { recursive: true, force: true })
+    }
   })
 
   it('binds npm pack path, size, and normalized mode to the frozen nine-file receipt', () => {
