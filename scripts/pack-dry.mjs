@@ -110,14 +110,24 @@ export function createNpmPackInvocation({
 
 async function requireRealDirectory(directory, label) {
   const stats = await lstat(directory)
-  if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error(`${label} must be a real directory`)
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error(`${label} must be a canonical non-symlink directory`)
+  }
+  if (await realpath(directory) !== directory) {
+    throw new Error(`${label} must be a canonical non-symlink directory`)
+  }
+  return directory
 }
 
 async function requireRealFile(file, label) {
-  const physical = await realpath(file)
-  const stats = await lstat(physical)
-  if (!stats.isFile() || stats.isSymbolicLink()) throw new Error(`${label} must resolve to a regular file`)
-  return physical
+  const stats = await lstat(file)
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error(`${label} must be a canonical non-symlink regular file`)
+  }
+  if (await realpath(file) !== file) {
+    throw new Error(`${label} must be a canonical non-symlink regular file`)
+  }
+  return file
 }
 
 /** @param {NpmPackOptions} options */

@@ -1,6 +1,6 @@
 import { execFile as execFileCallback } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -21,6 +21,8 @@ import {
 
 const execFile = promisify(execFileCallback)
 const repositoryRoot = path.resolve(import.meta.dirname, '../..')
+const maximumPackageFileBytes = 2 * 1024 * 1024
+const maximumPackedArtifactBytes = 8 * 1024 * 1024
 
 const exactFiles = [
   'LICENSE',
@@ -95,6 +97,12 @@ test('builds only through the fixed packable entrypoint and verifies exact sourc
 
   const verified = await verifyBuiltWorkbenchPackage({ buildEvidence })
 
+  expect(buildEvidence.outputHashes).toEqual({
+    'lib/client.js': hash('sha256', await readFile(path.join(repositoryRoot, 'packages/workbench/lib/client.js'))),
+    'lib/index.js': hash('sha256', await readFile(path.join(repositoryRoot, 'packages/workbench/lib/index.js'))),
+  })
+  expect(Object.isFrozen(buildEvidence.outputHashes)).toBe(true)
+
   expect(WORKBENCH_PACKAGE_FILES).toEqual(exactFiles)
   expect(Object.isFrozen(WORKBENCH_PACKAGE_FILES)).toBe(true)
   expect(verified).toMatchObject({
@@ -107,6 +115,54 @@ test('builds only through the fixed packable entrypoint and verifies exact sourc
   expect(verified.files.every(({ bytes, size, sha256 }) =>
     bytes.byteLength === size && hash('sha256', Buffer.from(bytes)) === sha256)).toBe(true)
   expect(verified.sourceInventorySha256).toMatch(/^[a-f0-9]{64}$/u)
+  expect(verified.outputHashes).toEqual(buildEvidence.outputHashes)
+})
+
+test('rejects a frozen lib whose bytes do not match the canonical build output hashes', async () => {
+  const buildEvidence = await buildPackableWorkbench()
+  const fixture = await mkdtemp(path.join(os.tmpdir(), 'workbench-build-hash-drift-'))
+  const canonicalPackageRoot = path.join(repositoryRoot, 'packages/workbench')
+
+  try {
+    for (const relative of exactFiles) {
+      const target = path.join(fixture, relative)
+      await mkdir(path.dirname(target), { recursive: true })
+      await writeFile(target, await readFile(path.join(canonicalPackageRoot, relative)))
+    }
+    const stagedHostPath = path.join(fixture, 'lib/index.js')
+    await writeFile(stagedHostPath, Buffer.concat([await readFile(stagedHostPath), Buffer.from('\n// drift\n')]))
+    await expect(verifyBuiltWorkbenchPackage({
+      repositoryRoot,
+      packageRoot: fixture,
+      buildEvidence,
+    }))
+      .rejects.toThrow(/build output hash/u)
+  } finally {
+    await rm(fixture, { recursive: true, force: true })
+  }
+})
+
+test('rejects an oversized package source file instead of reading it into the frozen receipt', async () => {
+  const buildEvidence = await buildPackableWorkbench()
+  const fixture = await mkdtemp(path.join(os.tmpdir(), 'workbench-package-file-limit-'))
+  const canonicalPackageRoot = path.join(repositoryRoot, 'packages/workbench')
+
+  try {
+    for (const relative of exactFiles) {
+      const target = path.join(fixture, relative)
+      await mkdir(path.dirname(target), { recursive: true })
+      await writeFile(target, await readFile(path.join(canonicalPackageRoot, relative)))
+    }
+    await truncate(path.join(fixture, 'README.md'), maximumPackageFileBytes + 1)
+
+    await expect(verifyBuiltWorkbenchPackage({
+      repositoryRoot,
+      packageRoot: fixture,
+      buildEvidence,
+    })).rejects.toThrow(/maximum package file size/u)
+  } finally {
+    await rm(fixture, { recursive: true, force: true })
+  }
 })
 
 test('accepts only one exact npm package record with the immutable nine-file inventory', () => {
@@ -123,6 +179,10 @@ test('accepts only one exact npm package record with the immutable nine-file inv
   expect(() => validateNpmPackMetadata([])).toThrow(/exactly one package/u)
   expect(() => validateNpmPackMetadata([{ ...packMetadata()[0], filename: '../escape.tgz' }]))
     .toThrow(/filename/u)
+  expect(() => validateNpmPackMetadata([{
+    ...packMetadata()[0],
+    size: maximumPackedArtifactBytes + 1,
+  }])).toThrow(/maximum packed artifact size/u)
 })
 
 test('creates an explicit Node plus npm CLI invocation with a closed environment and owned paths', async () => {
@@ -177,8 +237,62 @@ test('creates an explicit Node plus npm CLI invocation with a closed environment
   }
 })
 
+test.each([
+  'node-direct-link',
+  'npm-direct-link',
+  'node-linked-ancestor',
+  'npm-linked-ancestor',
+  'staged-linked-ancestor',
+  'operation-linked-ancestor',
+] as const)('rejects non-canonical or symlinked pack input: %s', async (variant) => {
+  const canonicalTemp = await realpath(os.tmpdir())
+  const fixture = await mkdtemp(path.join(canonicalTemp, 'workbench-pack-symlink-'))
+  const realRoot = path.join(fixture, 'real')
+  const linkedRoot = path.join(fixture, 'linked')
+  const stagedPackageRoot = path.join(realRoot, 'package-source')
+  const operationRoot = path.join(realRoot, 'operation')
+  const fakeNode = path.join(realRoot, 'fake-node')
+  const fakeNpm = path.join(realRoot, 'fake-npm-cli.mjs')
+  const nodeLink = path.join(fixture, 'node-link')
+  const npmLink = path.join(fixture, 'npm-link')
+
+  try {
+    await mkdir(realRoot)
+    await Promise.all([
+      mkdir(stagedPackageRoot),
+      mkdir(operationRoot),
+      writeFile(fakeNode, "#!/bin/sh\nprintf '[]'\n"),
+      writeFile(fakeNpm, "process.stdout.write('[]')\n"),
+    ])
+    await chmod(fakeNode, 0o700)
+    await Promise.all([
+      symlink(realRoot, linkedRoot),
+      symlink(await realpath(process.execPath), nodeLink),
+      symlink(fakeNpm, npmLink),
+    ])
+
+    const options = {
+      nodeExecutable: await realpath(process.execPath),
+      npmCliPath: fakeNpm,
+      stagedPackageRoot,
+      operationRoot,
+      dryRun: false,
+    }
+    if (variant === 'node-direct-link') options.nodeExecutable = nodeLink
+    if (variant === 'npm-direct-link') options.npmCliPath = npmLink
+    if (variant === 'node-linked-ancestor') options.nodeExecutable = path.join(linkedRoot, 'fake-node')
+    if (variant === 'npm-linked-ancestor') options.npmCliPath = path.join(linkedRoot, 'fake-npm-cli.mjs')
+    if (variant === 'staged-linked-ancestor') options.stagedPackageRoot = path.join(linkedRoot, 'package-source')
+    if (variant === 'operation-linked-ancestor') options.operationRoot = path.join(linkedRoot, 'operation')
+
+    await expect(runNpmPack(options)).rejects.toThrow(/canonical non-symlink/u)
+  } finally {
+    await rm(fixture, { recursive: true, force: true })
+  }
+})
+
 test('packs with the explicit CLI and returns the independently verified artifact hash', async () => {
-  const fixture = await mkdtemp(path.join(os.tmpdir(), 'workbench-real-pack-'))
+  const fixture = await mkdtemp(path.join(await realpath(os.tmpdir()), 'workbench-real-pack-'))
   const operationRoot = path.join(fixture, 'operation')
   const stagedPackageRoot = path.join(fixture, 'package-source')
   const npmCliPath = path.join(fixture, 'fake-npm-cli.mjs')
@@ -241,6 +355,25 @@ test('verifies a sole regular tgz and rejects metadata hash drift', async () => 
     await writeFile(path.join(fixture, metadata.filename), 'changed')
     await expect(verifyPackedWorkbenchArtifact({ packOutputRoot: fixture, metadata }))
       .rejects.toThrow(/size|hash|integrity/u)
+  } finally {
+    await rm(fixture, { recursive: true, force: true })
+  }
+})
+
+test('rejects an oversized opened tgz before reading its contents', async () => {
+  const fixture = await mkdtemp(path.join(os.tmpdir(), 'workbench-artifact-limit-'))
+  const artifact = Buffer.from('small declared artifact')
+  const metadata = validateNpmPackMetadata(packMetadata(artifact))
+
+  try {
+    const artifactPath = path.join(fixture, metadata.filename)
+    await writeFile(artifactPath, '')
+    await truncate(artifactPath, maximumPackedArtifactBytes + 1)
+
+    await expect(verifyPackedWorkbenchArtifact({
+      packOutputRoot: fixture,
+      metadata,
+    })).rejects.toThrow(/maximum packed artifact size/u)
   } finally {
     await rm(fixture, { recursive: true, force: true })
   }

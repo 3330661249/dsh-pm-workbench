@@ -14,6 +14,10 @@ const defaultRepositoryRoot = path.resolve(import.meta.dirname, '..')
 const packageName = '@knight/dsh-pm-workbench'
 const packageVersion = '0.1.0'
 const packageFilename = 'knight-dsh-pm-workbench-0.1.0.tgz'
+const buildOutputPaths = Object.freeze(['lib/client.js', 'lib/index.js'])
+const sha256Pattern = /^[a-f0-9]{64}$/u
+const MAX_PACKAGE_FILE_BYTES = 2 * 1024 * 1024
+const MAX_PACKED_ARTIFACT_BYTES = 8 * 1024 * 1024
 
 export const WORKBENCH_PACKAGE_FILES = Object.freeze([
   'LICENSE',
@@ -70,7 +74,13 @@ async function readStablePackageFile(packageRoot, relative) {
   try {
     const before = await handle.stat({ bigint: true })
     if (!before.isFile()) throw new Error(`package entry must be a regular file: ${relative}`)
+    if (before.size < 0n || before.size > BigInt(MAX_PACKAGE_FILE_BYTES)) {
+      throw new Error(`package entry exceeds maximum package file size: ${relative}`)
+    }
     const bytes = await handle.readFile()
+    if (bytes.byteLength > MAX_PACKAGE_FILE_BYTES) {
+      throw new Error(`package entry grew beyond maximum package file size while read: ${relative}`)
+    }
     const after = await handle.stat({ bigint: true })
     assertSameOpenFile(before, after, `package entry ${relative}`)
     if (BigInt(bytes.byteLength) !== before.size) {
@@ -89,11 +99,21 @@ async function readStablePackageFile(packageRoot, relative) {
 }
 
 function assertBuildEvidence(buildEvidence) {
-  if (!isRecord(buildEvidence) || !buildEvidence.hostMetafile || !buildEvidence.clientMetafile) {
+  if (
+    !isRecord(buildEvidence)
+    || !buildEvidence.hostMetafile
+    || !buildEvidence.clientMetafile
+    || !isRecord(buildEvidence.outputHashes)
+    || JSON.stringify(Object.keys(buildEvidence.outputHashes).sort(comparePath)) !== JSON.stringify(buildOutputPaths)
+    || buildOutputPaths.some((output) => !sha256Pattern.test(buildEvidence.outputHashes[output]))
+  ) {
     throw new Error('build did not return Host and Client graph evidence')
   }
   assertHostProbeBuildGraph(buildEvidence.hostMetafile)
   assertClientProbeBuildGraph(buildEvidence.clientMetafile)
+  return Object.freeze(Object.fromEntries(
+    buildOutputPaths.map((output) => [output, buildEvidence.outputHashes[output]]),
+  ))
 }
 
 /**
@@ -103,6 +123,7 @@ function assertBuildEvidence(buildEvidence) {
  *   buildEvidence: {
  *     hostMetafile: import('esbuild').Metafile,
  *     clientMetafile: import('esbuild').Metafile,
+ *     outputHashes: Readonly<Record<'lib/client.js' | 'lib/index.js', string>>,
  *   },
  * }} options
  */
@@ -114,13 +135,18 @@ export async function verifyBuiltWorkbenchPackage({
   if (!path.isAbsolute(repositoryRoot) || !path.isAbsolute(packageRoot)) {
     throw new Error('package verification roots must be absolute')
   }
-  assertBuildEvidence(buildEvidence)
+  const outputHashes = assertBuildEvidence(buildEvidence)
 
   const files = []
   for (const relative of WORKBENCH_PACKAGE_FILES) {
     files.push(await readStablePackageFile(packageRoot, relative))
   }
   const byPath = new Map(files.map((file) => [file.path, file]))
+  for (const output of buildOutputPaths) {
+    if (byPath.get(output).sha256 !== outputHashes[output]) {
+      throw new Error(`frozen ${output} bytes did not match the canonical build output hash`)
+    }
+  }
   const manifest = JSON.parse(byPath.get('package.json').bytes.toString('utf8'))
   if (manifest.name !== packageName || manifest.version !== packageVersion) {
     throw new Error('invalid package identity')
@@ -174,6 +200,7 @@ export async function verifyBuiltWorkbenchPackage({
     name: packageName,
     version: packageVersion,
     files: Object.freeze(files.map((file) => Object.freeze(file))),
+    outputHashes,
     sourceInventorySha256: canonicalInventoryHash(inventory),
     bundledZod: true,
     runtimeDependencies: 0,
@@ -210,6 +237,9 @@ export function validateNpmPackMetadata(value) {
   }
   if (!Number.isSafeInteger(record.size) || record.size < 1) {
     throw new Error('npm pack returned an invalid package size')
+  }
+  if (record.size > MAX_PACKED_ARTIFACT_BYTES) {
+    throw new Error('npm pack exceeded the maximum packed artifact size')
   }
   if (typeof record.shasum !== 'string' || !/^[a-f0-9]{40}$/u.test(record.shasum)) {
     throw new Error('npm pack returned an invalid shasum')
@@ -263,6 +293,9 @@ export function validateNpmPackMetadata(value) {
  */
 export async function verifyPackedWorkbenchArtifact({ packOutputRoot, metadata }) {
   if (!path.isAbsolute(packOutputRoot)) throw new Error('pack output root must be absolute')
+  if (!Number.isSafeInteger(metadata?.size) || metadata.size < 1 || metadata.size > MAX_PACKED_ARTIFACT_BYTES) {
+    throw new Error('npm pack exceeded the maximum packed artifact size')
+  }
   await assertRealDirectory(packOutputRoot, 'pack output root')
   const entries = (await readdir(packOutputRoot)).sort(comparePath)
   if (JSON.stringify(entries) !== JSON.stringify([metadata?.filename])) {
@@ -281,7 +314,16 @@ export async function verifyPackedWorkbenchArtifact({ packOutputRoot, metadata }
     if (!before.isFile() || before.nlink !== 1n) {
       throw new Error('packed artifact must be one regular single-link file')
     }
+    if (before.size < 0n || before.size > BigInt(MAX_PACKED_ARTIFACT_BYTES)) {
+      throw new Error('packed artifact exceeds the maximum packed artifact size')
+    }
+    if (before.size !== BigInt(metadata.size)) {
+      throw new Error('packed artifact size differs from npm metadata')
+    }
     bytes = await handle.readFile()
+    if (bytes.byteLength > MAX_PACKED_ARTIFACT_BYTES) {
+      throw new Error('packed artifact grew beyond the maximum packed artifact size while read')
+    }
     const after = await handle.stat({ bigint: true })
     assertSameOpenFile(before, after, 'packed artifact')
   } finally {

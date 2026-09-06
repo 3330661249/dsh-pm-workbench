@@ -244,6 +244,7 @@ git commit -m "feat: add minimal Harness smoke probe"
 - The npm package, profile dependency, profile bundle, Client ModuleLoader, add, and remove identity is exactly `@knight/dsh-pm-workbench`. The Cordis row inserted by `cordis.patch.yml` has exact `id: dsh-pm-workbench`. Package/name identity is verified separately and is not repeated in the disable patch.
 - Raw evidence exists only below the marker-owned run root while the run is active. Before deletion, derive a bounded, closed, path-free result candidate in memory. Only after successful deletion and absence verification may the runner append a successful cleanup receipt and emit the canonical result; it never writes the cleanup receipt into the directory it will delete.
 - `scripts/verify-stage-2-smoke-result.mjs` independently validates the emitted closed result schema, outcome-specific evidence, allowed claims, size bounds, and sanitization. Only its verified Markdown output is eligible to be copied into `docs/gate-results/`.
+- Network evidence is deliberately scoped to the attached Chrome page target. The runner may report that this page target made zero observed external attempts, while separately proving that package-manager operations were configured offline and Harness listeners were loopback-only; it does not claim host-wide packet capture or global process-network observation.
 
 - [ ] **Step 1: Write RED ownership, provenance, command-graph, and UI-boundary tests**
 
@@ -299,13 +300,13 @@ The verifier validates the exact allowlist, zero-runtime-dependency contract, Zo
 
 After canonical build and verification, create `<run-root>/package-source` exclusively and copy only the nine already-returned verified byte buffers into that tree with their verified relative paths and modes. Do not reopen or reread a repository package file after verification. Reinventory `package-source` and require exact equality to the nine-file receipt.
 
-With cwd exactly `<run-root>/package-source`, invoke the explicit absolute Node and npm CLI exactly once as:
+With cwd exactly `<run-root>/package-source`, invoke the explicit absolute Node and npm CLI exactly once. The fixed argv begins as:
 
 ```text
 <absolute-node> <absolute-npm-cli> pack . --json
 ```
 
-Do not run a separate npm dry-run and do not use `npm pack --workspace`. Reject package lifecycle hooks that could mutate the frozen package source. Require exactly one newly created regular tgz, validate npm's exact nine-member path/size/mode inventory, revalidate the staged nine-file byte receipt after packing, independently verify the tgz byte count, npm SHA-1 and SHA-512 integrity, then compute and freeze the whole-tgz SHA-256 for every later add or reinstall. npm metadata does not expose per-member SHA-256, so Stage 2 makes no such claim. Do not publish, rebuild after freeze, select a tgz by “latest” or mtime, or accept a package created by another command.
+The only permitted trailing arguments are fixed safety restrictions owned by this repository: `--ignore-scripts`, `--offline`, an explicit `--pack-destination` below `<run-root>/pack`, explicit cache/user-config/global-config paths below the same owned operation root, disabled audit/fund/update-notifier, and bounded error logging. Do not run a separate npm dry-run, do not use `npm pack --workspace`, and do not resolve npm through `PATH`. Reject package lifecycle hooks that could mutate the frozen package source. Require exactly one newly created regular tgz in the explicit pack destination, validate npm's exact nine-member path/size/mode inventory, revalidate the staged nine-file byte receipt after packing, independently verify the tgz byte count, npm SHA-1 and SHA-512 integrity, then compute and freeze the whole-tgz SHA-256 for every later add or reinstall. npm metadata does not expose per-member SHA-256, so Stage 2 makes no such claim. Do not publish, rebuild after freeze, select a tgz by “latest” or mtime, or accept a package created by another command.
 
 - [ ] **Step 3: Initialize the isolated profile with the owned pnpm shim**
 
@@ -384,7 +385,7 @@ Before deleting filesystem state:
 
 1. derive a bounded, sanitized, path-free result candidate and cleanup-receipt draft in memory;
 2. revalidate the run root, every existing ancestor below the canonical temporary parent, ownership marker, and saved device/inode/mode identities with `lstat`;
-3. require the original root to contain only the owned run closure and reject a changed root, marker, ancestor, symlink, hardlink anomaly, or special file;
+3. require the original root to contain only the owned lexical run closure and reject a changed root, marker, ancestor, unexplained hardlink count, mount/cross-device directory, or special file; inventory every interior symlink with `lstat`/`readlink`, including pnpm links and rc.6 fallback links whose targets may sit outside the run root, never follow any target during closure traversal or removal, and make no claim that a recorded symlink target belongs to the owned closure;
 4. exclusively choose a fresh sibling tombstone under the same verified temporary parent;
 5. atomically rename the run root to that tombstone;
 6. require the original pathname to be absent;
@@ -396,7 +397,7 @@ Only after step 9 may the runner finalize `cleanup.deleted: true` in memory and 
 
 If identity changes before rename, do not rename or delete. If it changes after rename, do not continue removal. If removal or absence verification fails, return bounded `SAFETY_ABORT` with `cleanup.deleted: false` and no successful cleanup receipt. Do not reveal a retained absolute path in sanitized output.
 
-This rename/revalidate/remove sequence protects against accidental path or ownership drift. It does not claim resistance to a malicious same-user process racing filesystem mutations between checks; that adversarial same-user race is explicitly outside the Stage 2 threat model.
+This rename/revalidate/remove sequence protects against accidental path or ownership drift. An interior symlink with an external target does not extend deletion authority because inventory and removal never follow it; only the link entry inside the owned tombstone is unlinked. The result does not attest to ownership or validity of the target. The sequence does not claim resistance to a malicious same-user process racing filesystem mutations between checks; that adversarial same-user race is explicitly outside the Stage 2 threat model.
 
 - [ ] **Step 7: Verify, sanitize, and commit only code plus an eligible report**
 

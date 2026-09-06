@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { builtinModules } from 'node:module'
 import path from 'node:path'
@@ -25,6 +26,10 @@ const clientExternals = [
 
 function normalized(value) {
   return value.replaceAll('\\', '/')
+}
+
+function sha256(bytes) {
+  return createHash('sha256').update(bytes).digest('hex')
 }
 
 function isHostExternal(specifier) {
@@ -139,14 +144,23 @@ export async function buildWorkbench({ outdir = path.join(packageRoot, 'lib'), o
   assertClientProbeBuildGraph(client.metafile)
   const source = client.outputFiles[0].text
   const wrapped = `window.__ModuleLoader__.load({ id:'@knight/dsh-pm-workbench', factory(require) { const module={exports:{}}; const exports=module.exports; ${source}; return module.exports; } });\n`
+  const hostBytes = host.outputFiles[0].contents
+  const clientBytes = Buffer.from(wrapped)
   if (/(?:from\s*['"]zod['"]|require\(\s*['"]zod['"]\s*\))/.test(`${host.outputFiles[0].text}\n${wrapped}`)) {
     throw new Error('Workbench output retained a bare Zod runtime import')
   }
   await rm(guarded(lib), { recursive: true, force: true })
   await mkdir(guarded(lib), { recursive: true })
-  await writeFile(guarded(hostPath), host.outputFiles[0].contents)
-  await writeFile(guarded(clientPath), wrapped)
-  return { hostMetafile: host.metafile, clientMetafile: client.metafile }
+  await writeFile(guarded(hostPath), hostBytes)
+  await writeFile(guarded(clientPath), clientBytes)
+  return Object.freeze({
+    hostMetafile: host.metafile,
+    clientMetafile: client.metafile,
+    outputHashes: Object.freeze({
+      'lib/client.js': sha256(clientBytes),
+      'lib/index.js': sha256(hostBytes),
+    }),
+  })
 }
 
 export async function buildPackableWorkbench() {
