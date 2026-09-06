@@ -336,9 +336,13 @@ Launch Harness only as:
 
 Launch Chrome directly from the validated absolute Chrome executable with a new owned user-data directory and dynamically allocated CDP port for every phase. Obtain the DevTools WebSocket URL from bounded Chrome process output; do not make an HTTP request to a Chrome discovery endpoint. Use CDP only to control the rendered browser.
 
+The fixed Chrome argv includes `--use-mock-keychain`. On macOS this prevents the disposable test profile from consulting or prompting for the user's real Keychain. This is an isolation and shutdown-determinism control, not PASS evidence; Chrome process exit, listener absence, zero open handles, and owned-root removal remain mandatory.
+
 Immediately after each spawn, retain an in-memory receipt containing exact executable, argv, cwd, allowlisted-environment-key digest, marker ID, `ChildProcess` object, and PID. Treat the retained child object as authoritative continuity. Use fixed absolute `/usr/sbin/lsof` to prove the live child's marker-owned cwd, the Harness child's exact `127.0.0.1:<dynamic-port>` listener, and the Chrome child's exact CDP listener.
 
 Reject port `3080`. Before signaling, require the same retained child object, unchanged PID, `exitCode === null`, `signalCode === null`, matching receipt, matching cwd, and matching listener. Signal through the retained child object, not a caller-supplied or raw PID. After exit, prove the listener is gone.
+
+Chrome has a dedicated graceful-close path. After a fresh retained-child, marker, cwd, PID, and exact DevTools-listener validation, send browser-scope CDP `Browser.close` through the already authenticated peer and wait boundedly for the retained `ChildProcess` `exit` event. A CDP response, WebSocket close, or listener disappearance alone is not completion. Only the retained child exit followed by strict listener absence permits `markChildStopped`. If graceful close times out, close the local peer and require a fresh complete identity and listener witness before the existing retained-child signal fallback; if that witness is unavailable, return `SAFETY_ABORT` and retain the owned root. Never discover or kill a process by name, raw PID, process group, or helper/descendant identity. Profile commands that consume bounded stdout/stderr continue to wait for Node's `close` event; Chrome lifecycle proof uses `exit` so an inherited pipe cannot masquerade as a live main process.
 
 Do not require OS `ps` start time, OS-reported argv, or executable-name matching. The accepted witness is the spawn receipt plus still-live retained `ChildProcess` plus `lsof` cwd/listener ownership. If any element disagrees, do not signal and return `SAFETY_ABORT`.
 
@@ -347,6 +351,8 @@ If validated Chrome cannot start, expose bounded CDP, or render the isolated loo
 - [ ] **Step 5: Observe the smoke graph through rendered UI only**
 
 The runner may use CDP `Page`, `DOM`, `Input`, and accessibility/lifecycle operations needed to navigate, wait, query stable plugin-owned attributes, read attributes/text, and dispatch real pointer input. It must not evaluate or inject code that calls `fetch`, `XMLHttpRequest`, a Connection object, the Probe channel, or any Harness API. It must not inspect Harness-private classes, component structure, globals, source modules, or private DOM.
+
+Use the 30-second startup budget only for `Page.navigate`; keep the ordinary CDP command budget at 10 seconds. The navigation request is not retried after a local timeout because the first browser navigation may still be active and a retry would make loader evidence ambiguous.
 
 Observe this exact sequence:
 
