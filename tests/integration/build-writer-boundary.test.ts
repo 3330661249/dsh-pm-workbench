@@ -28,6 +28,25 @@ test('rejects repository root and symlink escape output before writing', async (
   }
 })
 
+test('a legacy replacement guard cannot authorize an output outside the canonical boundary', async () => {
+  const outside = await mkdtemp(path.join(os.tmpdir(), 'workbench-legacy-guard-'))
+  const escapedTarget = path.join(outside, 'lib')
+
+  try {
+    const invokeWithLegacyOptions = buildWorkbench as unknown as (
+      options: { outdir: string; guard: (target: string) => void },
+    ) => Promise<unknown>
+
+    await expect(invokeWithLegacyOptions({
+      outdir: escapedTarget,
+      guard: () => {},
+    })).rejects.toThrow()
+    await expect(access(escapedTarget)).rejects.toThrow()
+  } finally {
+    await rm(outside, { recursive: true, force: true })
+  }
+})
+
 test('checks the boundary immediately before every explicit filesystem mutation', async () => {
   const tempRoot = path.join(repositoryRoot, '.tmp')
   await mkdir(tempRoot, { recursive: true })
@@ -38,8 +57,7 @@ test('checks the boundary immediately before every explicit filesystem mutation'
   try {
     await buildWorkbench({
       outdir,
-      guard(target) {
-        assertWorkbenchWritePath(target)
+      onWrite(target) {
         guardedTargets.push(path.resolve(target))
       },
     })

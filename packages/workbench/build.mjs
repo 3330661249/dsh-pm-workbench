@@ -93,8 +93,16 @@ export function assertClientProbeBuildGraph(metafile) {
   assertBuildGraph('Client', metafile, isClientInput, isClientExternal)
 }
 
-export async function buildWorkbench({ outdir = path.join(packageRoot, 'lib'), guard = assertWorkbenchWritePath } = {}) {
-  const guarded = (target) => { guard(target); return target }
+/**
+ * @param {{ outdir?: string, onWrite?: (target: string) => void }} [options]
+ */
+export async function buildWorkbench({ outdir = path.join(packageRoot, 'lib'), onWrite } = {}) {
+  const guarded = (target) => {
+    assertWorkbenchWritePath(target)
+    onWrite?.(target)
+    assertWorkbenchWritePath(target)
+    return target
+  }
   const lib = path.resolve(outdir)
   const hostPath = path.join(lib, 'index.js')
   const clientPath = path.join(lib, 'client.js')
@@ -139,6 +147,10 @@ export async function buildWorkbench({ outdir = path.join(packageRoot, 'lib'), g
   await writeFile(guarded(hostPath), host.outputFiles[0].contents)
   await writeFile(guarded(clientPath), wrapped)
   return { hostMetafile: host.metafile, clientMetafile: client.metafile }
+}
+
+export async function buildPackableWorkbench() {
+  return buildWorkbench()
 }
 
 export async function buildDemo({ outdir = defaultDemoOutdir, guard = assertWorkbenchWritePath } = {}) {
