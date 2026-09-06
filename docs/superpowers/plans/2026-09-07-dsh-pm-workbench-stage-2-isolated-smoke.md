@@ -4,7 +4,7 @@
 
 **Goal:** Build the smallest real Harness Probe package and verify install, visibility, overlay interaction, public Connection RPC, synthetic persistence, removal, reinstall, and cleanup in a disposable DeepSeek Harness `0.1.0-rc.6` profile.
 
-**Architecture:** The shipped package keeps separate Host and Client entry graphs. The Host owns a strict two-endpoint Probe service and a synthetic counter; the Client contributes one additive sidebar action and one additive overlay through public slots and talks to the Host only through public Connection RPC. A repository-owned runner creates a fresh `DSH_HOME`, uses `127.0.0.1:3186`, installs a real tgz, records a sanitized result, and removes only files and processes it owns.
+**Architecture:** The shipped package keeps separate Host and Client entry graphs. The Host owns a strict two-endpoint Probe service and a synthetic counter; the Client contributes one additive sidebar action and one additive overlay through public slots and talks to the Host only through public Connection RPC. A repository-owned runner creates a marker-owned system-temporary run root, isolates `HOME`, `DSH_HOME`, XDG, npm, pnpm, temp, working-directory, and browser state, binds `127.0.0.1` on a dynamically allocated port that must not be `3080`, installs one frozen real tgz, records a sanitized result, and removes only files and processes it owns.
 
 **Tech Stack:** TypeScript 6.0.3, React 18.3.1, esbuild 0.25.12, Vitest 3.2.7, Zod 4.4.3, DeepSeek Harness and public integration packages `0.1.0-rc.6`.
 
@@ -13,11 +13,12 @@
 ## Global Constraints
 
 - This is a **Stage 2 isolated smoke**, not the full A01-A22 Gate A-prime result and not a Harness Alpha.
-- Use only a new marker-owned `DSH_HOME`, `127.0.0.1`, port `3186`, and synthetic integer state.
+- Use only a new marker-owned system-temporary run root, `127.0.0.1`, a dynamically allocated port that is verified not to be `3080`, and synthetic integer state. Fixed port `3186` is allowed only as an explicit compatibility fallback after ownership and availability checks.
+- Launch child processes from an empty allowlisted environment with isolated `HOME`, `DSH_HOME`, XDG directories, npm cache/config, pnpm store, temp directory, working directory, and a fresh browser profile for every runtime phase.
 - Do not read, write, stop, or reuse the active `3080` process, `~/.dsh`, real Workspaces, Sessions, browser data, models, providers, recordings, interviews, documents, or the installed ripple profile.
 - Use only public rc.6 package exports. No `/api` interception, bare HTTP fallback, private imports, private DOM, root replacement, copied descriptors, or Harness source edits.
 - Install from a real tgz. A source link, config dump, package listing, or screenshot alone cannot establish a runtime PASS.
-- If rc.6 exposes no public disable command, report only the lifecycle actually observed: component disposal plus public remove/re-add.
+- Distinguish public patch disable from public package removal. Observe both installed-but-disabled and removed states, with a fresh Harness process and fresh browser profile after every plugin-set change.
 - Keep raw logs and the temporary profile outside Git. Any committed result must be sanitized and contain no credentials, payload text, or local absolute paths.
 - No push, pull request, merge, publication, model call, or real-data enablement is in scope.
 
@@ -87,7 +88,7 @@ Expected: fail because Connection, storage, sidebar, slots, and Zod are not yet 
 
 - [ ] **Step 3: Add exact public dependencies and package injection metadata**
 
-Pin the rc.6 packages exactly in the root development graph. Keep `zod` as the workbench runtime dependency. The workbench Client injection order is runtime, Connection, layout, sidebar, then slots; the Host exports `inject = ['client-connection', 'storage-domain']` only after Task 3.
+Pin the complete 56-package rc.6 closure exactly in the root development graph and verify every installed occurrence stays on `0.1.0-rc.6`. Pin the four observed compatible Cordis support packages and one exact Zod version. The workbench Client injection graph contains only packages that expose an rc.6 Web client bundle: Connection, runtime, layout, and sidebar, in dependency-topological order. `@deepseek-ai/dsh-client-ui-slots` remains a type/peer dependency and must not appear in `dsh.client.inject` because rc.6 exposes no `dsh.client` declaration or `./client` bundle for it. Every Harness peer is exact and optional. The Host exports `inject = ['client-connection', 'storage-domain']` only after Task 2.
 
 - [ ] **Step 4: Run GREEN and record the observed public signatures**
 
@@ -153,11 +154,21 @@ The adapter calls only channel `/dsh-pm-workbench-v1`; it validates request befo
 
 - [ ] **Step 5: Write RED lifecycle/UI tests**
 
-Use fake public-shaped contexts to prove exactly one launcher and one overlay registration, open/close state, and disposal without duplicate registrations after remount.
+Use fake public-shaped contexts to prove exactly one launcher and one overlay registration, open/close state, focus restoration, and disposal without duplicate registrations after remount. Treat the plugin-owned DOM contract as stable public smoke markers:
+
+```text
+data-dsh-pm-workbench="launcher"
+data-dsh-pm-workbench="overlay"
+data-dsh-pm-workbench="increment"
+data-dsh-pm-workbench="close"
+data-dsh-pm-workbench="counter"
+```
+
+The overlay is a `role="dialog"` with `aria-modal="true"`; the counter exposes numeric `data-counter` and `data-version` values. Tests and the runner must not query Harness-private DOM structure or class names.
 
 - [ ] **Step 6: Implement Host and Client entrypoints**
 
-Host opens the synthetic domain, registers one loopback channel, and disposes route before closing storage. Client contributes one `sidebar.footer.action` and one `shell.overlay`, renders no replacement root, and restores focus after close.
+Host opens the synthetic domain, registers one loopback channel, rejects excess in-flight requests, and performs ordered drain: stop admissions, unregister route, abort lifecycle, await in-flight work and repository writes, then close storage. Client contributes one `sidebar.footer.action` and one `shell.overlay`, renders no replacement root, uses the public rc.6 Connection-context intersection, and restores focus after close. Bundle Zod into both Host and Client artifacts; keep the root development pin but remove Zod from the published package runtime dependencies so a fresh profile can install the tgz offline. Package verification must prove neither bundle contains a bare Zod runtime import.
 
 - [ ] **Step 7: Run Task 2 verification and commit**
 
@@ -184,17 +195,17 @@ git commit -m "feat: add minimal Harness smoke probe"
 - Create: `tests/integration/stage-2-smoke-runner.test.ts`
 - Modify: `packages/workbench/build.mjs`
 - Modify: `package.json`
-- Create outside Git during execution: `.tmp/dsh-pm-workbench/stage-2-smoke/<run-id>/`
+- Create outside Git during execution: a fresh marker-owned directory under the operating system temporary root
 - Create only after a completed sanitized run: `docs/gate-results/stage-2-isolated-smoke.md`
 
 **Interfaces:**
 
-- Produces: one marker-owned run directory with `result.json`, sanitized `report.md`, and cleanup receipt.
+- Produces: one marker-owned run directory with temporary raw evidence and cleanup receipt; only a separately verified sanitized report may later be copied into the repository.
 - The runner accepts an explicit absolute rc.6 CLI entry and never resolves `dsh` via PATH.
 
 - [ ] **Step 1: Write RED ownership and command-graph tests**
 
-Prove refusal of `3080`, non-loopback bind, an existing/non-owned profile root, symlinks, missing marker, PATH CLI fallback, source links, unexpected package hash, and cleanup outside the owned run directory.
+Prove refusal of actual port `3080`, non-loopback bind, an existing/non-owned run root, symlinks at owned roots, missing/mismatched marker, PATH CLI fallback, source/link/Git install specs, unexpected package hash, signaling a PID whose identity changed, and cleanup outside the owned run directory. The runner owns a state machine with explicit `PASS`, `FAIL`, `INCONCLUSIVE`, `NEEDS_NETWORK_PERMISSION`, and `SAFETY_ABORT` outcomes.
 
 - [ ] **Step 2: Implement deterministic package freeze**
 
@@ -202,19 +213,19 @@ Build the workbench, run package allowlist verification, create one real tgz in 
 
 - [ ] **Step 3: Initialize and install into a fresh profile**
 
-Set `DSH_HOME` only for the child process. Use the public `dsh plugin --profile web add <absolute-tgz>` path and record the resolved package/bundle list from the isolated profile. If this operation requires network, stop before network and request the separate permission required by the runtime.
+Start from an empty allowlisted child environment and isolate `HOME`, `DSH_HOME`, XDG, npm, pnpm, temp, cwd, and browser paths. Use the public `dsh plugin --profile web add <absolute-tgz> --offline` path and verify the resolved package, tgz hash, bundle row, and package entrypoints directly in the isolated profile. Do not use `--dump-config` as PASS evidence. If an exact external runtime dependency is unexpectedly absent from the new isolated store, stop as `NEEDS_NETWORK_PERMISSION`; never silently retry online.
 
 - [ ] **Step 4: Start only the isolated runtime**
 
-Launch the fixed rc.6 entry on `127.0.0.1:3186`, reject any inherited proxy/provider/credential variables, verify the child/listener belongs to the run marker, and never signal a process not owned by the runner.
+Launch the explicit fixed rc.6 CLI entry on `127.0.0.1` with `--port 0`, parse the actual port, reject `3080`, and prove the child owns the listener. Reject inherited proxy/provider/credential variables and never signal a process whose PID, start time, argv, marker path, or listener ownership no longer matches. Start a new isolated headless Chrome profile for each runtime phase; if Chrome/CDP is unavailable, the overall result is `INCONCLUSIVE` rather than an inferred UI success.
 
 - [ ] **Step 5: Observe the smoke graph**
 
-Observe Host and Client load, one launcher, overlay open/close, `health`, one synthetic counter increment, restart persistence, public remove plus restart disappearance, same-tgz re-add, and sentinel readback. If a browser is unavailable, mark UI observations `INCONCLUSIVE`; do not infer them from config.
+Observe the following through real Host RPC, Client bundle and plugin-owned DOM markers: initial counter `0`; launcher and overlay interaction; UI-driven increment to `1`; restart persistence at `1`; public patch disable while the package remains installed; public remove and runtime disappearance; reinstall of the byte-identical tgz with retained counter `1`; and another UI-driven increment to `2`. Every plugin-set change gets a new Harness process and new Chrome profile. The boot entry identifier is the package name `@knight/dsh-pm-workbench`. Disabled or removed RPC proves only that the plugin's successful response is absent; rc.6 may return `404` or `405`.
 
 - [ ] **Step 6: Cleanup and prove isolation**
 
-Stop only the owned child, verify the `3186` listener disappears, remove the marker-owned run profile, and record that no command targeted `3080` or the default profile. Do not delete retained data outside the owned run root.
+Stop only identity-verified owned children, verify each dynamic listener disappears, remove the marker-owned run root without following dependency symlinks, and record that no command targeted `3080`, the default profile, or user browser state. If ownership changes or cleanup cannot be proven, stop destructive cleanup and return `SAFETY_ABORT`. Do not delete retained data outside the owned run root.
 
 - [ ] **Step 7: Verify, sanitize, and commit only code plus the eligible report**
 
@@ -226,4 +237,4 @@ npm run verify:package
 git diff --check
 ```
 
-The result is `PASS`, `FAIL`, or `INCONCLUSIVE`. `PASS` permits only the phrase: “The Stage 2 isolated smoke passed for the recorded rc.6 combination.” It does not permit “Gate A-prime passed,” “the PM Workbench is complete,” real interview use, or public distribution.
+The runner does not commit its own report. After cleanup, independently validate sanitization before copying an eligible report to `docs/gate-results/`. The result is `PASS`, `FAIL`, `INCONCLUSIVE`, `NEEDS_NETWORK_PERMISSION`, or `SAFETY_ABORT`. `PASS` permits only the phrase: “The Stage 2 isolated smoke passed for the recorded rc.6 combination.” It does not permit “Gate A-prime passed,” “the PM Workbench is complete,” real interview use, or public distribution.
