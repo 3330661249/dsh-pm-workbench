@@ -437,6 +437,9 @@ test.each([
   ['truncated-body', () => syntheticArchive(t => t.subarray(0, 514))],
   ['missing-end-block', () => syntheticArchive(t => t.subarray(0, -512))],
   ['header-padding', () => syntheticArchive(t => { t[511] = 1; fixTarChecksum(t.subarray(0, 512)) })],
+  ...[100, 124, 257, 263].map(offset => [
+    `high-bit-${offset}`, () => syntheticArchive(t => { t[offset] = t[offset]! | 0x80; fixTarChecksum(t.subarray(0, 512)) }),
+  ]),
   ['nonzero-padding', () => syntheticArchive(t => { t[1023] = 1 })],
   ['nonzero-tail', () => syntheticArchive(t => Buffer.concat([t, Buffer.alloc(512, 1)]))],
   ['duplicate', () => syntheticArchive(t => { t.copy(t, 1024, 0, 512) })],
@@ -474,6 +477,23 @@ test('refuses path strings or serialized objects as cleanup capabilities', async
   await expect(cleanup('/unowned')).rejects.toThrow()
   await expect(cleanup({ releaseRoot: '/unowned', owner: '@knight/dsh-pm-workbench' })).rejects.toThrow()
 })
+
+test('rejects an opened FIFO through the production artifact reader within a bounded subprocess', async () => {
+  const temp = await mkdtemp(path.join(await realpath(os.tmpdir()), 'workbench-release-fifo-'))
+  try {
+    const filename = path.join(temp, 'knight-dsh-pm-workbench-0.1.0.tgz')
+    await execFile('mkfifo', [filename])
+    const script = `
+      const api = await import(${JSON.stringify(pathToFileURL(path.join(repositoryRoot, 'scripts/verify-package.mjs')).href)})
+      try { await api.verifyPackedWorkbenchArtifact({ packOutputRoot: ${JSON.stringify(temp)}, metadata: ${JSON.stringify(validateNpmPackMetadata(packMetadata()))} }); process.stdout.write('accepted') }
+      catch { process.stdout.write('rejected') }
+    `
+    const observed = await execFile(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', script], { timeout: 1500 })
+      .then(result => ({ completed: true, stdout: result.stdout }), () => ({ completed: false, stdout: '' }))
+    expect(observed).toEqual({ completed: true, stdout: 'rejected' })
+    expect((await lstat(filename)).isFIFO()).toBe(true)
+  } finally { await rm(temp, { recursive: true, force: true }) }
+}, 10_000)
 
 async function releaseFixture(): Promise<{ temp: string; root: string; releaseRoot: string; module: any; git: (args: string[]) => Promise<string> }> {
   const temp = await mkdtemp(path.join(await realpath(os.tmpdir()), 'workbench-release-contract-'))
@@ -550,9 +570,18 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1')('binds a real c
     }
     await expect(f.module.readWorkbenchRelease({ releaseRoot: f.releaseRoot, sourceCommit: '0'.repeat(40), receiptSha256: summary.receiptSha256 })).rejects.toThrow()
     await expect(f.module.readWorkbenchRelease({ releaseRoot: f.releaseRoot, sourceCommit: commit, receiptSha256: '0'.repeat(64) })).rejects.toThrow()
-    await rename(tgzPath, tgzPath + '.saved'); await writeFile(tgzPath, tgzBytes, { mode: 0o600 })
+    for (const wrong of [
+      { releaseRoot: f.releaseRoot + '/.', sourceCommit: commit, receiptSha256: summary.receiptSha256 },
+      { releaseRoot: f.releaseRoot, sourceCommit: '0'.repeat(40), receiptSha256: summary.receiptSha256 },
+      { releaseRoot: f.releaseRoot, sourceCommit: commit, receiptSha256: '0'.repeat(64) },
+    ]) await expect(f.module.readWorkbenchReleaseForCleanup(wrong)).rejects.toThrow()
+    const beforeSwapCleanup = await f.module.readWorkbenchReleaseForCleanup({ releaseRoot: f.releaseRoot, sourceCommit: commit, receiptSha256: summary.receiptSha256 })
+    const savedTgzPath = path.join(f.temp, 'saved-tgz')
+    await rename(tgzPath, savedTgzPath); await writeFile(tgzPath, tgzBytes, { mode: 0o600 })
     await expect(f.module.withWorkbenchReleaseTgz(capability, async () => true)).rejects.toThrow()
-    await rm(tgzPath); await rename(tgzPath + '.saved', tgzPath)
+    await expect(f.module.cleanupWorkbenchRelease(beforeSwapCleanup)).rejects.toThrow()
+    expect(await readFile(tgzPath)).toEqual(tgzBytes)
+    await rm(tgzPath); await rename(savedTgzPath, tgzPath)
     capability = await read()
     const quarantine = f.releaseRoot + '.cleanup-' + summary.releaseId
     await mkdir(quarantine)
@@ -561,7 +590,12 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1')('binds a real c
     await rm(quarantine, { recursive: true })
     await writeFile(path.join(f.root, 'packages/workbench/README.md'), 'obsolete bytes\n')
     await expect(read()).rejects.toThrow()
-    await f.module.cleanupWorkbenchRelease(capability)
+    const cleanupCapability = await f.module.readWorkbenchReleaseForCleanup({ releaseRoot: f.releaseRoot, sourceCommit: commit, receiptSha256: summary.receiptSha256 })
+    expect(Object.keys(cleanupCapability)).toEqual([])
+    let consumed = false
+    await expect(f.module.withWorkbenchReleaseTgz(cleanupCapability, async () => { consumed = true })).rejects.toThrow()
+    expect(consumed).toBe(false)
+    await f.module.cleanupWorkbenchRelease(cleanupCapability)
     await expect(lstat(f.releaseRoot)).rejects.toThrow()
     await f.git(['checkout', '--', 'packages/workbench/README.md'])
     const replacement = await f.module.createWorkbenchRelease(f.releaseRoot)
@@ -652,6 +686,77 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each([
       await f.module.cleanupWorkbenchRelease(capability)
     } else if (variant === 'ownership-substitution') expect(observed.unownedPreserved).toBe(true)
     else expect(observed.rootExists).toBe(false)
+  } finally { await rm(f.temp, { recursive: true, force: true }) }
+}, 60_000)
+
+test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1')('rejects deletion-phase same-byte inode replacement without unlinking the substituted file', async () => {
+  const f = await releaseFixture()
+  try {
+    const summary = await f.module.createWorkbenchRelease(f.releaseRoot)
+    const script = `
+      import fs from 'node:fs/promises'
+      import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+      import { syncBuiltinESMExports } from 'node:module'
+      const root = ${JSON.stringify(f.releaseRoot)}
+      const quarantine = root + '.cleanup-' + ${JSON.stringify(summary.releaseId)}
+      const replacement = quarantine + '/receipt.json'
+      const originalBytes = readFileSync(root + '/receipt.json')
+      const originalOpen = fs.open
+      let reads = 0; let injected = false
+      fs.open = async function(file, ...args) {
+        if (String(file) === replacement && ++reads === 3) {
+          renameSync(replacement, ${JSON.stringify(path.join(f.temp, 'saved-receipt.json'))})
+          writeFileSync(replacement, originalBytes, { mode: 0o600, flag: 'wx' })
+          injected = true
+        }
+        return originalOpen.call(this, file, ...args)
+      }
+      syncBuiltinESMExports()
+      const api = await import(${JSON.stringify(pathToFileURL(path.join(f.root, 'scripts/verify-package.mjs')).href)})
+      const capability = await api.readWorkbenchRelease({ releaseRoot: root, sourceCommit: ${JSON.stringify(summary.sourceCommit)}, receiptSha256: ${JSON.stringify(summary.receiptSha256)} })
+      let rejected = false
+      try { await api.cleanupWorkbenchRelease(capability) } catch { rejected = true }
+      process.stdout.write(JSON.stringify({ injected, rejected, replacementPreserved: existsSync(replacement) && readFileSync(replacement).equals(originalBytes) }))
+    `
+    const observed = await execFile(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', script], { cwd: f.root, timeout: 30_000 })
+    expect(JSON.parse(observed.stdout)).toEqual({ injected: true, rejected: true, replacementPreserved: true })
+  } finally { await rm(f.temp, { recursive: true, force: true }) }
+}, 60_000)
+
+test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each(['work', 'docs'] as const)('rejects staging directory substitution with zero writes outside the owned root: %s', async variant => {
+  const f = await releaseFixture()
+  try {
+    const outside = path.join(f.temp, 'outside'); await mkdir(outside)
+    const script = `
+      import fs from 'node:fs/promises'
+      import { renameSync, symlinkSync, readdirSync } from 'node:fs'
+      import { syncBuiltinESMExports } from 'node:module'
+      const root = ${JSON.stringify(f.releaseRoot)}
+      const outside = ${JSON.stringify(outside)}
+      const variant = ${JSON.stringify(variant)}
+      const boundary = root + (variant === 'work' ? '/.work/package' : '/.work/package/docs')
+      const swapped = root + (variant === 'work' ? '/.work' : '/.work/package/docs')
+      const originalMkdir = fs.mkdir
+      let injected = false
+      fs.mkdir = async function(file, ...args) {
+        const result = await originalMkdir.call(this, file, ...args)
+        if (!injected && String(file) === boundary) {
+          renameSync(swapped, swapped + '.displaced')
+          symlinkSync(outside, swapped, 'dir')
+          injected = true
+        }
+        return result
+      }
+      syncBuiltinESMExports()
+      const api = await import(${JSON.stringify(pathToFileURL(path.join(f.root, 'scripts/verify-package.mjs')).href)})
+      let rejected = false
+      try { await api.createWorkbenchRelease(root) } catch { rejected = true }
+      process.stdout.write(JSON.stringify({ injected, rejected, outside: readdirSync(outside) }))
+    `
+    const observed = await execFile(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', script], { cwd: f.root,
+      env: { PATH: process.env.PATH, npm_execpath: process.env.npm_execpath }, timeout: 30_000,
+    })
+    expect(JSON.parse(observed.stdout)).toEqual({ injected: true, rejected: true, outside: [] })
   } finally { await rm(f.temp, { recursive: true, force: true }) }
 }, 60_000)
 

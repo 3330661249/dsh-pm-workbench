@@ -386,11 +386,12 @@ async function checkDirectories(entries) {
   }
 }
 async function closeDirectories(entries) { await Promise.all(entries.map(e => e.handle.close())) }
-async function stableRead(file, maxBytes, mode) {
+async function stableRead(file, maxBytes, mode, consume) {
   const ancestors = await holdDirectories(path.dirname(file))
   let handle
   try {
-    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW)
+    // A FIFO must reach fstat without waiting for a writer.
+    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     const before = await handle.stat({ bigint: true })
     if (!before.isFile() || before.nlink !== 1n) failRelease()
     if (before.size < 0n || before.size > BigInt(maxBytes)) throw new Error('bounded-file-size-invalid')
@@ -406,14 +407,20 @@ async function stableRead(file, maxBytes, mode) {
     const after = await handle.stat({ bigint: true }); const atPath = await lstat(file, { bigint: true })
     assertSameOpenFile(before, after, 'file'); assertSameOpenFile(before, atPath, 'file')
     await checkDirectories(ancestors)
+    if (consume) await consume({ bytes, stat: before, ancestors })
     return { bytes, stat: before }
   } finally { await handle?.close(); await closeDirectories(ancestors) }
 }
 
 function octal(bytes) {
-  const value = bytes.toString('ascii')
-  if (!/^[0-7]+[\0 ]*$/.test(value)) failRelease()
-  const result = Number.parseInt(value, 8); boundedNumber(result); return result
+  let result = 0; let digits = 0; let padding = false
+  for (const byte of bytes) {
+    if (!padding && byte >= 48 && byte <= 55) { result = result * 8 + byte - 48; digits++; continue }
+    if (digits && (byte === 0 || byte === 32)) { padding = true; continue }
+    failRelease()
+  }
+  if (!digits) failRelease()
+  boundedNumber(result); return result
 }
 function fieldName(bytes) {
   const end = bytes.indexOf(0)
@@ -437,7 +444,7 @@ export function inspectWorkbenchArchive(archive, metadata, frozenFiles) {
     const checksum = octal(header.subarray(148, 156))
     let calculated = 0
     for (let i = 0; i < 512; i++) calculated += i >= 148 && i < 156 ? 32 : header[i]
-    if (checksum !== calculated || header.subarray(257, 263).toString('ascii') !== 'ustar\0' || header.subarray(263, 265).toString('ascii') !== '00') failRelease()
+    if (checksum !== calculated || !header.subarray(257, 263).equals(Buffer.from('ustar\0')) || !header.subarray(263, 265).equals(Buffer.from('00'))) failRelease()
     const name = fieldName(header.subarray(0, 100))
     if (header.subarray(500, 512).some(byte => byte !== 0) || header.subarray(345, 500).some(byte => byte !== 0) || header.subarray(157, 257).some(byte => byte !== 0)) failRelease()
     const relative = WORKBENCH_PACKAGE_FILES.find(file => name === `package/${file}`)
@@ -559,7 +566,17 @@ async function absent(target) {
   try { await lstat(target); failRelease() } catch (error) { if (error.code !== 'ENOENT') throw error }
 }
 const capabilities = new WeakMap()
-function capabilityFor(data) { const capability = Object.freeze(Object.create(null)); capabilities.set(capability, data); return capability }
+function capabilityFor(data, purpose = 'consume') { const capability = Object.freeze(Object.create(null)); capabilities.set(capability, { ...data, purpose }); return capability }
+async function assertCommittedReceiptSources(receipt) {
+  const committedSources = new Map()
+  for (const source of receipt.sources) {
+    if (source.path.startsWith('node_modules/zod/')) continue
+    const bytes = await gitRead(['show', `${receipt.sourceCommit}:${source.path}`])
+    if (bytes.length !== source.bytes || sha256(bytes) !== source.sha256) failRelease()
+    committedSources.set(source.path, bytes)
+  }
+  assertElidedProductTypeImport(committedSources)
+}
 async function readReleaseGeneration({ releaseRoot, sourceCommit, receiptSha256 }, checkSources = true) {
   if (releaseRoot !== releaseCanonicalRoot) failRelease()
   commitHash(sourceCommit); digest(receiptSha256)
@@ -574,11 +591,11 @@ async function readReleaseGeneration({ releaseRoot, sourceCommit, receiptSha256 
     if (receipt.sourceCommit !== sourceCommit || !exact(receipt.rootIdentity, directoryIdentity(rootStat))) failRelease()
     const tgzFile = await stableRead(path.join(releaseRoot, packageFilename), MAX_PACKED_ARTIFACT_BYTES, 0o600)
     validateReceiptArchive(receipt, tgzFile.bytes)
+    await gitRead(['merge-base', '--is-ancestor', sourceCommit, 'HEAD'])
     if (checkSources) {
-      await gitRead(['merge-base', '--is-ancestor', sourceCommit, 'HEAD'])
       const sources = await snapshotSources(sourceCommit)
       if (!exact(sources.records, receipt.sources)) failRelease()
-    }
+    } else await assertCommittedReceiptSources(receipt)
     await checkDirectories(ancestors)
     if (!exact((await readdir(releaseRoot)).sort(comparePath), [packageFilename, 'receipt.json'])) failRelease()
     for (const [name, file] of [['receipt.json', receiptFile], [packageFilename, tgzFile]]) assertSameOpenFile(file.stat, await lstat(path.join(releaseRoot, name), { bigint: true }), 'retained file')
@@ -591,6 +608,13 @@ export async function readWorkbenchRelease(options) {
     return capabilityFor(await readReleaseGeneration(options))
   } catch { failRelease() }
 }
+// Retirement may outlive a bound source edit, but cannot grant archive consumption.
+export async function readWorkbenchReleaseForCleanup(options) {
+  try {
+    closed(options, ['releaseRoot', 'sourceCommit', 'receiptSha256'])
+    return capabilityFor(await readReleaseGeneration(options, false), 'cleanup')
+  } catch { failRelease() }
+}
 function requireCapability(capability) { const data = capabilities.get(capability); if (!data) failRelease(); return data }
 async function revalidateCapability(capability, checkSources) {
   const before = requireCapability(capability)
@@ -601,7 +625,7 @@ async function revalidateCapability(capability, checkSources) {
   return after
 }
 export async function withWorkbenchReleaseTgz(capability, consume) {
-  if (typeof consume !== 'function') failRelease()
+  if (typeof consume !== 'function' || requireCapability(capability).purpose !== 'consume') failRelease()
   const data = await revalidateCapability(capability, true)
   const result = await consume(path.join(data.releaseRoot, packageFilename))
   await revalidateCapability(capability, true)
@@ -617,7 +641,7 @@ async function inventoryTree(root) {
       for (const name of (await readdir(target)).sort(comparePath)) await visit(path.join(target, name), relative ? `${relative}/${name}` : name)
     } else {
       const file = await stableRead(target, MAX_PACKED_ARTIFACT_BYTES)
-      records.push({ path: relative, directory: false, identity: directoryIdentity(file.stat), mode: Number(file.stat.mode & 0o7777n), bytes: file.bytes.length, sha256: sha256(file.bytes) })
+      records.push({ path: relative, directory: false, identity: directoryIdentity(file.stat), mode: Number(file.stat.mode & 0o7777n), bytes: file.bytes.length, sha256: sha256(file.bytes), mtimeNs: file.stat.mtimeNs.toString(), ctimeNs: file.stat.ctimeNs.toString() })
     }
     if (records.length > 4096) failRelease()
   }
@@ -632,9 +656,22 @@ async function removeVerifiedTree(root, records) {
     if (!exact(item.identity, directoryIdentity(stat)) || stat.isSymbolicLink()) failRelease()
     if (item.directory) { if ((await readdir(target)).length !== 0) failRelease(); await rmdir(target) }
     else {
-      const file = await stableRead(target, MAX_PACKED_ARTIFACT_BYTES)
-      if (file.bytes.length !== item.bytes || sha256(file.bytes) !== item.sha256) failRelease()
-      await unlink(target)
+      // Keep both the opened file and its no-follow parent handles alive until unlink.
+      await stableRead(target, MAX_PACKED_ARTIFACT_BYTES, item.mode, async file => {
+        if (!exact(item.identity, directoryIdentity(file.stat)) || file.stat.mtimeNs.toString() !== item.mtimeNs
+          || file.stat.ctimeNs.toString() !== item.ctimeNs || file.bytes.length !== item.bytes || sha256(file.bytes) !== item.sha256) failRelease()
+        for (const ancestor of file.ancestors) {
+          const relative = path.relative(root, ancestor.path)
+          if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+            const expected = records.find(record => record.directory && record.path === relative)
+            if (!expected || !exact(expected.identity, directoryIdentity(ancestor.stat)) || expected.mode !== Number(ancestor.stat.mode & 0o7777n)) failRelease()
+          }
+        }
+        await checkDirectories(file.ancestors)
+        assertSameOpenFile(file.stat, await lstat(target, { bigint: true }), 'cleanup file')
+        await unlink(target)
+        await checkDirectories(file.ancestors)
+      })
     }
   }
   await absent(root)
@@ -669,7 +706,7 @@ export async function createWorkbenchRelease(releaseRoot) {
     const releaseId = randomUUID()
     const marker = { schemaVersion: 1, owner: packageName, releaseId, sourceCommit, rootIdentity: directoryIdentity(rootStat) }
     const markerBytes = Buffer.from(canonicalJson(marker))
-    owned = { rootHandle, rootStat, releaseId, markerBytes, markerReady: false }
+    owned = { rootHandle, rootStat, releaseId, markerBytes, markerReady: false, directories: [] }
     await writeFile(path.join(releaseRoot, '.owner.json'), markerBytes, { flag: 'wx', mode: 0o600 })
     owned.markerReady = true
     const assertOwned = async () => {
@@ -678,26 +715,61 @@ export async function createWorkbenchRelease(releaseRoot) {
       if (!current.isDirectory() || !equalIdentity(rootStat, current) || !equalIdentity(rootStat, held) || Number(current.mode & 0o7777n) !== 0o700) failRelease()
       const currentMarker = await stableRead(path.join(releaseRoot, '.owner.json'), 4096, 0o600)
       if (!currentMarker.bytes.equals(markerBytes)) failRelease()
+      await checkDirectories(owned.directories)
     }
     owned.assertOwned = assertOwned
+    const retainDirectory = async target => {
+      await assertOwned()
+      if (path.resolve(target) !== target || owned.directories.some(entry => entry.path === target)
+        || (path.dirname(target) !== releaseRoot && !owned.directories.some(entry => entry.path === path.dirname(target)))) failRelease()
+      const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY | constants.O_NONBLOCK)
+      let retained = false
+      try {
+        const stat = await handle.stat({ bigint: true }); const atPath = await lstat(target, { bigint: true })
+        if (!stat.isDirectory() || !atPath.isDirectory() || atPath.isSymbolicLink() || !equalIdentity(stat, atPath) || Number(stat.mode & 0o7777n) !== 0o700) failRelease()
+        owned.directories.push({ path: target, handle, stat }); retained = true
+        await assertOwned()
+      } finally { if (!retained) await handle.close() }
+    }
+    const mkdirOwned = async target => {
+      await assertOwned()
+      await mkdir(target, { mode: 0o700 })
+      await retainDirectory(target)
+    }
+    const writeStagedFile = async (target, bytes) => {
+      await assertOwned()
+      if (!owned.directories.some(entry => entry.path === path.dirname(target))) failRelease()
+      const handle = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o644)
+      try {
+        const before = await handle.stat({ bigint: true })
+        if (!before.isFile() || before.nlink !== 1n || before.size !== 0n || Number(before.mode & 0o7777n) !== 0o644) failRelease()
+        await assertOwned()
+        assertSameOpenFile(before, await lstat(target, { bigint: true }), 'staged file')
+        await handle.writeFile(bytes)
+        const after = await handle.stat({ bigint: true })
+        if (!equalIdentity(before, after) || after.size !== BigInt(bytes.length) || after.nlink !== 1n) failRelease()
+        await assertOwned()
+        assertSameOpenFile(after, await lstat(target, { bigint: true }), 'staged file')
+      } finally { await handle.close() }
+    }
     await assertOwned()
-    const work = path.join(releaseRoot, '.work'); await mkdir(work, { mode: 0o700 })
-    owned.workStat = await lstat(work, { bigint: true })
+    const work = path.join(releaseRoot, '.work'); await mkdirOwned(work)
+    owned.workStat = owned.directories.find(entry => entry.path === work).stat
     let buildEvidence
     try { buildEvidence = await compileProductSnapshots(sources.map, assertOwned) } finally { stopProductCompiler() }
     await assertOwned()
-    const stagedRoot = path.join(work, 'package'); await mkdir(stagedRoot, { mode: 0o700 })
+    const stagedRoot = path.join(work, 'package'); await mkdirOwned(stagedRoot)
+    await mkdirOwned(path.join(stagedRoot, 'docs')); await mkdirOwned(path.join(stagedRoot, 'lib'))
     const frozen = []
     for (const name of WORKBENCH_PACKAGE_FILES) {
       await assertOwned()
       const bytes = buildEvidence.outputBytes[name] ?? sources.map.get(`packages/workbench/${name}`)
       if (!Buffer.isBuffer(bytes)) failRelease()
-      await mkdir(path.dirname(path.join(stagedRoot, name)), { recursive: true, mode: 0o700 })
-      await writeFile(path.join(stagedRoot, name), bytes, { flag: 'wx', mode: 0o644 })
+      await writeStagedFile(path.join(stagedRoot, name), bytes)
       frozen.push({ path: name, bytes })
     }
     await verifyBuiltWorkbenchPackage({ packageRoot: stagedRoot, buildEvidence })
-    const operationRoot = path.join(work, 'pack'); await mkdir(operationRoot, { mode: 0o700 })
+    const operationRoot = path.join(work, 'pack'); await mkdirOwned(operationRoot)
     const npmCliPath = process.env.npm_execpath
     if (!npmCliPath || !path.isAbsolute(npmCliPath)) failRelease()
     const { runNpmPack } = await import('./pack-dry.mjs')
@@ -711,7 +783,8 @@ export async function createWorkbenchRelease(releaseRoot) {
     }, 100)
     let packed
     try {
-      packed = await runNpmPack({ nodeExecutable: await realpath(process.execPath), npmCliPath: await realpath(npmCliPath), stagedPackageRoot: stagedRoot, operationRoot, dryRun: false, ownershipGuard: assertOwned, signal: controller.signal })
+      packed = await runNpmPack({ nodeExecutable: await realpath(process.execPath), npmCliPath: await realpath(npmCliPath), stagedPackageRoot: stagedRoot, operationRoot, dryRun: false,
+        ownershipGuard: async createdDirectory => { await assertOwned(); if (createdDirectory) await retainDirectory(createdDirectory); await assertOwned() }, signal: controller.signal })
     } finally { clearInterval(monitor); await checkPending }
     if (ownershipFailure) failRelease()
     await assertOwned()
@@ -733,6 +806,7 @@ export async function createWorkbenchRelease(releaseRoot) {
     await assertOwned(); await writeFile(path.join(releaseRoot, packageFilename), artifact.bytes, { flag: 'wx', mode: 0o600 })
     if (!equalIdentity(owned.workStat, await lstat(work, { bigint: true }))) failRelease()
     const transient = await inventoryTree(work); await assertOwned(); await removeVerifiedTree(work, transient)
+    await closeDirectories(owned.directories); owned.directories = []
     // Source and HEAD binding are rechecked immediately before the closed receipt is published.
     await recheckSources(sources, sourceCommit, assertOwned); await cleanCommit(sourceCommit, assertOwned)
     await assertOwned(); await writeFile(path.join(releaseRoot, 'receipt.json'), receiptBytes, { flag: 'wx', mode: 0o600 })
@@ -755,7 +829,7 @@ export async function createWorkbenchRelease(releaseRoot) {
       } catch { /* A substituted or unowned generation is preserved. */ }
     }
     failRelease()
-  } finally { await owned?.rootHandle.close(); if (ancestors) await closeDirectories(ancestors) }
+  } finally { if (owned) { await closeDirectories(owned.directories); await owned.rootHandle.close() }; if (ancestors) await closeDirectories(ancestors) }
 }
 
 async function runVerifierCli() {

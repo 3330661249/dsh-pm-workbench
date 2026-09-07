@@ -36,7 +36,7 @@ function operationPath(operationRoot, name) {
  * @property {string} operationRoot
  * @property {boolean} [dryRun]
  * @property {AbortSignal} [signal]
- * @property {() => Promise<void>} [ownershipGuard]
+ * @property {(createdDirectory?: string) => Promise<void>} [ownershipGuard]
  */
 
 /** @param {NpmPackOptions} options */
@@ -150,6 +150,7 @@ export async function runNpmPack(options) {
     await options.ownershipGuard?.()
     await mkdir(directory, { mode: 0o700 })
     await requireRealDirectory(directory, 'npm pack owned directory')
+    await options.ownershipGuard?.(directory)
   }
   await writeFile(requested.options.env.npm_config_userconfig, '', { flag: 'wx', mode: 0o600 })
   await writeFile(requested.options.env.npm_config_globalconfig, '', { flag: 'wx', mode: 0o600 })
