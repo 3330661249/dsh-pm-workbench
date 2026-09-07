@@ -1058,6 +1058,66 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each([
   } finally { await rm(f.temp, { recursive: true, force: true }) }
 }, 60_000)
 
+test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each([
+  { variant: 'reader', source: 'packages/workbench/README.md', delay: 0 },
+  { variant: 'consumer', source: 'packages/workbench/README.md', delay: 4 },
+  { variant: 'consumer', source: 'packages/workbench/README.md', delay: 5 },
+  { variant: 'consumer', source: 'package-lock.json', delay: 5 },
+  { variant: 'consumer', source: 'node_modules/zod/package.json', delay: 5 },
+] as const)('rejects receipt-bound source drift at the final promise handoff: $variant/$source/$delay', async ({ variant, source, delay }) => {
+  const f = await releaseFixture()
+  try {
+    const summary = await f.module.createWorkbenchRelease(f.releaseRoot)
+    const script = `
+      import fs from 'node:fs/promises'
+      import { readFileSync, writeFileSync, lstatSync, readdirSync } from 'node:fs'
+      import { syncBuiltinESMExports } from 'node:module'
+      const root = ${JSON.stringify(f.releaseRoot)}
+      const source = ${JSON.stringify(path.join(f.root, source))}
+      const changedBytes = Buffer.concat([readFileSync(source), Buffer.from('\\n')])
+      const originalRoot = lstatSync(root)
+      const retained = readdirSync(root).map(name => ({ name, stat: lstatSync(root + '/' + name), bytes: readFileSync(root + '/' + name) }))
+      const originalOpen = fs.open
+      let armed = false; let injected = false; let selected = false
+      const afterMicrotasks = remaining => {
+        if (remaining === 0) { writeFileSync(source, changedBytes); injected = true }
+        else Promise.resolve().then(() => afterMicrotasks(remaining - 1))
+      }
+      fs.open = async function(file, ...args) {
+        const handle = await originalOpen.call(this, file, ...args)
+        if (armed && !selected && String(file) === root) {
+          selected = true
+          const close = handle.close.bind(handle)
+          handle.close = async function(...args) {
+            const result = await close(...args)
+            if (!injected) afterMicrotasks(${delay})
+            return result
+          }
+        }
+        return handle
+      }
+      syncBuiltinESMExports()
+      const api = await import(${JSON.stringify(pathToFileURL(path.join(f.root, 'scripts/verify-package.mjs')).href)})
+      const options = { releaseRoot: root, sourceCommit: ${JSON.stringify(summary.sourceCommit)}, receiptSha256: ${JSON.stringify(summary.receiptSha256)} }
+      const capability = ${JSON.stringify(variant)} === 'consumer' ? await api.readWorkbenchRelease(options) : undefined
+      armed = true
+      let rejected = false; let callbackRan = false; let injectedAtCallback = false; let capabilityGranted = false
+      try {
+        if (${JSON.stringify(variant)} === 'reader') { await api.readWorkbenchRelease(options); capabilityGranted = true }
+        else await api.withWorkbenchReleaseTgz(capability, () => { callbackRan = true; injectedAtCallback = injected })
+      } catch { rejected = true }
+      const finalRoot = lstatSync(root)
+      process.stdout.write(JSON.stringify({ injected, rejected, callbackRan, injectedAtCallback, capabilityGranted,
+        generationPreserved: finalRoot.dev === originalRoot.dev && finalRoot.ino === originalRoot.ino && retained.every(file => {
+          const current = lstatSync(root + '/' + file.name)
+          return current.dev === file.stat.dev && current.ino === file.stat.ino && readFileSync(root + '/' + file.name).equals(file.bytes)
+        }), sourcePreserved: readFileSync(source).equals(changedBytes) }))
+    `
+    const observed = await execFile(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', script], { cwd: f.root, timeout: 30_000 })
+    expect(JSON.parse(observed.stdout)).toEqual({ injected: true, rejected: true, callbackRan: false, injectedAtCallback: false, capabilityGranted: false, generationPreserved: true, sourcePreserved: true })
+  } finally { await rm(f.temp, { recursive: true, force: true }) }
+}, 60_000)
+
 test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1')('rejects an unrelated root created during cleanup final async close and preserves it', async () => {
   const f = await releaseFixture()
   try {

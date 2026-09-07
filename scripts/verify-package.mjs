@@ -444,7 +444,7 @@ function readCheckedFileSync(target, maxBytes, mode) {
   const fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
   try {
     const stat = fstatSync(fd, { bigint: true })
-    if (!stat.isFile() || stat.nlink !== 1n || stat.size < 0n || stat.size > BigInt(maxBytes) || Number(stat.mode & 0o7777n) !== mode) failRelease()
+    if (!stat.isFile() || stat.nlink !== 1n || stat.size < 0n || stat.size > BigInt(maxBytes) || (mode !== undefined && Number(stat.mode & 0o7777n) !== mode)) failRelease()
     const bytes = Buffer.alloc(Number(stat.size)); let offset = 0
     while (offset < bytes.length) { const count = readSync(fd, bytes, offset, bytes.length - offset, offset); if (!count) failRelease(); offset += count }
     if (readSync(fd, Buffer.alloc(1), 0, 1, offset)) failRelease()
@@ -664,9 +664,10 @@ async function absent(target) {
   try { await lstat(target); failRelease() } catch (error) { if (error.code !== 'ENOENT') throw error }
 }
 // Promise continuations can run after an async reader's final seal. Recheck the
-// original generation synchronously at each public authority/consumer handoff.
-function sealReleaseGenerationSync(data) {
+// original generation and bound source bytes at each public consumer handoff.
+function sealReleaseGenerationSync(data, checkSources = true) {
   const reopened = reopenDirectoriesSync(data.ancestors)
+  const sourceParents = new Map()
   try {
     if (!exact(readdirSync(data.releaseRoot).sort(comparePath), [packageFilename, 'receipt.json'])) failRelease()
     for (const [name, file, bound] of [['receipt.json', data.receiptFile, MAX_RECEIPT_BYTES], [packageFilename, data.tgzFile, MAX_PACKED_ARTIFACT_BYTES]]) {
@@ -674,12 +675,29 @@ function sealReleaseGenerationSync(data) {
       assertSameOpenFile(file.stat, current.stat, 'retained file at handoff')
       if (!current.bytes.equals(file.bytes)) failRelease()
     }
-    checkDirectoriesSync(reopened)
-  } finally { for (const entry of reopened) closeSync(entry.fd) }
+    // C35 retirement intentionally skips only current checkout source equality.
+    if (checkSources) for (const source of data.receipt.sources) {
+      let parent = defaultRepositoryRoot
+      for (const part of source.path.split('/').slice(0, -1)) {
+        parent = path.join(parent, part)
+        if (!sourceParents.has(parent)) {
+          const fd = openSync(parent, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+          let retained = false
+          try {
+            const entry = { path: parent, fd, stat: fstatSync(fd, { bigint: true }) }
+            checkDirectoriesSync([entry]); sourceParents.set(parent, entry); retained = true
+          } finally { if (!retained) closeSync(fd) }
+        }
+      }
+      const current = readCheckedFileSync(path.join(defaultRepositoryRoot, source.path), MAX_PACKAGE_FILE_BYTES)
+      if (current.bytes.length !== source.bytes || sha256(current.bytes) !== source.sha256) failRelease()
+    }
+    checkDirectoriesSync([...reopened, ...sourceParents.values()])
+  } finally { for (const entry of [...sourceParents.values(), ...reopened]) closeSync(entry.fd) }
 }
 const capabilities = new WeakMap()
 function capabilityFor(data, purpose = 'consume') {
-  sealReleaseGenerationSync(data)
+  sealReleaseGenerationSync(data, purpose === 'consume')
   const capability = Object.freeze(Object.create(null)); capabilities.set(capability, { ...data, purpose }); return capability
 }
 async function assertCommittedReceiptSources(receipt) {
@@ -719,7 +737,7 @@ async function readReleaseGeneration({ releaseRoot, sourceCommit, receiptSha256 
     return result
   } finally {
     await closeDirectories(ancestors)
-    if (result) sealReleaseGenerationSync(result)
+    if (result) sealReleaseGenerationSync(result, checkSources)
   }
 }
 export async function readWorkbenchRelease(options) {
@@ -742,7 +760,7 @@ async function revalidateCapability(capability, checkSources) {
   if (!equalIdentity(before.rootStat, after.rootStat)) failRelease()
   assertSameOpenFile(before.receiptFile.stat, after.receiptFile.stat, 'retained receipt')
   assertSameOpenFile(before.tgzFile.stat, after.tgzFile.stat, 'retained artifact')
-  sealReleaseGenerationSync(before)
+  sealReleaseGenerationSync(before, checkSources)
   return after
 }
 export async function withWorkbenchReleaseTgz(capability, consume) {
@@ -850,7 +868,7 @@ export async function cleanupWorkbenchRelease(capability) {
     if (!equalIdentity(data.rootStat, rootEntry.stat) || data.rootStat.mode !== rootEntry.stat.mode) failRelease()
     await absent(quarantine)
     await revalidateCapability(capability, false)
-    sealReleaseGenerationSync(requireCapability(capability))
+    sealReleaseGenerationSync(requireCapability(capability), false)
     quarantineTreeSync(data.releaseRoot, quarantine, rootEntry, held.slice(0, -1))
     if (!exact(await inventoryTree(quarantine), records)) failRelease()
     await removeVerifiedTree(quarantine, records)
