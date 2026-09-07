@@ -379,9 +379,12 @@ async function holdDirectories(directory) {
     for (const part of ['', ...directory.slice(current.length).split('/').filter(Boolean)]) {
       if (part) current = path.join(current, part)
       const handle = await open(current, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY)
-      const stat = await handle.stat({ bigint: true })
-      if (!stat.isDirectory() || !equalIdentity(stat, await lstat(current, { bigint: true }))) { await handle.close(); failRelease() }
-      entries.push({ path: current, handle, stat })
+      let retained = false
+      try {
+        const stat = await handle.stat({ bigint: true })
+        if (!stat.isDirectory() || !equalIdentity(stat, await lstat(current, { bigint: true }))) failRelease()
+        entries.push({ path: current, handle, stat }); retained = true
+      } finally { if (!retained) await handle.close() }
     }
     return entries
   } catch (error) { await Promise.all(entries.map(e => e.handle.close())); throw error }
@@ -406,6 +409,20 @@ function checkDirectoriesSync(entries) {
       || !equalIdentity(entry.stat, atPath) || held.mode !== entry.stat.mode || atPath.mode !== entry.stat.mode) failRelease()
   }
   } catch (error) { throw lostOwnership(error) }
+}
+function reopenDirectoriesSync(entries) {
+  const reopened = []
+  try {
+    for (const entry of entries) {
+      const fd = openSync(entry.path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+      reopened.push({ path: entry.path, fd, stat: entry.stat })
+    }
+    checkDirectoriesSync(reopened)
+    return reopened
+  } catch (error) {
+    for (const entry of reopened) closeSync(entry.fd)
+    throw lostOwnership(error)
+  }
 }
 function absentSync(target) {
   try { lstatSync(target); failRelease() } catch (error) { if (error.code !== 'ENOENT') throw error }
@@ -662,6 +679,7 @@ async function readReleaseGeneration({ releaseRoot, sourceCommit, receiptSha256 
   if (releaseRoot !== releaseCanonicalRoot) failRelease()
   commitHash(sourceCommit); digest(receiptSha256)
   const ancestors = await holdDirectories(releaseRoot)
+  let result
   try {
     const rootStat = ancestors.at(-1).stat
     if (Number(rootStat.mode & 0o7777n) !== 0o700) failRelease()
@@ -680,8 +698,23 @@ async function readReleaseGeneration({ releaseRoot, sourceCommit, receiptSha256 
     await checkDirectories(ancestors)
     if (!exact((await readdir(releaseRoot)).sort(comparePath), [packageFilename, 'receipt.json'])) failRelease()
     for (const [name, file] of [['receipt.json', receiptFile], [packageFilename, tgzFile]]) assertSameOpenFile(file.stat, await lstat(path.join(releaseRoot, name), { bigint: true }), 'retained file')
-    return { releaseRoot, sourceCommit, receiptSha256, receipt, rootStat, receiptFile, tgzFile }
-  } finally { await closeDirectories(ancestors) }
+    result = { releaseRoot, sourceCommit, receiptSha256, receipt, rootStat, receiptFile, tgzFile }
+    return result
+  } finally {
+    await closeDirectories(ancestors)
+    if (result) {
+      const reopened = reopenDirectoriesSync(ancestors)
+      try {
+        if (!exact(readdirSync(releaseRoot).sort(comparePath), [packageFilename, 'receipt.json'])) failRelease()
+        for (const [name, file, bound] of [['receipt.json', result.receiptFile, MAX_RECEIPT_BYTES], [packageFilename, result.tgzFile, MAX_PACKED_ARTIFACT_BYTES]]) {
+          const current = readCheckedFileSync(path.join(releaseRoot, name), bound, 0o600)
+          assertSameOpenFile(file.stat, current.stat, 'retained file after close')
+          if (!current.bytes.equals(file.bytes)) failRelease()
+        }
+        checkDirectoriesSync(reopened)
+      } finally { for (const entry of reopened) closeSync(entry.fd) }
+    }
+  }
 }
 export async function readWorkbenchRelease(options) {
   try {
@@ -841,12 +874,20 @@ export async function createWorkbenchRelease(releaseRoot) {
     const cleanupRecords = () => Object.freeze([...owned.inventory.values()].sort((left, right) => comparePath(left.path, right.path)))
     owned.cleanupRecords = cleanupRecords
     const checkRecordedPathsSync = () => {
-      for (const record of cleanupRecords()) {
-        const stat = lstatSync(record.path ? path.join(releaseRoot, record.path) : releaseRoot, { bigint: true })
-        if (stat.isSymbolicLink() || !exact(record.identity, directoryIdentity(stat)) || Number(stat.mode & 0o7777n) !== record.mode
-          || (record.directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1n || stat.size !== BigInt(record.bytes)
-            || stat.mtimeNs.toString() !== record.mtimeNs || stat.ctimeNs.toString() !== record.ctimeNs)) failRelease()
-      }
+      try {
+        const records = cleanupRecords()
+        for (const record of records) {
+          const target = record.path ? path.join(releaseRoot, record.path) : releaseRoot
+          const stat = lstatSync(target, { bigint: true })
+          if (stat.isSymbolicLink() || !exact(record.identity, directoryIdentity(stat)) || Number(stat.mode & 0o7777n) !== record.mode
+            || (record.directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1n || stat.size !== BigInt(record.bytes)
+              || stat.mtimeNs.toString() !== record.mtimeNs || stat.ctimeNs.toString() !== record.ctimeNs)) failRelease()
+          if (record.directory) {
+            const children = records.filter(item => item.path !== record.path && path.posix.dirname(item.path) === (record.path || '.')).map(item => path.posix.basename(item.path)).sort(comparePath)
+            if (!exact(readdirSync(target).sort(comparePath), children)) failRelease()
+          }
+        }
+      } catch (error) { throw lostOwnership(error) }
     }
     owned.checkRecordedPathsSync = checkRecordedPathsSync
     recordDirectory(rootEntry)
@@ -923,20 +964,20 @@ export async function createWorkbenchRelease(releaseRoot) {
       finally { closeSync(file.fd) }
       } catch (error) { throw lostOwnership(error) }
     }
-    const freezePackInventory = async () => {
+    const acceptPackRecordsSync = records => {
       try {
-        await assertOwned()
-        const records = await inventoryTree(releaseRoot)
-        await assertOwned()
-        for (const expected of cleanupRecords()) {
-          if (!exact(records.find(record => record.path === expected.path), expected)) failRelease()
-        }
+        if (!records) return
+        // These records were frozen in the packer's trusted synchronous interval,
+        // not discovered here. Transfer them before this callback's first await.
         for (const record of records) {
-          if (owned.inventory.has(record.path)) continue
-          if (!record.path.startsWith('.work/pack/')) failRelease()
-          owned.inventory.set(record.path, Object.freeze(record))
+          const relative = path.relative(releaseRoot, record.path)
+          if (relative !== '.work/pack' && !relative.startsWith('.work/pack/')) failRelease()
+          const expected = Object.freeze({ ...record, path: relative })
+          const prior = owned.inventory.get(relative)
+          if (prior && !exact(prior, expected)) failRelease()
+          owned.inventory.set(relative, expected)
         }
-        await assertOwned()
+        assertOwnedSync()
       } catch (error) { throw lostOwnership(error) }
     }
     await assertOwned()
@@ -963,7 +1004,7 @@ export async function createWorkbenchRelease(releaseRoot) {
     await assertOwned()
     // Exactly one real offline/no-script pack of the frozen nine files.
     const packed = await runNpmPack({ nodeExecutable: await realpath(process.execPath), npmCliPath: await realpath(npmCliPath), stagedPackageRoot: stagedRoot, operationRoot, dryRun: false,
-      ownershipGuard: async (createdDirectory, createdStat) => { await assertOwned(); if (createdDirectory) await retainDirectory(createdDirectory, createdStat); await freezePackInventory() } })
+      ownershipGuard: async (createdDirectory, createdStat, records) => { acceptPackRecordsSync(records); await assertOwned(); if (createdDirectory) await retainDirectory(createdDirectory, createdStat); await assertOwned() } })
     await assertOwned()
     const artifact = await stableRead(packed.tgzAbsolutePath, MAX_PACKED_ARTIFACT_BYTES)
     const members = inspectWorkbenchArchive(artifact.bytes, packed.metadata, frozen)
@@ -997,6 +1038,8 @@ export async function createWorkbenchRelease(releaseRoot) {
     owned.inventory.delete('.owner.json'); owned.final = true
     const receiptSha256 = sha256(receiptBytes)
     await readReleaseGeneration({ releaseRoot, sourceCommit, receiptSha256 })
+    checkDirectoriesSync([...ancestors, rootEntry]); checkRecordedPathsSync()
+    owned.completed = true
     return Object.freeze({ status: 'verified', kind: 'release', releaseId, sourceCommit, tgzSha256: receipt.tgz.sha256, receiptSha256 })
   } catch (error) {
     if (owned && error?.[ownershipLoss]) owned.ownershipLost = true
@@ -1017,7 +1060,20 @@ export async function createWorkbenchRelease(releaseRoot) {
       } catch { owned.ownershipLost = true /* No new inventory is adopted after any failure. */ }
     }
     failRelease()
-  } finally { if (owned) { await closeDirectories(owned.directories); closeSync(owned.rootEntry.fd) }; if (ancestors) await closeDirectories(ancestors) }
+  } finally {
+    if (owned) { await closeDirectories(owned.directories); closeSync(owned.rootEntry.fd) }
+    if (ancestors) await closeDirectories(ancestors)
+    if (owned?.completed) {
+      // Async handle closure is also an ownership boundary. Reopen and compare
+      // the original identities after the last await, then finish synchronously.
+      let reopened = []
+      try {
+        reopened = reopenDirectoriesSync([...ancestors, owned.rootEntry])
+        checkDirectoriesSync(reopened); owned.checkRecordedPathsSync()
+      } catch { failRelease() }
+      finally { for (const entry of reopened) closeSync(entry.fd) }
+    }
+  }
 }
 
 async function runVerifierCli() {
