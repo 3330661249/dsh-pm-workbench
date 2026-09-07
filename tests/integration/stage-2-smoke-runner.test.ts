@@ -16,6 +16,7 @@ import {
   buildPluginInvocation,
   cleanupBrowserPhaseResources,
   cleanupOwnedRunRoot,
+  createNodeCloseWitness,
   createCdpPeer,
   createPageSession,
   createPageNetworkGate,
@@ -27,7 +28,9 @@ import {
   parseDevToolsActivePort,
   parseLsofListenerWitness,
   parseStage2Args,
+  preferStage2Error,
   renderPnpmShim,
+  retireIncompleteChildReceipt,
   runStage2Cli,
   stageVerifiedPackage,
   stopRetainedChrome,
@@ -39,6 +42,9 @@ import {
   validatePackageVerificationReceipt,
   validateObservedPackageFile,
   validatePackedMetadataAgainstVerification,
+  waitForCounter,
+  waitForLauncherFocus,
+  waitForMarker,
 } from '../../scripts/run-stage-2-isolated-smoke.mjs'
 import {
   canonicalStage2Result,
@@ -1134,6 +1140,49 @@ describe('Stage 2 browser and listener guards', () => {
     expect(send.mock.calls.some(([method]) => method === 'DOM.getDocument')).toBe(false)
   })
 
+  it('gives a navigation escape precedence when the same Page.navigate command rejects', async () => {
+    const origin = 'http://127.0.0.1:32001'
+    const handlers = new Set<(event: {
+      method: string
+      params: Record<string, unknown>
+      sessionId: string
+    }) => void>()
+    const send = vi.fn(async (method: string) => {
+      if (method === 'Target.createTarget') return { targetId: 'target-1' }
+      if (method === 'Target.attachToTarget') return { sessionId: 'session-1' }
+      if (method === 'Page.navigate') {
+        for (const handler of handlers) {
+          handler({
+            method: 'Page.windowOpen',
+            params: {
+              url: 'about:blank', windowName: '', windowFeatures: [], userGesture: true,
+            },
+            sessionId: 'session-1',
+          })
+        }
+        throw new Stage2RunnerError('STAGE2_CDP_COMMAND_TIMEOUT', 'SAFETY_ABORT')
+      }
+      return {}
+    })
+    const peer = {
+      send,
+      waitForEvent: vi.fn(async () => {
+        throw new Error('no event wait is allowed after Page.windowOpen')
+      }),
+      onEvent: vi.fn((handler: (typeof handlers extends Set<infer T> ? T : never)) => {
+        handlers.add(handler)
+        return () => { handlers.delete(handler) }
+      }),
+    }
+
+    await expect(createPageSession(
+      peer,
+      origin,
+      { externalAttempts: 0, controlFailed: false },
+      'initial-enabled',
+    )).rejects.toMatchObject({ stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED' })
+  })
+
   it('stops an event-wait loop immediately when the first response wait opens a new window', async () => {
     const origin = 'http://127.0.0.1:32001'
     const handlers = new Set<(event: {
@@ -1538,6 +1587,67 @@ describe('Stage 2 browser and listener guards', () => {
       .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
   })
 
+  it('does not accept a marker whose DOM read completes after the polling deadline', async () => {
+    let expired = false
+    const clock = {
+      assertBeforeDeadline: vi.fn(() => {
+        if (expired) throw new Stage2RunnerError('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
+      }),
+      pause: vi.fn(async () => undefined),
+    }
+    const fixture = onboardingFixture({
+      readAx: () => axTree(),
+      onCommand: ({ method }) => {
+        if (method === 'DOM.getDocument') expired = true
+      },
+    })
+
+    await expect(waitForMarker(fixture, 'session-1', 'launcher', { clock }))
+      .rejects.toMatchObject({ stage2Code: 'STAGE2_OBSERVATION_MISMATCH', stage2Outcome: 'FAIL' })
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'DOM.querySelectorAll')).toHaveLength(0)
+  })
+
+  it('does not accept a counter whose attribute read completes after the polling deadline', async () => {
+    let expired = false
+    const clock = {
+      assertBeforeDeadline: vi.fn(() => {
+        if (expired) throw new Stage2RunnerError('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
+      }),
+      pause: vi.fn(async () => undefined),
+    }
+    const fixture = onboardingFixture({
+      readAx: () => axTree(),
+      onCommand: ({ method }) => {
+        if (method === 'DOM.getAttributes') expired = true
+      },
+    })
+
+    await expect(waitForCounter(fixture, 'session-1', 0, { clock }))
+      .rejects.toMatchObject({ stage2Code: 'STAGE2_OBSERVATION_MISMATCH', stage2Outcome: 'FAIL' })
+  })
+
+  it('does not continue focus observation after the polling deadline', async () => {
+    let expired = false
+    const clock = {
+      assertBeforeDeadline: vi.fn(() => {
+        if (expired) throw new Stage2RunnerError('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
+      }),
+      pause: vi.fn(async () => undefined),
+    }
+    const fixture = onboardingFixture({
+      readAx: () => axTree(),
+      onCommand: ({ method }) => {
+        if (method === 'DOM.describeNode') expired = true
+      },
+    })
+
+    await expect(waitForLauncherFocus(fixture, 'session-1', { clock }))
+      .rejects.toMatchObject({ stage2Code: 'STAGE2_OBSERVATION_MISMATCH', stage2Outcome: 'FAIL' })
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Accessibility.getPartialAXTree')).toHaveLength(0)
+  })
+
   it('stops all later CDP observation when Page.windowOpen arrives during a target capture', async () => {
     let emitted = false
     const fixture = onboardingFixture({
@@ -1565,6 +1675,27 @@ describe('Stage 2 browser and listener guards', () => {
     expect(methods.slice(boxIndex + 1)).not.toContain('DOM.getNodeForLocation')
     expect(methods.slice(boxIndex + 1)).not.toContain('Accessibility.getAXNodeAndAncestors')
     expect(methods.slice(boxIndex + 1)).not.toContain('Input.dispatchMouseEvent')
+  })
+
+  it('gives an expired readiness deadline precedence when the same DOM command rejects', async () => {
+    let expired = false
+    const fixture = onboardingFixture({
+      readAx: () => axTree(),
+      onCommand: ({ method, advance }) => {
+        if (!expired && method === 'DOM.getDocument') {
+          expired = true
+          advance(500)
+          throw new Stage2RunnerError('STAGE2_CDP_COMMAND_TIMEOUT', 'SAFETY_ABORT')
+        }
+      },
+    })
+
+    await expect(clickMarkerSafely(fixture, 'launcher', {
+      quietMs: 100,
+      timeoutMs: 500,
+    })).rejects.toMatchObject({ stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED' })
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
   })
 
   it('does not retry after a press command fails or a clicked dialog never disappears', async () => {
@@ -1943,6 +2074,24 @@ describe('Stage 2 browser and listener guards', () => {
     expect(state.externalAttempts).toBe(0)
   })
 
+  it('does not emit a Fetch control after the page target has escaped through windowOpen', () => {
+    const origin = 'http://127.0.0.1:32001'
+    const { peer, emit } = fakePageNetworkPeer()
+    const state = { externalAttempts: 0, controlFailed: false }
+    createPageNetworkGate(peer, 'page-session', origin, state)
+
+    emit('Page.windowOpen', {
+      url: 'about:blank', windowName: '', windowFeatures: [], userGesture: true,
+    })
+    emit('Fetch.requestPaused', {
+      requestId: 'post-escape-control',
+      networkId: 'post-escape-network',
+      request: { url: `${origin}/api/probe` },
+    })
+
+    expect(peer.send).not.toHaveBeenCalled()
+  })
+
   it('drains Fetch controls before requiring a fresh event-stable quiet window', async () => {
     const origin = 'http://127.0.0.1:32001'
     const { peer, emit } = fakePageNetworkPeer()
@@ -2128,6 +2277,222 @@ describe('Stage 2 browser and listener guards', () => {
     )
   })
 
+  it('keeps an exited failed-start receipt registered until its pre-armed close witness resolves', async () => {
+    class FakeChild extends EventEmitter {
+      pid = 123
+      exitCode: number | null = null
+      signalCode: string | null = null
+    }
+    const child = new FakeChild()
+    const closeWitness = createNodeCloseWitness(child)
+    const receipt = { pid: 123, child, closeWitness }
+    const run = {
+      assertOwned: vi.fn(async () => undefined),
+      markChildStopped: vi.fn(),
+    }
+    const stopIncomplete = vi.fn()
+
+    child.exitCode = 1
+    child.emit('exit', 1, null)
+    const retirement = retireIncompleteChildReceipt(receipt, {
+      run,
+      validated: {},
+      stopIncomplete,
+    })
+    await Promise.resolve()
+
+    expect(stopIncomplete).not.toHaveBeenCalled()
+    expect(run.assertOwned).not.toHaveBeenCalled()
+    expect(run.markChildStopped).not.toHaveBeenCalled()
+
+    child.emit('close', 1, null)
+    await retirement
+
+    expect(run.assertOwned).toHaveBeenCalledOnce()
+    expect(run.markChildStopped).toHaveBeenCalledOnce()
+    expect(run.markChildStopped).toHaveBeenCalledWith(receipt)
+  })
+
+  it('can retire from a close witness that resolved before failed-start recovery began', async () => {
+    class FakeChild extends EventEmitter {
+      pid = 123
+      exitCode: number | null = null
+      signalCode: string | null = null
+    }
+    const child = new FakeChild()
+    const closeWitness = createNodeCloseWitness(child)
+    const receipt = { pid: 123, child, closeWitness }
+    const run = {
+      assertOwned: vi.fn(async () => undefined),
+      markChildStopped: vi.fn(),
+    }
+
+    child.exitCode = 1
+    child.emit('exit', 1, null)
+    child.emit('close', 1, null)
+    await retireIncompleteChildReceipt(receipt, {
+      run,
+      validated: {},
+      stopIncomplete: vi.fn(),
+    })
+
+    expect(closeWitness.isClosed()).toBe(true)
+    expect(run.markChildStopped).toHaveBeenCalledWith(receipt)
+  })
+
+  it('retires a live failed-start receipt only after bounded stop and pre-armed close both resolve', async () => {
+    class FakeChild extends EventEmitter {
+      pid = 123
+      exitCode: number | null = null
+      signalCode: string | null = null
+    }
+    const child = new FakeChild()
+    const closeWitness = createNodeCloseWitness(child)
+    const receipt = { pid: 123, child, closeWitness }
+    const run = {
+      assertOwned: vi.fn(async () => undefined),
+      markChildStopped: vi.fn(),
+    }
+    const waitForExit = vi.fn()
+    const stopIncomplete = vi.fn(async () => {
+      child.exitCode = 0
+      child.emit('exit', 0, null)
+      child.emit('close', 0, null)
+    })
+
+    await retireIncompleteChildReceipt(receipt, {
+      run,
+      validated: {},
+      waitForExit,
+      stopIncomplete,
+    })
+
+    expect(stopIncomplete).toHaveBeenCalledWith(
+      receipt,
+      { run, validated: {}, waitForExit },
+    )
+    expect(run.markChildStopped).toHaveBeenCalledOnce()
+    expect(run.markChildStopped).toHaveBeenCalledWith(receipt)
+  })
+
+  it('keeps a failed-start receipt registered when bounded stop cannot prove exit', async () => {
+    class FakeChild extends EventEmitter {
+      pid = 123
+      exitCode: number | null = null
+      signalCode: string | null = null
+    }
+    const child = new FakeChild()
+    const closeWitness = createNodeCloseWitness(child)
+    const receipt = { pid: 123, child, closeWitness }
+    const run = {
+      assertOwned: vi.fn(async () => undefined),
+      markChildStopped: vi.fn(),
+    }
+
+    await expect(retireIncompleteChildReceipt(receipt, {
+      run,
+      validated: {},
+      stopIncomplete: vi.fn(async () => {
+        throw new Stage2RunnerError('STAGE2_PROCESS_STOP_TIMEOUT', 'SAFETY_ABORT')
+      }),
+    })).rejects.toMatchObject({ stage2Code: 'STAGE2_PROCESS_STOP_TIMEOUT' })
+
+    expect(run.markChildStopped).not.toHaveBeenCalled()
+  })
+
+  it('keeps an exited receipt registered when its pre-armed close witness cannot be proved', async () => {
+    class FakeChild extends EventEmitter {
+      pid = 123
+      exitCode: number | null = 1
+      signalCode: string | null = null
+    }
+    const child = new FakeChild()
+    const closeWitness = createNodeCloseWitness(child)
+    const receipt = { pid: 123, child, closeWitness }
+    const run = {
+      assertOwned: vi.fn(async () => undefined),
+      markChildStopped: vi.fn(),
+    }
+
+    await expect(retireIncompleteChildReceipt(receipt, {
+      run,
+      validated: {},
+      waitForExit: vi.fn(async () => {
+        throw new Stage2RunnerError('STAGE2_PROCESS_STOP_TIMEOUT', 'SAFETY_ABORT')
+      }),
+      stopIncomplete: vi.fn(),
+    })).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PROCESS_STOP_TIMEOUT',
+      stage2Outcome: 'SAFETY_ABORT',
+    })
+
+    expect(run.assertOwned).not.toHaveBeenCalled()
+    expect(run.markChildStopped).not.toHaveBeenCalled()
+  })
+
+  it('rejects a close witness from a different retained child without retiring either receipt', async () => {
+    class FakeChild extends EventEmitter {
+      constructor(readonly pid: number) { super() }
+      exitCode: number | null = 1
+      signalCode: string | null = null
+    }
+    const child = new FakeChild(123)
+    const otherChild = new FakeChild(456)
+    const closeWitness = createNodeCloseWitness(otherChild)
+    const receipt = { pid: 123, child, closeWitness }
+    const run = {
+      assertOwned: vi.fn(async () => undefined),
+      markChildStopped: vi.fn(),
+    }
+    otherChild.emit('close', 1, null)
+
+    await expect(retireIncompleteChildReceipt(receipt, {
+      run,
+      validated: {},
+      stopIncomplete: vi.fn(),
+    })).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PROCESS_REGISTRY_INVALID',
+      stage2Outcome: 'SAFETY_ABORT',
+    })
+
+    expect(run.assertOwned).not.toHaveBeenCalled()
+    expect(run.markChildStopped).not.toHaveBeenCalled()
+  })
+
+  it('requires both Node close and listener absence before retiring a port-known failed Harness start', async () => {
+    class FakeChild extends EventEmitter {
+      pid = 123
+      exitCode: number | null = 1
+      signalCode: string | null = null
+    }
+    const child = new FakeChild()
+    const closeWitness = createNodeCloseWitness(child)
+    const receipt = { pid: 123, child, closeWitness }
+    const order: string[] = []
+    const run = {
+      assertOwned: vi.fn(async () => { order.push('owned') }),
+      markChildStopped: vi.fn(() => { order.push('retired') }),
+    }
+    const listenerAbsent = vi.fn(async () => { order.push('listener-absent') })
+    const waitForExit = vi.fn(async () => {
+      order.push('node-close')
+      child.emit('close', 1, null)
+    })
+
+    await retireIncompleteChildReceipt(receipt, {
+      run,
+      validated: {},
+      listenerPort: 43_191,
+      waitForExit,
+      assertListenerAbsent: listenerAbsent,
+      stopIncomplete: vi.fn(),
+    })
+
+    expect(order).toEqual(['node-close', 'owned', 'listener-absent', 'retired'])
+    expect(listenerAbsent).toHaveBeenCalledWith(43_191, {})
+    expect(run.markChildStopped).toHaveBeenCalledWith(receipt)
+  })
+
   it('uses exit semantics and retires a live Chrome stopped before DevTools discovery', async () => {
     const child = { exitCode: null as number | null, signalCode: null as string | null }
     const receipt = { pid: 123, child }
@@ -2233,6 +2598,28 @@ describe('Stage 2 browser and listener guards', () => {
 })
 
 describe('Stage 2 five-phase state machine', () => {
+  it('arbitrates Stage 2 failures by provenance and keeps the earlier error on equal rank', () => {
+    const ordinary = new Stage2RunnerError('STAGE2_PAGE_NAVIGATION_FAILED', 'INCONCLUSIVE')
+    const genericSafety = new Stage2RunnerError('STAGE2_BROWSER_WITNESS_INVALID', 'SAFETY_ABORT')
+    const external = new Stage2RunnerError('STAGE2_EXTERNAL_NETWORK_ATTEMPT', 'FAIL')
+    const network = new Stage2RunnerError('STAGE2_NETWORK_CONTROL_FAILED', 'SAFETY_ABORT')
+    const browserCleanup = new Stage2RunnerError('STAGE2_BROWSER_CLEANUP_FAILED', 'SAFETY_ABORT')
+    const workspaceCleanup = new Stage2RunnerError('STAGE2_CLEANUP_FAILED', 'SAFETY_ABORT')
+    const runtimeStop = new Stage2RunnerError('STAGE2_RUNTIME_STOP_FAILED', 'SAFETY_ABORT')
+
+    expect(preferStage2Error(undefined, ordinary)).toBe(ordinary)
+    expect(preferStage2Error(ordinary, undefined)).toBe(ordinary)
+    expect(preferStage2Error(ordinary, external)).toBe(external)
+    expect(preferStage2Error(external, ordinary)).toBe(external)
+    expect(preferStage2Error(genericSafety, external)).toBe(external)
+    expect(preferStage2Error(external, network)).toBe(network)
+    expect(preferStage2Error(network, external)).toBe(network)
+    expect(preferStage2Error(network, browserCleanup)).toBe(browserCleanup)
+    expect(preferStage2Error(network, workspaceCleanup)).toBe(workspaceCleanup)
+    expect(preferStage2Error(network, runtimeStop)).toBe(runtimeStop)
+    expect(preferStage2Error(browserCleanup, workspaceCleanup)).toBe(browserCleanup)
+  })
+
   it('observes 0→1, restart 1, disabled absent, removed absent, and readd 1→2', async () => {
     const { adapters, events } = fakeAdapters()
     const emitted: string[] = []
@@ -2398,7 +2785,7 @@ describe('Stage 2 five-phase state machine', () => {
     },
   )
 
-  it('retains a page-target external attempt while preserving a browser SAFETY_ABORT', async () => {
+  it('gives failed network control precedence over a generic browser SAFETY_ABORT', async () => {
     const { adapters } = fakeAdapters()
     adapters.browser.observePhase.mockImplementationOnce(async ({ networkState }) => {
       if (!networkState) throw new Error('missing shared network state')
@@ -2410,8 +2797,36 @@ describe('Stage 2 five-phase state machine', () => {
     const result = await executeStage2Smoke({ inputs, adapters })
 
     expect(result.outcome).toBe('SAFETY_ABORT')
-    expect(result.failure).toEqual({ code: 'STAGE2_CDP_PROTOCOL_FAILED' })
+    expect(result.failure).toEqual({ code: 'STAGE2_NETWORK_CONTROL_FAILED' })
     expect(result.network).toEqual({ scope: 'browser-page-target', externalAttempts: 1 })
+  })
+
+  it('gives failed network control precedence over an ordinary browser FAIL', async () => {
+    const { adapters } = fakeAdapters()
+    adapters.browser.observePhase.mockImplementationOnce(async ({ networkState }) => {
+      if (!networkState) throw new Error('missing shared network state')
+      networkState.controlFailed = true
+      throw new Stage2RunnerError('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
+    })
+
+    const result = await executeStage2Smoke({ inputs, adapters })
+
+    expect(result.outcome).toBe('SAFETY_ABORT')
+    expect(result.failure).toEqual({ code: 'STAGE2_NETWORK_CONTROL_FAILED' })
+  })
+
+  it('preserves browser cleanup failure above a concurrent failed network control', async () => {
+    const { adapters } = fakeAdapters()
+    adapters.browser.observePhase.mockImplementationOnce(async ({ networkState }) => {
+      if (!networkState) throw new Error('missing shared network state')
+      networkState.controlFailed = true
+      throw new Stage2RunnerError('STAGE2_BROWSER_CLEANUP_FAILED', 'SAFETY_ABORT')
+    })
+
+    const result = await executeStage2Smoke({ inputs, adapters })
+
+    expect(result.outcome).toBe('SAFETY_ABORT')
+    expect(result.failure).toEqual({ code: 'STAGE2_BROWSER_CLEANUP_FAILED' })
   })
 
   it('turns a returned observation into SAFETY_ABORT when page-target network control failed', async () => {
@@ -2443,6 +2858,7 @@ describe('Stage 2 five-phase state machine', () => {
     adapters.browser.observePhase.mockImplementationOnce(async ({ networkState }) => {
       if (!networkState) throw new Error('missing shared network state')
       networkState.externalAttempts = 1
+      networkState.controlFailed = true
       throw new Stage2RunnerError('STAGE2_PAGE_NAVIGATION_FAILED', 'INCONCLUSIVE')
     })
 
@@ -2454,7 +2870,7 @@ describe('Stage 2 five-phase state machine', () => {
     expect(result.cleanup).toEqual({ renamed: false, revalidated: false, removed: false })
   })
 
-  it('rejects an observation whose returned network count contradicts the shared gate state', async () => {
+  it('keeps a shared external attempt primary when the returned network count contradicts it', async () => {
     const { adapters } = fakeAdapters()
     adapters.browser.observePhase.mockImplementationOnce(async ({ networkState }) => {
       if (!networkState) throw new Error('missing shared network state')
@@ -2464,9 +2880,23 @@ describe('Stage 2 five-phase state machine', () => {
 
     const result = await executeStage2Smoke({ inputs, adapters })
 
+    expect(result.outcome).toBe('FAIL')
+    expect(result.failure).toEqual({ code: 'STAGE2_EXTERNAL_NETWORK_ATTEMPT' })
+    expect(result.network).toEqual({ scope: 'browser-page-target', externalAttempts: 1 })
+  })
+
+  it('rejects a returned external count when the shared page-target gate recorded zero', async () => {
+    const { adapters } = fakeAdapters()
+    adapters.browser.observePhase.mockImplementationOnce(async () => ({
+      ...expectedObservation('initial-enabled'),
+      externalNetworkAttempts: 1,
+    }))
+
+    const result = await executeStage2Smoke({ inputs, adapters })
+
     expect(result.outcome).toBe('SAFETY_ABORT')
     expect(result.failure).toEqual({ code: 'STAGE2_BROWSER_WITNESS_INVALID' })
-    expect(result.network).toEqual({ scope: 'browser-page-target', externalAttempts: 1 })
+    expect(result.network).toEqual({ scope: 'browser-page-target', externalAttempts: 0 })
   })
 
   it('classifies a missing offline dependency without silently retrying online', async () => {

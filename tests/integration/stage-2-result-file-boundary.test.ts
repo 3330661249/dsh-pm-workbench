@@ -279,6 +279,16 @@ test.each([
   expect(() => canonicalStage2Result(safetyAbortWithNetworkEvidence(code))).not.toThrow()
 })
 
+test.each([
+  'STAGE2_PROCESS_STOP_TIMEOUT',
+  'STAGE2_PROCESS_KILL_TIMEOUT',
+] as const)('classifies a %s closure timeout as SAFETY_ABORT', (code) => {
+  expect(() => canonicalStage2Result({
+    ...closedSafetyAbortResult(),
+    failure: { code },
+  })).not.toThrow()
+})
+
 test('an ordinary observation mismatch cannot retain unexplained external attempts', () => {
   expect(() => canonicalStage2Result(observationMismatchWithNetworkEvidence()))
     .toThrow(/STAGE2_RESULT_INVALID/u)

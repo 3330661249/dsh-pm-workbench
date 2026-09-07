@@ -70,6 +70,14 @@ const PHASE_EXPECTATIONS = Object.freeze({
   readded: Object.freeze({ markerState: 'present', counters: [1, 2], focusRestored: true }),
 })
 const OUTCOMES = new Set(['PASS', 'FAIL', 'INCONCLUSIVE', 'NEEDS_NETWORK_PERMISSION', 'SAFETY_ABORT'])
+const ERROR_PRECEDENCE = Object.freeze({ ordinary: 0, external: 1, networkControl: 2, closure: 3 })
+const ERROR_CATEGORY_BY_CODE = new Map([
+  ['STAGE2_EXTERNAL_NETWORK_ATTEMPT', 'external'],
+  ['STAGE2_NETWORK_CONTROL_FAILED', 'networkControl'],
+  ['STAGE2_BROWSER_CLEANUP_FAILED', 'closure'],
+  ['STAGE2_CLEANUP_FAILED', 'closure'],
+  ['STAGE2_RUNTIME_STOP_FAILED', 'closure'],
+])
 
 const execFileAsync = promisify(nodeExecFile)
 
@@ -112,6 +120,16 @@ function safeCode(error) {
 
 function safeOutcome(error) {
   return OUTCOMES.has(error?.stage2Outcome) ? error.stage2Outcome : 'INCONCLUSIVE'
+}
+
+export function preferStage2Error(currentError, candidateError) {
+  if (currentError === undefined) return candidateError
+  if (candidateError === undefined) return currentError
+  const currentCategory = ERROR_CATEGORY_BY_CODE.get(safeCode(currentError)) ?? 'ordinary'
+  const candidateCategory = ERROR_CATEGORY_BY_CODE.get(safeCode(candidateError)) ?? 'ordinary'
+  return ERROR_PRECEDENCE[candidateCategory] > ERROR_PRECEDENCE[currentCategory]
+    ? candidateError
+    : currentError
 }
 
 function assertAbsolute(value) {
@@ -364,15 +382,20 @@ async function observeRuntimePhase({ phase, run, inputs, adapters, result, inven
       || !Number.isSafeInteger(result.network.externalAttempts + networkState.externalAttempts)
     ) fail('STAGE2_BROWSER_WITNESS_INVALID', 'SAFETY_ABORT')
     result.network.externalAttempts += networkState.externalAttempts
-    if (networkState.controlFailed && safeOutcome(observationError) !== 'SAFETY_ABORT') {
-      fail('STAGE2_NETWORK_CONTROL_FAILED', 'SAFETY_ABORT')
+    let preferredError = observationError
+    if (networkState.externalAttempts > 0) {
+      preferredError = preferStage2Error(
+        preferredError,
+        new Stage2RunnerError('STAGE2_EXTERNAL_NETWORK_ATTEMPT', 'FAIL'),
+      )
     }
-    if (observationError) {
-      if (networkState.externalAttempts > 0 && safeOutcome(observationError) !== 'SAFETY_ABORT') {
-        fail('STAGE2_EXTERNAL_NETWORK_ATTEMPT', 'FAIL')
-      }
-      throw observationError
+    if (networkState.controlFailed) {
+      preferredError = preferStage2Error(
+        preferredError,
+        new Stage2RunnerError('STAGE2_NETWORK_CONTROL_FAILED', 'SAFETY_ABORT'),
+      )
     }
+    if (preferredError) throw preferredError
     if (
       !HASH_PATTERN.test(observation?.chromeSpawnReceiptSha256 ?? '')
       || !HASH_PATTERN.test(observation?.chromeListenerWitnessSha256 ?? '')
@@ -1349,14 +1372,40 @@ function createCapture(child) {
   return state
 }
 
-async function waitForChildExit(child, milliseconds, timeoutCode) {
-  if (child.exitCode !== null || child.signalCode !== null) return
-  await withTimeout(new Promise((resolve, reject) => {
-    const done = () => { resolve() }
-    const failed = () => { reject(timeoutError('STAGE2_CHILD_PROCESS_ERROR')) }
-    child.once('close', done)
-    child.once('error', failed)
-  }), milliseconds, timeoutCode)
+export function createNodeCloseWitness(child) {
+  if (!child || typeof child.once !== 'function') fail('STAGE2_PROCESS_REGISTRY_INVALID', 'SAFETY_ABORT')
+  let closed = false
+  const promise = new Promise((resolve) => {
+    child.once('close', (exitCode, signalCode) => {
+      closed = true
+      resolve(Object.freeze({ exitCode, signalCode }))
+    })
+  })
+  return Object.freeze({
+    child,
+    promise,
+    isClosed() { return closed },
+  })
+}
+
+async function waitForChildExit(
+  child,
+  milliseconds,
+  timeoutCode,
+  closeWitness,
+  timeoutOutcome = 'INCONCLUSIVE',
+) {
+  if (
+    !closeWitness
+    || closeWitness.child !== child
+    || typeof closeWitness.isClosed !== 'function'
+    || typeof closeWitness.promise?.then !== 'function'
+  ) fail('STAGE2_PROCESS_REGISTRY_INVALID', 'SAFETY_ABORT')
+  await withTimeout(closeWitness.promise, milliseconds, timeoutCode, timeoutOutcome)
+  if (
+    closeWitness.isClosed() !== true
+    || (child.exitCode === null && child.signalCode === null)
+  ) fail('STAGE2_PROCESS_REGISTRY_INVALID', 'SAFETY_ABORT')
 }
 
 async function waitForRetainedChildExit(child, milliseconds, timeoutCode) {
@@ -1425,8 +1474,14 @@ async function assertListenerAbsent(port, validated) {
   }
 }
 
-function makeSpawnReceipt({ kind, executable, argv, run, environment, child }) {
+function makeSpawnReceipt({ kind, executable, argv, run, environment, child, closeWitness }) {
   if (!Number.isSafeInteger(child.pid) || child.pid <= 0) fail('STAGE2_SPAWN_INVALID', 'SAFETY_ABORT')
+  if (
+    !closeWitness
+    || closeWitness.child !== child
+    || typeof closeWitness.isClosed !== 'function'
+    || typeof closeWitness.promise?.then !== 'function'
+  ) fail('STAGE2_PROCESS_REGISTRY_INVALID', 'SAFETY_ABORT')
   const receipt = {
     kind,
     executable,
@@ -1436,6 +1491,7 @@ function makeSpawnReceipt({ kind, executable, argv, run, environment, child }) {
     marker: run.runId,
     pid: child.pid,
     child,
+    closeWitness,
   }
   return Object.freeze({
     ...receipt,
@@ -1471,13 +1527,27 @@ async function stopRetainedChild(receipt, {
   await assertLiveChild(receipt, { run, validated, listenerPort })
   if (!receipt.child.kill('SIGTERM')) fail('STAGE2_PROCESS_SIGNAL_FAILED', 'SAFETY_ABORT')
   try {
-    await waitForExit(receipt.child, 10_000, 'STAGE2_PROCESS_STOP_TIMEOUT')
+    await waitForExit(
+      receipt.child,
+      10_000,
+      'STAGE2_PROCESS_STOP_TIMEOUT',
+      receipt.closeWitness,
+      'SAFETY_ABORT',
+    )
   } catch (error) {
     if (error?.stage2Code !== 'STAGE2_PROCESS_STOP_TIMEOUT') throw error
+    if (receipt.child.exitCode !== null || receipt.child.signalCode !== null) throw error
     await assertLiveChild(receipt, { run, validated, listenerPort })
     if (!receipt.child.kill('SIGKILL')) fail('STAGE2_PROCESS_SIGNAL_FAILED', 'SAFETY_ABORT')
-    await waitForExit(receipt.child, 10_000, 'STAGE2_PROCESS_KILL_TIMEOUT')
+    await waitForExit(
+      receipt.child,
+      10_000,
+      'STAGE2_PROCESS_KILL_TIMEOUT',
+      receipt.closeWitness,
+      'SAFETY_ABORT',
+    )
   }
+  await run.assertOwned()
   if (listenerPort !== undefined) await assertListenerAbsent(listenerPort, validated)
   run.markChildStopped(receipt)
 }
@@ -1538,7 +1608,54 @@ async function stopIncompleteChild(receipt, {
   if (receipt.child.exitCode !== null || receipt.child.signalCode !== null) return
   await assertLiveChild(receipt, { run, validated })
   if (!receipt.child.kill('SIGTERM')) fail('STAGE2_PROCESS_SIGNAL_FAILED', 'SAFETY_ABORT')
-  await waitForExit(receipt.child, 10_000, 'STAGE2_PROCESS_STOP_TIMEOUT')
+  await waitForExit(
+    receipt.child,
+    10_000,
+    'STAGE2_PROCESS_STOP_TIMEOUT',
+    receipt.closeWitness,
+    'SAFETY_ABORT',
+  )
+}
+
+/**
+ * @param {any} receipt
+ * @param {{
+ *   run: any,
+ *   validated: any,
+ *   waitForExit?: (...args: any[]) => Promise<any>,
+ *   stopIncomplete?: (...args: any[]) => Promise<any>,
+ *   listenerPort?: number,
+ *   assertListenerAbsent?: (...args: any[]) => Promise<any>,
+ * }} options
+ */
+export async function retireIncompleteChildReceipt(receipt, {
+  run,
+  validated,
+  waitForExit = waitForChildExit,
+  stopIncomplete = stopIncompleteChild,
+  listenerPort,
+  assertListenerAbsent: listenerAbsent = assertListenerAbsent,
+}) {
+  if (receipt.child.exitCode === null && receipt.child.signalCode === null) {
+    await stopIncomplete(receipt, { run, validated, waitForExit })
+  }
+  await waitForExit(
+    receipt.child,
+    10_000,
+    'STAGE2_PROCESS_STOP_TIMEOUT',
+    receipt.closeWitness,
+    'SAFETY_ABORT',
+  )
+  if (
+    receipt.closeWitness?.child !== receipt.child
+    || typeof receipt.closeWitness?.promise?.then !== 'function'
+    || typeof receipt.closeWitness?.isClosed !== 'function'
+    || receipt.closeWitness.isClosed() !== true
+    || (receipt.child.exitCode === null && receipt.child.signalCode === null)
+  ) fail('STAGE2_PROCESS_STOP_TIMEOUT', 'SAFETY_ABORT')
+  await run.assertOwned()
+  if (listenerPort !== undefined) await listenerAbsent(listenerPort, validated)
+  run.markChildStopped(receipt)
 }
 
 export function classifyProfileExit({ exitCode, signalCode, captureError, overflow }) {
@@ -1565,17 +1682,22 @@ async function runProfileCommand({ argv, inputs, run, validated }) {
     detached: false,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
+  const closeWitness = createNodeCloseWitness(child)
   const capture = createCapture(child)
   const receipt = makeSpawnReceipt({
     kind: 'profile-command', executable: inputs.node, argv: childArgs, run, environment: run.pluginEnvironment, child,
+    closeWitness,
   })
   run.registerChild(receipt)
   try {
-    await waitForChildExit(child, COMMAND_TIMEOUT_MS, 'STAGE2_PROFILE_COMMAND_TIMEOUT')
+    await waitForChildExit(
+      child,
+      COMMAND_TIMEOUT_MS,
+      'STAGE2_PROFILE_COMMAND_TIMEOUT',
+      closeWitness,
+    )
   } catch (error) {
-    if (child.exitCode === null && child.signalCode === null) {
-      await stopIncompleteChild(receipt, { run, validated })
-    }
+    await retireIncompleteChildReceipt(receipt, { run, validated })
     throw error
   }
   const disposition = classifyProfileExit({
@@ -1584,20 +1706,19 @@ async function runProfileCommand({ argv, inputs, run, validated }) {
     captureError: capture.error,
     overflow: capture.overflow,
   })
+  await retireIncompleteChildReceipt(receipt, { run, validated })
   if (disposition === 'uncertain') {
     if (capture.overflow) fail('STAGE2_TOOL_OUTPUT_TOO_LARGE', 'SAFETY_ABORT')
     fail('STAGE2_PROFILE_DESCENDANT_UNCERTAIN', 'SAFETY_ABORT')
   }
   if (disposition === 'negative-witness') {
     await proveNoOpenHandles(run.runRoot, validated)
-    run.markChildStopped(receipt)
     const output = `${capture.stdout}\n${capture.stderr}`
     if (/ERR_PNPM_NO_OFFLINE_(?:META|TARBALL)|ERR_PNPM_FETCH_404/u.test(output)) {
       fail('STAGE2_OFFLINE_DEPENDENCY_MISSING', 'NEEDS_NETWORK_PERMISSION')
     }
     fail('STAGE2_PROFILE_COMMAND_FAILED')
   }
-  run.markChildStopped(receipt)
   return Object.freeze({ spawnReceiptSha256: receipt.sha256 })
 }
 
@@ -1751,6 +1872,7 @@ function createProductionRuntimeAdapter(validated) {
         detached: false,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
+      const closeWitness = createNodeCloseWitness(child)
       const capture = createCapture(child)
       const receipt = makeSpawnReceipt({
         kind: `harness-${phase}`,
@@ -1759,6 +1881,7 @@ function createProductionRuntimeAdapter(validated) {
         run,
         environment: run.environment,
         child,
+        closeWitness,
       })
       run.registerChild(receipt)
       let port
@@ -1782,13 +1905,20 @@ function createProductionRuntimeAdapter(validated) {
           },
         })
       } catch (error) {
-        if (child.exitCode === null && child.signalCode === null) {
-          try {
-            if (port !== undefined) await stopRetainedChild(receipt, { run, validated, listenerPort: port })
-            else await stopIncompleteChild(receipt, { run, validated })
-          } catch {
-            throw new Stage2RunnerError('STAGE2_RUNTIME_START_CLEANUP_FAILED', 'SAFETY_ABORT')
+        try {
+          if (port === undefined) {
+            await retireIncompleteChildReceipt(receipt, { run, validated })
+          } else if (child.exitCode === null && child.signalCode === null) {
+            await stopRetainedChild(receipt, { run, validated, listenerPort: port })
+          } else {
+            await retireIncompleteChildReceipt(receipt, {
+              run,
+              validated,
+              listenerPort: port,
+            })
           }
+        } catch {
+          throw new Stage2RunnerError('STAGE2_RUNTIME_START_CLEANUP_FAILED', 'SAFETY_ABORT')
         }
         throw error
       }
@@ -2033,18 +2163,33 @@ function assertPageObservationSafe(guard, clock = undefined) {
   }
 }
 
+async function awaitPageBoundary(operation, guard = undefined, clock = undefined) {
+  if (typeof operation !== 'function') fail('STAGE2_CDP_PROTOCOL_FAILED')
+  assertPageObservationSafe(guard, clock)
+  try {
+    return await operation()
+  } finally {
+    assertPageObservationSafe(guard, clock)
+  }
+}
+
 async function queryMarker(peer, sessionId, marker, guard = undefined, clock = undefined) {
   if (!Object.hasOwn(PLUGIN_MARKERS, marker)) fail('STAGE2_MARKER_INVALID', 'SAFETY_ABORT')
-  assertPageObservationSafe(guard, clock)
-  const document = await peer.send('DOM.getDocument', { depth: -1, pierce: true }, sessionId)
-  assertPageObservationSafe(guard, clock)
+  const document = await awaitPageBoundary(
+    () => peer.send('DOM.getDocument', { depth: -1, pierce: true }, sessionId),
+    guard,
+    clock,
+  )
   const rootNodeId = document?.root?.nodeId
   if (!Number.isSafeInteger(rootNodeId) || rootNodeId < 1) fail('STAGE2_DOM_RESULT_INVALID')
-  const queried = await peer.send('DOM.querySelectorAll', {
-    nodeId: rootNodeId,
-    selector: PLUGIN_MARKERS[marker],
-  }, sessionId)
-  assertPageObservationSafe(guard, clock)
+  const queried = await awaitPageBoundary(
+    () => peer.send('DOM.querySelectorAll', {
+      nodeId: rootNodeId,
+      selector: PLUGIN_MARKERS[marker],
+    }, sessionId),
+    guard,
+    clock,
+  )
   if (
     !Array.isArray(queried?.nodeIds)
     || queried.nodeIds.some((nodeId) => !Number.isSafeInteger(nodeId) || nodeId < 1)
@@ -2053,20 +2198,49 @@ async function queryMarker(peer, sessionId, marker, guard = undefined, clock = u
   return queried.nodeIds[0] ?? 0
 }
 
-async function waitForMarker(peer, sessionId, marker, {
+function createObservationClock(milliseconds, {
+  current = () => Date.now(),
+  sleep = readinessDelay,
+} = {}) {
+  if (
+    !Number.isFinite(milliseconds)
+    || milliseconds <= 0
+    || typeof current !== 'function'
+    || typeof sleep !== 'function'
+  ) fail('STAGE2_CDP_PROTOCOL_FAILED')
+  const deadline = current() + milliseconds
+  if (!Number.isFinite(deadline)) fail('STAGE2_CDP_PROTOCOL_FAILED')
+  const clock = {
+    assertBeforeDeadline() {
+      if (current() >= deadline) fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
+    },
+    async pause() {
+      const remaining = deadline - current()
+      if (remaining <= 0) fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
+      try {
+        await sleep(Math.min(50, remaining))
+      } finally {
+        clock.assertBeforeDeadline()
+      }
+    },
+  }
+  return Object.freeze(clock)
+}
+
+export async function waitForMarker(peer, sessionId, marker, {
   present = true,
   milliseconds = CDP_TIMEOUT_MS,
   guard = undefined,
+  clock = createObservationClock(milliseconds),
 } = {}) {
-  const deadline = Date.now() + milliseconds
-  while (Date.now() < deadline) {
-    assertPageObservationSafe(guard)
-    const nodeId = await queryMarker(peer, sessionId, marker, guard)
+  if (typeof clock?.pause !== 'function') fail('STAGE2_CDP_PROTOCOL_FAILED')
+  while (true) {
+    assertPageObservationSafe(guard, clock)
+    const nodeId = await queryMarker(peer, sessionId, marker, guard, clock)
     if ((present && nodeId > 0) || (!present && nodeId === 0)) return nodeId
-    await delay(50)
-    assertPageObservationSafe(guard)
+    await clock.pause()
+    assertPageObservationSafe(guard, clock)
   }
-  fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
 }
 
 function attributeMap(attributes) {
@@ -2078,39 +2252,29 @@ function attributeMap(attributes) {
   return result
 }
 
-async function waitForCounter(peer, sessionId, expected, guard = undefined) {
-  const deadline = Date.now() + CDP_TIMEOUT_MS
-  while (Date.now() < deadline) {
-    assertPageObservationSafe(guard)
-    const nodeId = await queryMarker(peer, sessionId, 'counter', guard)
+export async function waitForCounter(peer, sessionId, expected, {
+  guard = undefined,
+  milliseconds = CDP_TIMEOUT_MS,
+  clock = createObservationClock(milliseconds),
+} = {}) {
+  if (typeof clock?.pause !== 'function') fail('STAGE2_CDP_PROTOCOL_FAILED')
+  while (true) {
+    assertPageObservationSafe(guard, clock)
+    const nodeId = await queryMarker(peer, sessionId, 'counter', guard, clock)
     if (nodeId > 0) {
-      const response = await peer.send('DOM.getAttributes', { nodeId }, sessionId)
-      assertPageObservationSafe(guard)
+      const response = await awaitPageBoundary(
+        () => peer.send('DOM.getAttributes', { nodeId }, sessionId),
+        guard,
+        clock,
+      )
       const attributes = attributeMap(response.attributes)
       if (attributes.get('data-counter') === String(expected) && attributes.get('data-version') === String(expected)) {
         return expected
       }
     }
-    await delay(50)
-    assertPageObservationSafe(guard)
+    await clock.pause()
+    assertPageObservationSafe(guard, clock)
   }
-  fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
-}
-
-async function waitForEnabledMarker(peer, sessionId, marker, guard = undefined) {
-  const deadline = Date.now() + CDP_TIMEOUT_MS
-  while (Date.now() < deadline) {
-    assertPageObservationSafe(guard)
-    const nodeId = await queryMarker(peer, sessionId, marker, guard)
-    if (nodeId > 0) {
-      const response = await peer.send('DOM.getAttributes', { nodeId }, sessionId)
-      assertPageObservationSafe(guard)
-      if (!attributeMap(response.attributes).has('disabled')) return nodeId
-    }
-    await delay(50)
-    assertPageObservationSafe(guard)
-  }
-  fail('STAGE2_OBSERVATION_MISMATCH', 'FAIL')
 }
 
 function axString(node, property) {
@@ -2349,13 +2513,15 @@ function assertReadinessBoundary(guard, clock) {
 }
 
 async function readOnboardingState(peer, sessionId, mainFrameId, guard, clock) {
-  assertReadinessBoundary(guard, clock)
-  const response = await peer.send(
-    'Accessibility.getFullAXTree',
-    { frameId: mainFrameId },
-    sessionId,
+  const response = await awaitPageBoundary(
+    () => peer.send(
+      'Accessibility.getFullAXTree',
+      { frameId: mainFrameId },
+      sessionId,
+    ),
+    guard,
+    clock,
   )
-  assertReadinessBoundary(guard, clock)
   return inspectRc6OnboardingTree(response, mainFrameId)
 }
 
@@ -2408,38 +2574,59 @@ async function captureReadyTarget(peer, sessionId, mainFrameId, onboarding, {
     assertReadinessBoundary(guard, clock)
     if (nodeId === 0) return undefined
     if (requireEnabled) {
-      const attributes = await peer.send('DOM.getAttributes', { nodeId }, sessionId)
-      assertReadinessBoundary(guard, clock)
+      const attributes = await awaitPageBoundary(
+        () => peer.send('DOM.getAttributes', { nodeId }, sessionId),
+        guard,
+        clock,
+      )
       if (attributeMap(attributes?.attributes).has('disabled')) return undefined
     }
-    const described = await peer.send('DOM.describeNode', { nodeId }, sessionId)
-    assertReadinessBoundary(guard, clock)
+    const described = await awaitPageBoundary(
+      () => peer.send('DOM.describeNode', { nodeId }, sessionId),
+      guard,
+      clock,
+    )
     if (described?.node?.nodeId !== nodeId) fail('STAGE2_DOM_RESULT_INVALID')
     targetBackendNodeId = positiveBackendNodeId(described?.node?.backendNodeId)
     if (targetBackendNodeId === undefined) fail('STAGE2_DOM_RESULT_INVALID')
   }
 
-  await peer.send('DOM.scrollIntoViewIfNeeded', { backendNodeId: targetBackendNodeId }, sessionId)
-  assertReadinessBoundary(guard, clock)
-  const box = await peer.send('DOM.getBoxModel', { backendNodeId: targetBackendNodeId }, sessionId)
-  assertReadinessBoundary(guard, clock)
-  const metrics = await peer.send('Page.getLayoutMetrics', {}, sessionId)
-  assertReadinessBoundary(guard, clock)
+  await awaitPageBoundary(
+    () => peer.send('DOM.scrollIntoViewIfNeeded', { backendNodeId: targetBackendNodeId }, sessionId),
+    guard,
+    clock,
+  )
+  const box = await awaitPageBoundary(
+    () => peer.send('DOM.getBoxModel', { backendNodeId: targetBackendNodeId }, sessionId),
+    guard,
+    clock,
+  )
+  const metrics = await awaitPageBoundary(
+    () => peer.send('Page.getLayoutMetrics', {}, sessionId),
+    guard,
+    clock,
+  )
   const point = safeBoxModelPoint(box, metrics)
-  const hit = await peer.send('DOM.getNodeForLocation', {
-    x: point.x,
-    y: point.y,
-    includeUserAgentShadowDOM: false,
-    ignorePointerEventsNone: false,
-  }, sessionId)
-  assertReadinessBoundary(guard, clock)
+  const hit = await awaitPageBoundary(
+    () => peer.send('DOM.getNodeForLocation', {
+      x: point.x,
+      y: point.y,
+      includeUserAgentShadowDOM: false,
+      ignorePointerEventsNone: false,
+    }, sessionId),
+    guard,
+    clock,
+  )
   const hitBackendNodeId = positiveBackendNodeId(hit?.backendNodeId)
   if (hitBackendNodeId === undefined) fail('STAGE2_DOM_RESULT_INVALID')
   if (hit?.frameId !== mainFrameId) fail('STAGE2_PAGE_NAVIGATION_FAILED')
-  const hitAx = await peer.send('Accessibility.getAXNodeAndAncestors', {
-    backendNodeId: hitBackendNodeId,
-  }, sessionId)
-  assertReadinessBoundary(guard, clock)
+  const hitAx = await awaitPageBoundary(
+    () => peer.send('Accessibility.getAXNodeAndAncestors', {
+      backendNodeId: hitBackendNodeId,
+    }, sessionId),
+    guard,
+    clock,
+  )
   if (!validateHitAxChain(hitAx, targetBackendNodeId, dialogBackendNodeId, mainFrameId)) return undefined
 
   return Object.freeze({
@@ -2463,38 +2650,45 @@ async function captureReadyTarget(peer, sessionId, mainFrameId, onboarding, {
 }
 
 async function dispatchVerifiedPointerClick(peer, sessionId, guard, clock, snapshot, recapture) {
-  assertReadinessBoundary(guard, clock)
-  await peer.send('Input.dispatchMouseEvent', {
-    type: 'mouseMoved',
-    ...snapshot.point,
-    button: 'none',
-    buttons: 0,
-    pointerType: 'mouse',
-  }, sessionId)
-  assertReadinessBoundary(guard, clock)
+  await awaitPageBoundary(
+    () => peer.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      ...snapshot.point,
+      button: 'none',
+      buttons: 0,
+      pointerType: 'mouse',
+    }, sessionId),
+    guard,
+    clock,
+  )
   const fresh = await recapture()
   assertReadinessBoundary(guard, clock)
   if (!fresh || fresh.signature !== snapshot.signature) fail('STAGE2_PAGE_NAVIGATION_FAILED')
 
-  assertReadinessBoundary(guard, clock)
-  await peer.send('Input.dispatchMouseEvent', {
-    type: 'mousePressed',
-    ...snapshot.point,
-    button: 'left',
-    buttons: 1,
-    clickCount: 1,
-    pointerType: 'mouse',
-  }, sessionId)
-  assertReadinessBoundary(guard, clock)
-  await peer.send('Input.dispatchMouseEvent', {
-    type: 'mouseReleased',
-    ...snapshot.point,
-    button: 'left',
-    buttons: 0,
-    clickCount: 1,
-    pointerType: 'mouse',
-  }, sessionId)
-  assertReadinessBoundary(guard, clock)
+  await awaitPageBoundary(
+    () => peer.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      ...snapshot.point,
+      button: 'left',
+      buttons: 1,
+      clickCount: 1,
+      pointerType: 'mouse',
+    }, sessionId),
+    guard,
+    clock,
+  )
+  await awaitPageBoundary(
+    () => peer.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      ...snapshot.point,
+      button: 'left',
+      buttons: 0,
+      clickCount: 1,
+      pointerType: 'mouse',
+    }, sessionId),
+    guard,
+    clock,
+  )
 }
 
 /**
@@ -2678,21 +2872,31 @@ export async function clickMarker(peer, sessionId, marker, {
   }
 }
 
-async function waitForLauncherFocus(peer, sessionId, guard = undefined) {
-  const deadline = Date.now() + CDP_TIMEOUT_MS
-  while (Date.now() < deadline) {
-    assertPageObservationSafe(guard)
-    const nodeId = await queryMarker(peer, sessionId, 'launcher', guard)
+export async function waitForLauncherFocus(peer, sessionId, {
+  guard = undefined,
+  milliseconds = CDP_TIMEOUT_MS,
+  clock = createObservationClock(milliseconds),
+} = {}) {
+  if (typeof clock?.pause !== 'function') fail('STAGE2_CDP_PROTOCOL_FAILED')
+  while (true) {
+    assertPageObservationSafe(guard, clock)
+    const nodeId = await queryMarker(peer, sessionId, 'launcher', guard, clock)
     if (nodeId > 0) {
-      const described = await peer.send('DOM.describeNode', { nodeId }, sessionId)
-      assertPageObservationSafe(guard)
+      const described = await awaitPageBoundary(
+        () => peer.send('DOM.describeNode', { nodeId }, sessionId),
+        guard,
+        clock,
+      )
       const backendNodeId = described?.node?.backendNodeId
       if (Number.isSafeInteger(backendNodeId) && backendNodeId > 0) {
-        const tree = await peer.send('Accessibility.getPartialAXTree', {
-          backendNodeId,
-          fetchRelatives: false,
-        }, sessionId)
-        assertPageObservationSafe(guard)
+        const tree = await awaitPageBoundary(
+          () => peer.send('Accessibility.getPartialAXTree', {
+            backendNodeId,
+            fetchRelatives: false,
+          }, sessionId),
+          guard,
+          clock,
+        )
         const focused = tree.nodes?.some((node) =>
           node?.backendDOMNodeId === backendNodeId
           && node?.properties?.some((property) => property?.name === 'focused' && property?.value?.value === true),
@@ -2700,10 +2904,9 @@ async function waitForLauncherFocus(peer, sessionId, guard = undefined) {
         if (focused) return true
       }
     }
-    await delay(50)
-    assertPageObservationSafe(guard)
+    await clock.pause()
+    assertPageObservationSafe(guard, clock)
   }
-  return false
 }
 
 async function observeMarkers(peer, sessionId, mainFrameId, windowGuard, phase) {
@@ -2733,15 +2936,15 @@ async function observeMarkers(peer, sessionId, mainFrameId, windowGuard, phase) 
   await waitForMarker(peer, sessionId, 'launcher', { guard: windowGuard })
   await clickMarker(peer, sessionId, 'launcher', { mainFrameId, windowGuard })
   await waitForMarker(peer, sessionId, 'overlay', { guard: windowGuard })
-  await waitForCounter(peer, sessionId, start, windowGuard)
+  await waitForCounter(peer, sessionId, start, { guard: windowGuard })
   const counters = [start]
   if (increment) {
     await clickMarker(peer, sessionId, 'increment', { requireEnabled: true, mainFrameId, windowGuard })
-    counters.push(await waitForCounter(peer, sessionId, start + 1, windowGuard))
+    counters.push(await waitForCounter(peer, sessionId, start + 1, { guard: windowGuard }))
   }
   await clickMarker(peer, sessionId, 'close', { mainFrameId, windowGuard })
   await waitForMarker(peer, sessionId, 'overlay', { present: false, guard: windowGuard })
-  const focusRestored = await waitForLauncherFocus(peer, sessionId, windowGuard)
+  const focusRestored = await waitForLauncherFocus(peer, sessionId, { guard: windowGuard })
   windowGuard.assertSafe()
   return { markerState: 'present', counters, focusRestored }
 }
@@ -2879,6 +3082,7 @@ export function createPageNetworkGate(peer, sessionId, origin, networkState, {
 
   const unsubscribe = peer.onEvent((event) => {
     if (unsubscribed || event.sessionId !== sessionId) return
+    if (pageTargetEscaped) return
     if (event.method.startsWith('Network.') || event.method.startsWith('Fetch.')) networkEpoch += 1
 
     if (event.method === 'Page.windowOpen') {
@@ -3028,13 +3232,15 @@ export async function createPageSession(peer, origin, networkState, phase) {
   const windowGuard = createPageWindowOpenGuard(peer, sessionId)
   windowGuard.assertSafe()
 
-  const navigation = await peer.send(
-    'Page.navigate',
-    { url: origin },
-    sessionId,
-    { timeoutMs: START_TIMEOUT_MS },
+  const navigation = await awaitPageBoundary(
+    () => peer.send(
+      'Page.navigate',
+      { url: origin },
+      sessionId,
+      { timeoutMs: START_TIMEOUT_MS },
+    ),
+    windowGuard,
   )
-  windowGuard.assertSafe()
   if (
     navigation?.errorText !== undefined
     || typeof navigation?.loaderId !== 'string'
@@ -3067,8 +3273,10 @@ export async function createPageSession(peer, origin, networkState, phase) {
     windowGuard,
   )
   windowGuard.assertSafe()
-  const document = await peer.send('DOM.getDocument', { depth: 0, pierce: false }, sessionId)
-  windowGuard.assertSafe()
+  const document = await awaitPageBoundary(
+    () => peer.send('DOM.getDocument', { depth: 0, pierce: false }, sessionId),
+    windowGuard,
+  )
   if (new URL(document?.root?.documentURL).origin !== origin) fail('STAGE2_PAGE_NAVIGATION_FAILED')
   windowGuard.assertSafe()
   return Object.freeze({
@@ -3163,6 +3371,7 @@ function createProductionBrowserAdapter(validated) {
         detached: false,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
+      const closeWitness = createNodeCloseWitness(child)
       const capture = createCapture(child)
       const receipt = makeSpawnReceipt({
         kind: `chrome-${phase}`,
@@ -3171,6 +3380,7 @@ function createProductionBrowserAdapter(validated) {
         run,
         environment: run.environment,
         child,
+        closeWitness,
       })
       run.registerChild(receipt)
       let devtools
@@ -3213,9 +3423,10 @@ function createProductionBrowserAdapter(validated) {
           validated,
         })
         if (!cleanup.ok) {
-          if (!primaryError || primaryError.stage2Outcome !== 'SAFETY_ABORT') {
-            throw new Stage2RunnerError('STAGE2_BROWSER_CLEANUP_FAILED', 'SAFETY_ABORT')
-          }
+          throw preferStage2Error(
+            primaryError,
+            new Stage2RunnerError('STAGE2_BROWSER_CLEANUP_FAILED', 'SAFETY_ABORT'),
+          )
         }
       }
     },
