@@ -657,14 +657,14 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1')('rejects dirty 
 }, 120_000)
 
 test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each([
-  'observe', 'pack-fail', 'finalize-fail', 'source-drift', 'ownership-substitution',
+  'observe', 'pack-fail', 'pack-partial-fail', 'finalize-fail', 'source-drift', 'ownership-substitution',
 ] as const)('owns actual subprocesses and safely handles release failure: %s', async variant => {
   const f = await releaseFixture()
   try {
     await mkdir(path.join(f.root, '.tmp'), { recursive: true })
     const script = `
       import fs from 'node:fs/promises'
-      import { existsSync, readFileSync, renameSync, mkdirSync, writeFileSync } from 'node:fs'
+      import fileSystem, { existsSync, readFileSync, renameSync, mkdirSync, writeFileSync } from 'node:fs'
       import childProcess, { ChildProcess } from 'node:child_process'
       import { syncBuiltinESMExports } from 'node:module'
       const releaseRoot = ${JSON.stringify(f.releaseRoot)}
@@ -678,6 +678,10 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each([
           markerBeforePack = marker.owner === '@knight/dsh-pm-workbench' && existsSync(releaseRoot + '/.work/package/package.json')
           offline = args.includes('--offline'); noScripts = args.includes('--ignore-scripts')
           if (variant === 'pack-fail') throw new Error('synthetic pack syscall failure')
+          if (variant === 'pack-partial-fail') {
+            writeFileSync(releaseRoot + '/.work/pack/partial-output', 'trusted partial output')
+            throw new Error('synthetic partial pack failure')
+          }
           if (variant === 'source-drift') writeFileSync(${JSON.stringify(path.join(f.root, 'packages/workbench/README.md'))}, 'source drift')
         }
       }
@@ -690,6 +694,12 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each([
         observePack(args)
         return originalSpawnSync.call(this, file, args, options)
       }
+      // Simulate an ordinary trusted create failure without substituting any namespace object.
+      const originalOpenSync = fileSystem.openSync
+      fileSystem.openSync = function(file, ...args) {
+        if (variant === 'finalize-fail' && String(file) === releaseRoot + '/receipt.json') throw new Error('synthetic finalization failure')
+        return originalOpenSync.call(this, file, ...args)
+      }
       const originalLstat = fs.lstat
       let finalizeInjected = false
       fs.lstat = async function(file, ...args) {
@@ -697,7 +707,6 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each([
         if (!finalizeInjected && String(file) === releaseRoot + '/.owner.json'
           && existsSync(releaseRoot + '/knight-dsh-pm-workbench-0.1.0.tgz') && !existsSync(releaseRoot + '/.work')) {
           finalizeInjected = true
-          if (variant === 'finalize-fail') throw new Error('synthetic finalization failure')
           if (variant === 'ownership-substitution') {
             renameSync(releaseRoot, releaseRoot + '.displaced')
             mkdirSync(releaseRoot); writeFileSync(releaseRoot + '/unowned', 'preserve')
@@ -710,7 +719,8 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each([
       let summary; let ok = false
       try { summary = await api.createWorkbenchRelease(releaseRoot); ok = true } catch {}
       process.stdout.write(JSON.stringify({ ok, packs, markerBeforePack, offline, noScripts, summary,
-        rootExists: existsSync(releaseRoot), unownedPreserved: existsSync(releaseRoot + '/unowned') && readFileSync(releaseRoot + '/unowned', 'utf8') === 'preserve' }))
+        rootExists: existsSync(releaseRoot), unownedPreserved: existsSync(releaseRoot + '/unowned') && readFileSync(releaseRoot + '/unowned', 'utf8') === 'preserve',
+        partialPreserved: existsSync(releaseRoot + '/.work/pack/partial-output') && readFileSync(releaseRoot + '/.work/pack/partial-output', 'utf8') === 'trusted partial output' }))
     `
     const childPath = path.join(f.root, '.tmp', 'fault.mjs')
     await writeFile(childPath, script)
@@ -725,6 +735,7 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each([
       const capability = await f.module.readWorkbenchRelease({ releaseRoot: f.releaseRoot, sourceCommit: observed.summary.sourceCommit, receiptSha256: observed.summary.receiptSha256 })
       await f.module.cleanupWorkbenchRelease(capability)
     } else if (variant === 'ownership-substitution') expect(observed.unownedPreserved).toBe(true)
+    else if (variant === 'pack-partial-fail') expect(observed).toMatchObject({ rootExists: true, partialPreserved: true })
     else expect(observed.rootExists).toBe(false)
   } finally { await rm(f.temp, { recursive: true, force: true }) }
 }, 60_000)
@@ -872,6 +883,48 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1')('preserves a C3
       env: { PATH: process.env.PATH, npm_execpath: process.env.npm_execpath }, timeout: 30_000,
     })
     expect(JSON.parse(observed.stdout)).toEqual({ injected: true, rejected: true, replacementPreserved: true })
+  } finally { await rm(f.temp, { recursive: true, force: true }) }
+}, 60_000)
+
+test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each(['staged-file', 'pack-npmrc'] as const)('preserves the generation and substituted file after C36 async ownership loss: %s', async variant => {
+  const f = await releaseFixture()
+  try {
+    const script = `
+      import fs from 'node:fs/promises'
+      import { existsSync, readFileSync, renameSync, writeFileSync, lstatSync } from 'node:fs'
+      import { syncBuiltinESMExports } from 'node:module'
+      const root = ${JSON.stringify(f.releaseRoot)}
+      const variant = ${JSON.stringify(variant)}
+      const target = root + (variant === 'staged-file' ? '/.work/package/LICENSE' : '/.work/pack/user-npmrc')
+      const originalLstat = fs.lstat
+      let injected = false; let replacementIdentity; let rootIdentity; let originalBytes
+      fs.lstat = async function(file, ...args) {
+        const result = await originalLstat.call(this, file, ...args)
+        if (!injected && String(file) === root + '/.owner.json' && existsSync(target)
+          && (variant === 'staged-file' || existsSync(root + '/.work/pack/global-npmrc'))) {
+          const generation = lstatSync(root); rootIdentity = { dev: generation.dev, ino: generation.ino }
+          originalBytes = readFileSync(target)
+          renameSync(target, ${JSON.stringify(path.join(f.temp, 'saved-owned-file'))})
+          writeFileSync(target, originalBytes, { mode: variant === 'staged-file' ? 0o644 : 0o600, flag: 'wx' })
+          const replacement = lstatSync(target); replacementIdentity = { dev: replacement.dev, ino: replacement.ino }
+          injected = true
+        }
+        return result
+      }
+      syncBuiltinESMExports()
+      const api = await import(${JSON.stringify(pathToFileURL(path.join(f.root, 'scripts/verify-package.mjs')).href)})
+      let rejected = false
+      try { await api.createWorkbenchRelease(root) } catch { rejected = true }
+      const actualRoot = existsSync(root) ? lstatSync(root) : undefined
+      const actualFile = existsSync(target) ? lstatSync(target) : undefined
+      process.stdout.write(JSON.stringify({ injected, rejected,
+        generationPreserved: actualRoot?.dev === rootIdentity?.dev && actualRoot?.ino === rootIdentity?.ino,
+        replacementPreserved: actualFile?.dev === replacementIdentity?.dev && actualFile?.ino === replacementIdentity?.ino && existsSync(target) && readFileSync(target).equals(originalBytes) }))
+    `
+    const observed = await execFile(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', script], { cwd: f.root,
+      env: { PATH: process.env.PATH, npm_execpath: process.env.npm_execpath }, timeout: 30_000,
+    })
+    expect(JSON.parse(observed.stdout)).toEqual({ injected: true, rejected: true, generationPreserved: true, replacementPreserved: true })
   } finally { await rm(f.temp, { recursive: true, force: true }) }
 }, 60_000)
 

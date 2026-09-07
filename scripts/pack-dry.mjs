@@ -11,6 +11,17 @@ import {
 } from './verify-package.mjs'
 
 const defaultRepositoryRoot = path.resolve(import.meta.dirname, '..')
+const ownershipLoss = Symbol.for('@knight/dsh-pm-workbench/ownership-loss')
+function lostOwnership(error) {
+  if (error?.[ownershipLoss]) return error
+  const failure = new Error(error instanceof Error ? error.message : 'npm pack ownership lost', { cause: error })
+  Object.defineProperty(failure, ownershipLoss, { value: true })
+  return failure
+}
+async function guardOwnership(options, createdDirectory, createdStat) {
+  try { await options.ownershipGuard?.(createdDirectory, createdStat) }
+  catch (error) { throw lostOwnership(error) }
+}
 
 function requireAbsolute(value, label) {
   if (typeof value !== 'string' || !path.isAbsolute(value)) {
@@ -134,6 +145,7 @@ async function requireRealFile(file, label) {
 // C36: retain identity before each async guard, then check and mutate synchronously.
 // The npm child is a bounded trusted subordinate inside the same exclusive-controller interval.
 function retainPackPath(target, entries, directory) {
+  try {
   if (entries.some(entry => entry.path === target)) return
   if (realpathSync(target) !== target) throw new Error('npm pack path must be a canonical non-symlink path')
   const fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | (directory ? constants.O_DIRECTORY : 0))
@@ -143,6 +155,7 @@ function retainPackPath(target, entries, directory) {
       || atPath.isSymbolicLink() || stat.dev !== atPath.dev || stat.ino !== atPath.ino || stat.mode !== atPath.mode) throw new Error('npm pack path identity changed')
     entries.push({ path: target, fd, stat, directory })
   } catch (error) { closeSync(fd); throw error }
+  } catch (error) { throw lostOwnership(error) }
 }
 function retainPackAncestors(target, entries) {
   let current = path.parse(target).root
@@ -152,6 +165,7 @@ function retainPackAncestors(target, entries) {
   }
 }
 function checkPackPathsSync(entries) {
+  try {
   for (const entry of entries) {
     const held = fstatSync(entry.fd, { bigint: true }); const atPath = lstatSync(entry.path, { bigint: true })
     for (const value of [held, atPath]) {
@@ -160,15 +174,20 @@ function checkPackPathsSync(entries) {
       if (!entry.directory && ['nlink', 'size', 'mtimeNs', 'ctimeNs'].some(field => value[field] !== entry.stat[field])) throw new Error('npm pack file changed')
     }
   }
+  } catch (error) { throw lostOwnership(error) }
 }
 function createPackDirectorySync(target, entries) {
+  try {
   checkPackPathsSync(entries)
+  } catch (error) { throw lostOwnership(error) }
   mkdirSync(target, { mode: 0o700 })
   retainPackPath(target, entries, true)
   checkPackPathsSync(entries)
 }
 function createPackConfigSync(target, entries) {
+  try {
   checkPackPathsSync(entries)
+  } catch (error) { throw lostOwnership(error) }
   const fd = openSync(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600)
   try {
     const stat = fstatSync(fd, { bigint: true }); const atPath = lstatSync(target, { bigint: true })
@@ -181,7 +200,7 @@ function createPackConfigSync(target, entries) {
 
 /** @param {NpmPackOptions} options */
 export async function runNpmPack(options) {
-  await options.ownershipGuard?.()
+  await guardOwnership(options)
   const requested = createNpmPackInvocation(options)
   await requireRealDirectory(options.operationRoot, 'npm pack operation root')
   await requireRealDirectory(options.stagedPackageRoot, 'staged package root')
@@ -197,10 +216,12 @@ export async function runNpmPack(options) {
       requested.options.env.npm_config_cache,
       requested.packOutputRoot,
     ]) {
-      await options.ownershipGuard?.()
+      await guardOwnership(options)
       createPackDirectorySync(directory, held)
-      await requireRealDirectory(directory, 'npm pack owned directory')
-      await options.ownershipGuard?.(directory, held.find(entry => entry.path === directory).stat)
+      try { await requireRealDirectory(directory, 'npm pack owned directory') }
+      catch (error) { throw lostOwnership(error) }
+      await guardOwnership(options, directory, held.find(entry => entry.path === directory).stat)
+      checkPackPathsSync(held)
     }
     createPackConfigSync(requested.options.env.npm_config_userconfig, held)
     createPackConfigSync(requested.options.env.npm_config_globalconfig, held)
@@ -210,13 +231,14 @@ export async function runNpmPack(options) {
       nodeExecutable,
       npmCliPath,
     })
-    await options.ownershipGuard?.()
+    await guardOwnership(options)
     options.signal?.throwIfAborted()
     checkPackPathsSync(held)
     const result = spawnSync(invocation.file, invocation.args, invocation.options)
     checkPackPathsSync(held)
     if (result.error || result.status !== 0 || result.signal) throw new Error('npm pack subprocess failed')
-    await options.ownershipGuard?.()
+    await guardOwnership(options)
+    checkPackPathsSync(held)
     const metadata = validateNpmPackMetadata(JSON.parse(result.stdout))
     if (options.dryRun) {
       return Object.freeze({
@@ -227,10 +249,10 @@ export async function runNpmPack(options) {
         stderr: result.stderr,
       })
     }
-    const artifact = await verifyPackedWorkbenchArtifact({
-      packOutputRoot: invocation.packOutputRoot,
-      metadata,
-    })
+    let artifact
+    try {
+      artifact = await verifyPackedWorkbenchArtifact({ packOutputRoot: invocation.packOutputRoot, metadata })
+    } catch (error) { throw lostOwnership(error) }
     return Object.freeze({
       metadata,
       tgzAbsolutePath: artifact.tgzAbsolutePath,
