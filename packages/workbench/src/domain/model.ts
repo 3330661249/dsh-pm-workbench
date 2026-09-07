@@ -116,6 +116,12 @@ export interface GeneratedRequirementDraft {
   readonly suggestedPriority: 'high' | 'medium' | 'low'
 }
 
+export interface AnalysisCandidate {
+  readonly analysis: AnalysisRevision
+  readonly evidence: readonly EvidenceExcerpt[]
+  readonly generatedRequirements: readonly GeneratedRequirementDraft[]
+}
+
 export interface HumanRequirementRevision {
   readonly id: RequirementRevisionId
   readonly requirementId: RequirementId
@@ -392,6 +398,12 @@ const generatedRequirementDraftDefinition = z.strictObject({
   }
 })
 export const generatedRequirementDraftSchema: z.ZodType<GeneratedRequirementDraft> = generatedRequirementDraftDefinition
+
+export const analysisCandidateSchema: z.ZodType<AnalysisCandidate> = z.strictObject({
+  analysis: analysisRevisionSchema,
+  evidence: z.array(evidenceExcerptSchema).max(MAX_EVIDENCE_PER_ANALYSIS),
+  generatedRequirements: z.array(generatedRequirementDraftSchema).max(MAX_REQUIREMENTS_PER_ANALYSIS),
+})
 
 export const humanRequirementRevisionSchema: z.ZodType<HumanRequirementRevision> = z.strictObject({
   id: requirementRevisionIdSchema,
