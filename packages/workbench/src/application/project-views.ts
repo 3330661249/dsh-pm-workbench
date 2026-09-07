@@ -7,7 +7,7 @@ import {
 import {
   analysisRevisionSchema, deepFreeze, evidenceExcerptSchema, generatedRequirementDraftSchema,
   humanDecisionSchema, humanRequirementRevisionSchema, projectHeaderSchema, sourceDisplayNameSchema, sourceRevisionSchema,
-  prdRevisionSchema, requirementBaselineSchema, type ActiveProjectRecord, type ProjectHeader,
+  prdRevisionSchema, requirementBaselineSchema, assertStoredRecordBudget, type ActiveProjectRecord, type ProjectHeader,
 } from '../domain/model.js'
 import {
   MAX_ANALYSIS_ASSUMPTIONS_AND_UNKNOWNS_UTF8_BYTES, MAX_EVIDENCE_PER_ANALYSIS,
@@ -16,7 +16,8 @@ import {
   MAX_PRD_MARKDOWN_UTF8_BYTES, hasUnpairedSurrogate, utf8ByteLength,
 } from '../domain/limits.js'
 
-export type ReadonlyValue<T> = T extends readonly unknown[]
+export type ReadonlyValue<T> = T extends string | number | boolean | bigint | symbol | null | undefined ? T
+  : T extends readonly unknown[]
   ? { readonly [K in keyof T]: ReadonlyValue<T[K]> }
   : T extends object ? { readonly [K in keyof T]: ReadonlyValue<T[K]> } : T
 const integer = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
@@ -176,4 +177,57 @@ export function projectViewOf(project: ActiveProjectRecord): ProjectView {
         && currentBaseline.contentVersion === project.header.contentVersion ? 'current' : 'stale',
     })),
   }))
+}
+
+/** Validate the entire aggregate, including histories omitted from the current view.
+ * This is synchronous and has no clock, ID, hash, engine or I/O dependency.
+ */
+export function assertProjectAggregate(project: ActiveProjectRecord): void {
+  assertStoredRecordBudget(project)
+  const fail = (): never => { throw new Error('invalid-project-aggregate') }
+  const unique = (values: readonly string[]) => new Set(values).size === values.length
+  if (!unique(project.analyses.map(item => item.id))
+    || !unique(project.analyses.map(item => String(item.generation)))
+    || !unique(project.humanRevisions.map(item => item.id))
+    || !unique(project.baselines.map(item => item.id))
+    || !unique(project.prdRevisions.map(item => item.id))
+    || !unique(project.commandReceipts.map(item => item.commandId))) fail()
+  if (project.header.contentVersion >= project.header.projectVersion) fail()
+  if (!project.source && (project.analyses.length || project.evidence.length || project.generatedRequirements.length
+    || project.humanRevisions.length || project.humanDecisions.length || project.requirementOrder.length
+    || project.baselines.length || project.prdRevisions.length)) fail()
+  if (project.currentAnalysisRevisionId === null ? project.analyses.length > 0
+    : project.analyses.filter(item => item.id === project.currentAnalysisRevisionId).length !== 1) fail()
+  for (const analysis of project.analyses) {
+    if (analysis.sourceRevisionId !== project.source?.id || analysis.kind !== 'fixture'
+      || analysis.baseProjectVersion >= project.header.projectVersion
+      || analysis.status !== (analysis.id === project.currentAnalysisRevisionId ? 'draft' : 'superseded')) fail()
+  }
+  if (project.generatedRequirements.some(draft => draft.analysisRevisionId !== project.currentAnalysisRevisionId)) fail()
+  if (project.humanDecisions.length !== project.generatedRequirements.length) fail()
+  for (const revision of project.humanRevisions) {
+    if (!project.generatedRequirements.some(draft => draft.id === revision.basedOnDraftId && draft.requirementId === revision.requirementId)) fail()
+  }
+  if (project.currentBaselineId !== null && !project.baselines.some(baseline => baseline.id === project.currentBaselineId)) fail()
+  if ((project.humanRevisions.length || project.baselines.length || project.prdRevisions.length) && !project.header.reviewStarted) fail()
+  for (const baseline of project.baselines) {
+    if (baseline.projectId !== project.header.id || baseline.sourceRevisionId !== project.source?.id
+      || baseline.sourceContentHash !== project.source?.contentHash || baseline.projectName !== project.header.name
+      || baseline.researchGoal !== project.header.researchGoal || baseline.projectVersion > project.header.projectVersion
+      || baseline.contentVersion > project.header.contentVersion) fail()
+    for (const item of baseline.items) {
+      const draft = project.generatedRequirements.find(draft => draft.requirementId === item.requirementId) ?? fail()
+      if (item.textSource.draftId !== draft.id) fail()
+      if (item.textSource.kind === 'human-revision') {
+        const revisionId = item.textSource.revisionId
+        if (!project.humanRevisions.some(revision => revision.id === revisionId
+          && revision.requirementId === item.requirementId && revision.basedOnDraftId === draft.id)) fail()
+      }
+    }
+  }
+  for (const prd of project.prdRevisions) {
+    const baseline = project.baselines.find(item => item.id === prd.baselineId)
+    if (!baseline || prd.projectId !== project.header.id || prd.sourceRevisionId !== baseline.sourceRevisionId
+      || prd.baselineContentVersion !== baseline.contentVersion) fail()
+  }
 }
