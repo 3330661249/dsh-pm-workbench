@@ -59,6 +59,15 @@ import {
 } from './limits.js'
 import { canonicalJsonUtf8Bytes } from '../protocol/canonical-json.js'
 
+export function deepFreeze<T>(value: T): T {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    if (descriptor && 'value' in descriptor) deepFreeze(descriptor.value)
+  }
+  return Object.freeze(value)
+}
+
 export interface ProjectHeader {
   readonly id: ProjectId
   readonly name: string
@@ -450,7 +459,7 @@ export const requirementBaselineItemSchema: z.ZodType<RequirementBaselineItem> =
   evidence: z.array(evidenceExcerptSchema).max(MAX_EVIDENCE_PER_ANALYSIS),
 })
 
-export const requirementBaselineSchema: z.ZodType<RequirementBaseline> = z.strictObject({
+const requirementBaselineDefinition = z.strictObject({
   id: baselineIdSchema,
   projectId: projectIdSchema,
   projectName: projectNameSchema,
@@ -461,7 +470,23 @@ export const requirementBaselineSchema: z.ZodType<RequirementBaseline> = z.stric
   contentVersion: safeIntegerSchema,
   items: z.array(requirementBaselineItemSchema).min(1).max(MAX_REQUIREMENTS_PER_ANALYSIS),
   createdAt: dateTimeSchema,
+}).superRefine((value, context) => {
+  if (new Set(value.items.map(item => item.requirementId)).size !== value.items.length) {
+    context.addIssue({ code: 'custom', path: ['items'], message: 'duplicate-requirement' })
+  }
+  value.items.forEach((item, index) => {
+    if (item.rank !== index + 1) {
+      context.addIssue({ code: 'custom', path: ['items', index, 'rank'], message: 'invalid-rank' })
+    }
+    if (new Set(item.evidence.map(evidence => evidence.id)).size !== item.evidence.length) {
+      context.addIssue({ code: 'custom', path: ['items', index, 'evidence'], message: 'duplicate-evidence' })
+    }
+    if (item.evidence.some(evidence => evidence.sourceRevisionId !== value.sourceRevisionId)) {
+      context.addIssue({ code: 'custom', path: ['items', index, 'evidence'], message: 'source-revision-mismatch' })
+    }
+  })
 })
+export const requirementBaselineSchema: z.ZodType<RequirementBaseline> = requirementBaselineDefinition
 
 export const prdRevisionSchema: z.ZodType<PrdRevision> = z.strictObject({
   id: prdRevisionIdSchema,
