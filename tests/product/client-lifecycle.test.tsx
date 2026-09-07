@@ -4,9 +4,10 @@ import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/cli
 import { mountWorkbenchClient, type WorkbenchClientContext } from '../../packages/workbench/src/client/index.js'
 import { WorkbenchView } from '../../packages/workbench/src/client/workbench/WorkbenchView.js'
 import { createWorkbenchStore, type WorkbenchStore } from '../../packages/workbench/src/client/workbench/store.js'
-import { WorkbenchBrowserPort } from '../../packages/workbench/src/client/workbench/browser-port.js'
+import { WorkbenchBrowserPort, type WorkbenchBrowserDependencies } from '../../packages/workbench/src/client/workbench/browser-port.js'
 import { ConnectionRpcWorkbenchTransport, type Stage3aProjectCommand } from '../../packages/workbench/src/client/workbench/transport.js'
 import { readMaterialDraft } from '../../packages/workbench/src/client/workbench/material-input.js'
+import * as materialInput from '../../packages/workbench/src/client/workbench/material-input.js'
 import { ProjectService } from '../../packages/workbench/src/application/project-service.js'
 import { TableProjectRepository } from '../../packages/workbench/src/application/project-repository.js'
 import { nodeSha256Utf8 } from '../../packages/workbench/src/application/node-sha256.js'
@@ -130,7 +131,7 @@ class ComponentHarness {
 afterEach(() => { for (const renderer of renderers.splice(0)) renderer.unmount(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 const uuid = (n: number) => `20000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`
 function deferred<T = void>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r }); return { promise, resolve } }
-async function setup(options: { empty?: boolean; included?: boolean } = {}) {
+async function setup(options: { empty?: boolean; included?: boolean; browser?: Partial<WorkbenchBrowserDependencies> } = {}) {
   const table = createFakeDomainTable<ProjectId, StoredProjectRecord>([[SMALL_PROJECT_ID, makeSmallActiveRecord({ name: '合成研究一' })], [OTHER_PROJECT_ID, makeSmallActiveRecord({ projectId: OTHER_PROJECT_ID, name: '合成研究二' })]])
   let hostId = 1000, clientId = 3000
   const service = new ProjectService(new TableProjectRepository(table, { engine: new FixtureInsightEngine(FIXTURE_MANIFEST, nodeSha256Utf8),
@@ -153,7 +154,7 @@ async function setup(options: { empty?: boolean; included?: boolean } = {}) {
   }
   const clipboard: string[] = []; const downloads: Array<{ url: string; name: string }> = []; const blobs: Blob[] = []; const revoked: string[] = []
   const browser = new WorkbenchBrowserPort({ writeClipboard: async text => { clipboard.push(text) }, createObjectURL: blob => { blobs.push(blob); return 'owned-test-url' },
-    clickDownload: (url, name) => { downloads.push({ url, name }) }, revokeObjectURL: url => { revoked.push(url) } })
+    clickDownload: (url, name) => { downloads.push({ url, name }) }, revokeObjectURL: url => { revoked.push(url) }, ...options.browser })
   const ids = { createCommandId: () => uuid(clientId++), createProjectId: () => uuid(clientId++) }
   const store = createWorkbenchStore(new ConnectionRpcWorkbenchTransport({ call }), ids, browser)
   await store.open(); await store.selectProject(SMALL_PROJECT_ID)
@@ -167,6 +168,13 @@ function context(events: string[], failure?: string) {
     register: (options: { name: string; id: string }, component: ComponentType<any>) => { expect(live.has(options.id)).toBe(false); live.set(options.id, component); return () => { live.delete(options.id) } },
   } } as unknown as WorkbenchClientContext
   return { ctx, live }
+}
+async function withPrdHistory(browser?: Partial<WorkbenchBrowserDependencies>) {
+  const h = await setup({ included: true, browser }); const ui = h.ui(); await ui.settle()
+  ui.click('confirm-scope'); await ui.settle()
+  ui.fire('human-reason', 'onChange', { value: '第二次确认的合成研究理由' }); ui.render(); ui.click('save-requirements'); await ui.settle()
+  ui.clickText('重新核对确认摘要'); ui.render(); ui.click('confirm-scope'); await ui.settle()
+  return { ...h, ui, first: h.record().prdRevisions[0]!, second: h.record().prdRevisions[1]! }
 }
 
 describe('Product lifecycle and real store handlers', () => {
@@ -464,5 +472,108 @@ describe('Product lifecycle and real store handlers', () => {
     ui.click('confirm-scope'); await ui.settle(); expect(h.commands).toHaveLength(0)
     ui.clickText('重新核对确认摘要'); ui.render(); expect(ui.all('confirmation-summary')).toHaveLength(1)
     ui.click('confirm-scope'); await ui.settle(); expect(h.commands.map(c => c.payload.kind)).toEqual(['baseline.publish', 'prd.render'])
+  })
+  it('keeps each material keystroke visible while hashing and admits only the latest exact verified draft', async () => {
+    const h = await setup({ empty: true }); const old = await readMaterialDraft({ kind: 'paste', text: '此前校验的合成文本', displayName: 'old.txt' })
+    h.store.setMaterialDraft(old, false); const ui = h.ui(); await ui.settle()
+    const gates = [deferred(), deferred()]; let count = 0
+    const digest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle)
+    vi.spyOn(globalThis.crypto.subtle, 'digest').mockImplementation(async (algorithm, data) => { await gates[count++]?.promise; return digest(algorithm, data) })
+    const reads = vi.spyOn(materialInput, 'readMaterialDraft')
+    ui.fire('material-input', 'onChange', { value: '第一段正在输入的合成文字' }); ui.render()
+    expect.soft(ui.one('material-input').props.value).toBe('第一段正在输入的合成文字')
+    expect(ui.one('material-input').props.disabled).toBe(false)
+    ui.fire('material-input', 'onChange', { value: BUILT_IN_SYNTHETIC_TEXT }); ui.render()
+    expect.soft(ui.one('material-input').props.value).toBe(BUILT_IN_SYNTHETIC_TEXT)
+    expect(ui.one('save-material').props.disabled).toBe(true)
+    gates[0]!.resolve(); await reads.mock.results[0]!.value; ui.render()
+    expect(h.store.getSnapshot().materialDraft).toBe(old)
+    expect.soft(ui.one('material-input').props.value).toBe(BUILT_IN_SYNTHETIC_TEXT)
+    expect(ui.one('save-material').props.disabled).toBe(true)
+    gates[1]!.resolve(); const latest = await reads.mock.results[1]!.value; await ui.settle()
+    expect(h.store.getSnapshot().materialDraft).toBe(latest); expect(latest.text).toBe(BUILT_IN_SYNTHETIC_TEXT)
+    expect(ui.one('synthetic-attestation').props.checked).toBe(false)
+    ui.fire('synthetic-attestation', 'onChange', { checked: true }); ui.render(); expect(ui.one('save-material').props.disabled).toBe(false)
+    ui.click('save-material'); await ui.settle()
+    expect(h.commands).toHaveLength(1); expect(h.commands[0]!.payload).toMatchObject({ kind: 'source.importText', text: BUILT_IN_SYNTHETIC_TEXT })
+    expect(ui.text(ui.one('source-text'))).toBe(BUILT_IN_SYNTHETIC_TEXT)
+  })
+  it('refuses a previously enabled material save handler immediately after a new visible edit starts', async () => {
+    const h = await setup({ empty: true }); const draft = await readMaterialDraft({ kind: 'paste', text: BUILT_IN_SYNTHETIC_TEXT, displayName: 'old.txt' })
+    h.store.setMaterialDraft(draft, true); const ui = h.ui(); await ui.settle(); const staleSave = ui.one('save-material').props.onClick
+    const gate = deferred(); const digest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle)
+    vi.spyOn(globalThis.crypto.subtle, 'digest').mockImplementationOnce(async (algorithm, data) => { await gate.promise; return digest(algorithm, data) })
+    const importing = vi.spyOn(h.store, 'importMaterial')
+    ui.fire('material-input', 'onChange', { value: '新输入尚未校验' }); staleSave()
+    expect.soft(importing).not.toHaveBeenCalled()
+    gate.resolve(); await ui.settle(); expect(h.commands).toHaveLength(0)
+  })
+  it('retains failed material text visibly and refuses saving the older verified draft underneath it', async () => {
+    const h = await setup({ empty: true }); const draft = await readMaterialDraft({ kind: 'paste', text: BUILT_IN_SYNTHETIC_TEXT, displayName: 'old.txt' })
+    h.store.setMaterialDraft(draft, true); const ui = h.ui(); await ui.settle()
+    vi.spyOn(globalThis.crypto.subtle, 'digest').mockRejectedValueOnce(new Error('HASH_PRIVATE_CANARY'))
+    ui.fire('material-input', 'onChange', { value: '校验失败但应保留的可见合成文字' }); await ui.settle()
+    expect.soft(ui.one('material-input').props.value).toBe('校验失败但应保留的可见合成文字')
+    expect.soft(ui.one('save-material').props.disabled).toBe(true)
+    expect(h.store.getSnapshot().materialDraft).toBe(draft)
+    expect(ui.text()).toContain('材料读取失败，请检查 TXT 或 Markdown 文件及 UTF-8 编码后重试'); expect(ui.text()).not.toContain('HASH_PRIVATE_CANARY')
+    ui.click('save-material'); await ui.settle(); expect(h.commands).toHaveLength(0)
+  })
+  it('does not let an older refresh recovery replace a later historical PRD selection', async () => {
+    const h = await withPrdHistory(); const { ui, first, second } = h
+    expect(h.store.getSnapshot().acceptedReceipt?.value.prdRevisionId).toBe(second.id)
+    const entered = deferred(), gate = deferred(); let delayed = false
+    h.intercept(async (endpoint, _input, next) => { const value = await next(); if (endpoint === 'projects.get' && !delayed) { delayed = true; entered.resolve(); await gate.promise }; return value })
+    const refresh = vi.spyOn(h.store, 'refresh')
+    ui.click('refresh-project'); await entered.promise
+    const refreshing = refresh.mock.results[0]!.value
+    ui.all('prd-history-item').find(node => node.props['data-prd-revision-id'] === first.id)!.props.onClick()
+    await ui.settle(() => ui.all('prd-preview')[0]?.props['data-prd-revision-id'] === first.id)
+    gate.resolve(); await refreshing; await ui.settle()
+    expect(h.store.getSnapshot().selectedPrdRevisionId).toBe(first.id)
+    expect(ui.one('prd-preview').props['data-prd-revision-id']).toBe(first.id); expect(ui.text(ui.one('prd-markdown'))).toBe(first.markdown)
+    ui.click('copy-prd'); ui.click('download-prd'); await ui.settle()
+    expect(h.clipboard).toEqual([first.markdown]); expect(await h.blobs[0]!.text()).toBe(first.markdown)
+    expect(h.downloads[0]!.name).toBe(`prd-${first.id}.md`)
+  })
+  it.each(['copy-prd', 'download-prd'] as const)('ignores a delayed %s failure after the user selects another PRD', async marker => {
+    const entered = deferred(), gate = deferred()
+    const fail = async () => { entered.resolve(); await gate.promise; throw new Error('EXPORT_PRIVATE_CANARY') }
+    const h = await withPrdHistory(marker === 'copy-prd' ? { writeClipboard: fail } : { clickDownload: fail })
+    const { ui, first } = h
+    const exporting = vi.spyOn(h.store, marker === 'copy-prd' ? 'copySelectedMarkdown' : 'downloadSelectedMarkdown')
+    ui.click(marker); await entered.promise; const completion = exporting.mock.results[0]!.value
+    ui.all('prd-history-item').find(node => node.props['data-prd-revision-id'] === first.id)!.props.onClick()
+    await ui.settle(() => ui.all('prd-preview')[0]?.props['data-prd-revision-id'] === first.id)
+    gate.resolve(); await completion; await ui.settle()
+    expect(ui.nodes().filter(node => node.props.role === 'alert')).toHaveLength(0)
+    expect(ui.one('prd-preview').props['data-prd-revision-id']).toBe(first.id); expect(ui.text(ui.one('prd-markdown'))).toBe(first.markdown)
+    expect(ui.text()).not.toContain('EXPORT_PRIVATE_CANARY')
+  })
+  it('does not let an old successful copy clear a newer selected-PRD export error', async () => {
+    const entered = deferred(), gate = deferred()
+    const h = await withPrdHistory({ writeClipboard: async () => { entered.resolve(); await gate.promise }, clickDownload: () => { throw new Error('DOWNLOAD_PRIVATE_CANARY') } })
+    const { ui, first } = h; const copying = vi.spyOn(h.store, 'copySelectedMarkdown')
+    ui.click('copy-prd'); await entered.promise; const oldCopy = copying.mock.results[0]!.value
+    ui.all('prd-history-item').find(node => node.props['data-prd-revision-id'] === first.id)!.props.onClick()
+    await ui.settle(() => ui.all('prd-preview')[0]?.props['data-prd-revision-id'] === first.id)
+    ui.click('download-prd'); await ui.settle(() => ui.text().includes('工作台暂时无法连接'))
+    gate.resolve(); await oldCopy; await ui.settle()
+    expect(ui.text()).toContain('工作台暂时无法连接'); expect(ui.text()).not.toContain('DOWNLOAD_PRIVATE_CANARY')
+    expect(ui.one('prd-preview').props['data-prd-revision-id']).toBe(first.id)
+  })
+  it('ignores the actual first opening completion after close and a successful newer reopen', async () => {
+    const h = await setup(); h.store.close(); const { ctx, live } = context([]); const dispose = mountWorkbenchClient(ctx, h.store)
+    const ui = new ComponentHarness(<>{createElement(live.get('pm-workbench-product-launcher')!)}{createElement(live.get('pm-workbench-product-overlay')!)}</>)
+    const entered = deferred(), gate = deferred(); let delayed = false
+    h.intercept(async (endpoint, _input, next) => { if (endpoint === 'projects.get' && !delayed) { delayed = true; entered.resolve(); await gate.promise }; return next() })
+    const opening = vi.spyOn(h.store, 'open')
+    ui.click('launcher'); await entered.promise; const firstOpening = opening.mock.results[0]!.value; ui.render()
+    ui.click('close'); ui.render(); ui.click('launcher'); await opening.mock.results[1]!.value; await ui.settle()
+    expect(ui.all('overlay')).toHaveLength(1); expect(ui.nodes().filter(node => node.props.role === 'alert')).toHaveLength(0)
+    gate.resolve(); await firstOpening; await ui.settle()
+    expect(ui.nodes().filter(node => node.props.role === 'alert')).toHaveLength(0)
+    expect(ui.all('overlay')).toHaveLength(1); expect(h.store.getSnapshot().isOpen).toBe(true)
+    dispose()
   })
 })

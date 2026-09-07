@@ -2,7 +2,7 @@ import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { WorkbenchLauncher, WorkbenchView, storeErrorText } from './workbench/WorkbenchView.js'
 import { createWorkbenchStore, type WorkbenchStore } from './workbench/store.js'
 import { ConnectionRpcWorkbenchTransport } from './workbench/transport.js'
@@ -33,26 +33,31 @@ export function mountWorkbenchClient(ctx: WorkbenchClientContext, suppliedStore?
         try { document.body.append(anchor); anchor.click() } finally { anchor.remove() }
       },
     }))
-  let launcher: FocusTarget | undefined
+  let launcher: FocusTarget | undefined, openingGeneration = 0, disposed = false
+  const invalidateOpening = () => { openingGeneration++ }
   function Launcher() {
-    const [error, setError] = useState<string>()
+    const [error, setError] = useState<string>(), alive = useRef(true)
+    useEffect(() => { alive.current = true; return () => { alive.current = false; invalidateOpening() } }, [])
     return <><WorkbenchLauncher onOpen={target => {
+      if (disposed || !alive.current) return
+      const request = ++openingGeneration
+      const current = () => alive.current && !disposed && request === openingGeneration && store.getSnapshot().isOpen
       launcher = target; setError(undefined)
-      void store.open().then(result => { if (!result.ok) setError(storeErrorText(result.code)) }, () => setError('工作台暂时无法连接'))
+      void store.open().then(result => { if (current()) setError(result.ok ? undefined : storeErrorText(result.code)) },
+        () => { if (current()) setError('工作台暂时无法连接') })
     }} />{error && <p role="alert">{error}</p>}</>
   }
-  function Overlay() { return <WorkbenchView store={store} createCommandId={uuid} restoreFocus={() => { if (launcher?.isConnected !== false) launcher?.focus() }} /> }
+  function Overlay() { return <WorkbenchView store={store} createCommandId={uuid} onClose={invalidateOpening} restoreFocus={() => { if (launcher?.isConnected !== false) launcher?.focus() }} /> }
   let disposeLauncher: (() => void) | undefined, disposeOverlay: (() => void) | undefined
   try {
     disposeLauncher = ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(
       { name: 'sidebar.footer.action', id: 'pm-workbench-product-launcher', order: 90 }, Launcher))
     disposeOverlay = ctx.slots.inject('shell.overlay', () => ctx.slots.register(
       { name: 'shell.overlay', id: 'pm-workbench-product-overlay', order: 90 }, Overlay))
-  } catch (error) { cleanupAll([disposeOverlay, disposeLauncher, () => store.dispose()]); throw error }
-  let disposed = false
+  } catch (error) { disposed = true; invalidateOpening(); cleanupAll([disposeOverlay, disposeLauncher, () => store.dispose()]); throw error }
   return () => {
     if (disposed) return
-    disposed = true
+    disposed = true; invalidateOpening()
     const cleanup = cleanupAll([disposeOverlay, disposeLauncher, () => store.dispose()])
     if (cleanup.failed) throw cleanup.firstError
   }

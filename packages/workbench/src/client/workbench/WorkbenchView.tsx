@@ -38,8 +38,8 @@ export function WorkbenchLauncher({ onOpen }: { onOpen(target: FocusTarget): voi
   return <button type="button" data-dsh-pm-workbench="launcher" onClick={event => onOpen(event.currentTarget)}>AI PM 工作台</button>
 }
 
-export function WorkbenchView({ store, createCommandId = () => globalThis.crypto.randomUUID().toLowerCase(), restoreFocus }: {
-  store: WorkbenchStore; createCommandId?: () => string; restoreFocus?: () => void
+export function WorkbenchView({ store, createCommandId = () => globalThis.crypto.randomUUID().toLowerCase(), restoreFocus, onClose }: {
+  store: WorkbenchStore; createCommandId?: () => string; restoreFocus?: () => void; onClose?: () => void
 }) {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
   const [review, setReview] = useState(() => ({ token: store.getConfirmationSnapshot(), dirty: state.dirtyRevision,
@@ -47,7 +47,7 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
   const [error, setError] = useState<string>(), [pending, setPending] = useState(0)
   const [materialReading, setMaterialReading] = useState(false)
   const [createDialog, setCreateDialog] = useState(false), [deleteDialog, setDeleteDialog] = useState(false), [discardDialog, setDiscardDialog] = useState(false)
-  const actionLatch = useRef(false), activeActions = useRef(0), prdRequest = useRef(0)
+  const actionLatch = useRef(false), activeActions = useRef(0), prdRequest = useRef(0), recoveryRequest = useRef(0), exportRequest = useRef(0)
   const selection = useRef({ id: state.selectedProjectId, open: state.isOpen, generation: 0 })
   if (selection.current.id !== state.selectedProjectId || selection.current.open !== state.isOpen) {
     selection.current = { id: state.selectedProjectId, open: state.isOpen, generation: selection.current.generation + 1 }
@@ -69,18 +69,23 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
     catch { if (current()) setError('工作台暂时无法连接') }
     finally { activeActions.current--; setPending(activeActions.current) }
   }
-  function mutate(work: () => Promise<ActionResult>) {
+  function mutate(work: () => Promise<ActionResult>, latest?: () => boolean) {
     if (actionLatch.current) return
     actionLatch.current = true
-    void run(async () => { try { return await work() } finally { actionLatch.current = false } })
+    void run(async () => { try { return await work() } finally { actionLatch.current = false } }, latest)
   }
   function selectedStill(id: ProjectId | undefined) { const next = store.getSnapshot(); return next.isOpen && next.selectedProjectId === id }
-  async function loadDetails(): Promise<ActionResult> {
-    const selected = store.getSnapshot(), id = selected.selectedProjectId
-    if (!id || !selected.selectedProject) return done
+  function capturePrdSelection() {
+    const captured = selection.current, request = prdRequest.current
+    return () => selectedStill(captured.id) && selection.current.generation === captured.generation && request === prdRequest.current
+  }
+  async function loadDetails(current = capturePrdSelection()): Promise<ActionResult> {
+    if (!current()) return cancelled
+    const selected = store.getSnapshot()
+    if (!selected.selectedProjectId || !selected.selectedProject) return done
     if (selected.selectedProject.source) {
       const source = await store.loadSource(); if (!source.ok) return source
-      if (!selectedStill(id)) return cancelled
+      if (!current()) return cancelled
     }
     const latest = store.getSnapshot()
     // The public projection preserves the immutable, append-only revision order.
@@ -94,14 +99,15 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
     // that failure with an expected not-found read of the unconfirmed project.
     if (!state.selectedProject && state.pendingRetry) return
     let active = true
+    const sameSelection = capturePrdSelection(), current = () => active && sameSelection()
     void run(async () => {
       const refreshed = await store.refresh()
-      if (!active) return cancelled
+      if (!current()) return cancelled
       if (!refreshed.ok) return refreshed
-      const result = await loadDetails()
-      if (active && result.ok) displayConfirmation(store.getConfirmationSnapshot())
+      const result = await loadDetails(current)
+      if (current() && result.ok) displayConfirmation(store.getConfirmationSnapshot())
       return result
-    }, () => active)
+    }, current)
     return () => { active = false }
   }, [state.isOpen, state.selectedProjectId])
 
@@ -115,18 +121,41 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
       return store.command(command)
     } catch { return Promise.resolve({ ok: false, code: 'protocol-invalid' }) }
   }
-  async function continueBaseline(): Promise<ActionResult> {
-    const before = store.getSnapshot(), id = before.selectedProjectId
+  async function continueBaseline(current: () => boolean): Promise<ActionResult> {
+    if (!current()) return cancelled
+    const before = store.getSnapshot()
     if (before.pendingRetry) return { ok: false, code: 'uncertain' }
     const acceptedPrd = before.acceptedReceipt?.value.prdRevisionId
     if (acceptedPrd && before.selectedProject?.prdSummaries.some(item => item.prdRevisionId === acceptedPrd && item.baselineId === before.baselineChain?.baselineId)) {
       return store.selectPrd(acceptedPrd)
     }
-    if (!before.baselineChain) return loadDetails()
+    if (!before.baselineChain) return loadDetails(current)
     const rendered = await store.renderPublishedBaseline()
     if (!rendered.ok) return rendered
-    if (!selectedStill(id)) return cancelled
+    if (!current()) return cancelled
     return store.selectPrd(rendered.prdRevisionId)
+  }
+  function recover(retry = false) {
+    if (actionLatch.current) return
+    const request = ++recoveryRequest.current, sameSelection = capturePrdSelection()
+    const current = () => request === recoveryRequest.current && sameSelection()
+    mutate(async () => {
+      const intent = store.getSnapshot().pendingRetry
+      if (!retry) {
+        const refreshed = await store.refresh()
+        if (!current()) return cancelled
+        return refreshed.ok ? continueBaseline(current) : refreshed
+      }
+      const result = await store.retryUncertain()
+      if (result.ok && result.value === null) { if (store.getSnapshot().isOpen && request === recoveryRequest.current) setDeleteDialog(false); return done }
+      if (!current()) return cancelled
+      if (!result.ok) return result
+      if (intent?.payload.kind === 'prd.render') {
+        const id = store.getSnapshot().acceptedReceipt?.value.prdRevisionId
+        return id ? store.selectPrd(id) : { ok: false, code: 'refresh-required' }
+      }
+      return continueBaseline(current)
+    }, current)
   }
   function confirm() {
     if (actionLatch.current) return
@@ -156,13 +185,18 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
     const request = ++prdRequest.current
     void run(() => store.selectPrd(id), () => request === prdRequest.current)
   }
+  function exportPrd(download: boolean) {
+    const revision = store.getSnapshot().selectedPrdRevisionId, request = ++exportRequest.current, sameSelection = capturePrdSelection()
+    void run(() => download ? store.downloadSelectedMarkdown() : store.copySelectedMarkdown(),
+      () => sameSelection() && store.getSnapshot().selectedPrdRevisionId === revision && request === exportRequest.current)
+  }
   function saveRequirements() {
     const current = store.getSnapshot()
     if (!current.drafts.length || current.saveState === 'uncertain'
       || !current.drafts.every(intent => ['requirement.update', 'requirements.reorder'].includes(intent.payload.kind))) return
     mutate(() => store.flushProjectEdits())
   }
-  function close() { setCreateDialog(false); setDeleteDialog(false); setDiscardDialog(false); store.close() }
+  function close() { onClose?.(); setCreateDialog(false); setDeleteDialog(false); setDiscardDialog(false); store.close() }
   const knownRejection = state.saveState === 'failed' && PRODUCT_ERROR_CODES.some(code => code !== 'cancelled' && code === state.error)
   const canDiscard = pending === 0 && !materialReading && state.dirty && (state.saveState === 'unsaved' || state.saveState === 'failed') && !state.pendingRetry
     && state.acceptedVersionFloor <= (state.selectedProject?.header.projectVersion ?? 0)
@@ -180,19 +214,8 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
     {visibleError && <p role="alert">{visibleError}</p>}
     {recovery && <p role="status">基线已确认，PRD 尚未完成，请刷新继续</p>}
     <div className="pmwb-actions">
-      <button type="button" data-dsh-pm-workbench="refresh-project" disabled={pending > 0} onClick={() => mutate(async () => {
-        const refreshed = await store.refresh(); return refreshed.ok ? continueBaseline() : refreshed
-      })}>刷新项目</button>
-      {state.pendingRetry && <button type="button" data-dsh-pm-workbench="retry-uncertain" disabled={pending > 0} onClick={() => mutate(async () => {
-        const retry = store.getSnapshot().pendingRetry
-        const result = await store.retryUncertain(); if (!result.ok) return result
-        if (result.value === null) { setDeleteDialog(false); return done }
-        if (retry?.payload.kind === 'prd.render') {
-          const id = store.getSnapshot().acceptedReceipt?.value.prdRevisionId
-          return id ? store.selectPrd(id) : { ok: false, code: 'refresh-required' }
-        }
-        return continueBaseline()
-      })}>重试原操作</button>}
+      <button type="button" data-dsh-pm-workbench="refresh-project" disabled={pending > 0} onClick={() => recover()}>刷新项目</button>
+      {state.pendingRetry && <button type="button" data-dsh-pm-workbench="retry-uncertain" disabled={pending > 0} onClick={() => recover(true)}>重试原操作</button>}
       {canDiscard && <button type="button" data-dsh-pm-workbench="discard-drafts" onClick={() => setDiscardDialog(true)}>放弃未保存修改</button>}
     </div>
     <div className="pmwb-body">
@@ -215,7 +238,7 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
             onSave={saveRequirements} onEvidence={() => { void run(() => store.loadSource()) }} />}
           {index === 2 && <PriorityPane state={state} confirmation={confirmation} pending={pending > 0} onConfirm={confirm}
             onReview={() => { const token = store.prepareConfirmation(); displayConfirmation(token); setError(token.ok ? undefined : storeErrorText(token.reason)) }} />}
-          {index === 3 && <PrdPane state={state} onSelect={selectPrd} onCopy={() => { void run(() => store.copySelectedMarkdown()) }} onDownload={() => { void run(() => store.downloadSelectedMarkdown()) }} />}
+          {index === 3 && <PrdPane state={state} onSelect={selectPrd} onCopy={() => exportPrd(false)} onDownload={() => exportPrd(true)} />}
         </section>)}
       </> : <p>请选择或新建一个合成测试项目。</p>}</main>
     </div>
