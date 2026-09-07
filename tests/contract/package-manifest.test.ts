@@ -73,6 +73,10 @@ test('ships truthful Stage 3A package documentation and the unchanged full Zod n
     expect(text).toMatch(/not secure erasure/)
     expect(text).not.toContain('/dsh-pm-workbench-v1')
   }
+  const compatibility = await readFile(resolve(packageRoot, 'docs/compatibility.md'), 'utf8')
+  expect(compatibility).toContain('one trusted exclusive controller')
+  expect(compatibility).toContain('synchronous namespace critical sections')
+  expect(compatibility).toContain('Concurrent non-cooperating same-UID mutation is outside this claim')
   const notice = await readFile(resolve(packageRoot, 'docs/third-party.md'), 'utf8')
   expect(notice).toContain((await readFile(resolve(packageRoot, '../../node_modules/zod/LICENSE'), 'utf8')).trim())
   expect(notice).toContain('Zod 4.4.3')

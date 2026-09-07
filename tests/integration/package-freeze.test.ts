@@ -241,6 +241,34 @@ test('creates an explicit Node plus npm CLI invocation with a closed environment
   }
 })
 
+test.each(['mkdir', 'config', 'spawn'] as const)('rejects C36 pack critical-section entry substitution with zero outside entries: %s', async variant => {
+  const fixture = await mkdtemp(path.join(await realpath(os.tmpdir()), 'workbench-pack-critical-'))
+  const operationRoot = path.join(fixture, 'operation')
+  const stagedPackageRoot = path.join(fixture, 'package-source')
+  const outside = path.join(fixture, 'outside')
+  const npmCliPath = path.join(fixture, 'npm-cli.mjs')
+  try {
+    for (const directory of [operationRoot, stagedPackageRoot, outside]) await mkdir(directory)
+    await writeFile(npmCliPath, "import { writeFileSync } from 'node:fs'; writeFileSync('npm-ran', 'unexpected'); process.stdout.write('[]')")
+    let injected = false; let guards = 0
+    await expect(runNpmPack({
+      nodeExecutable: await realpath(process.execPath), npmCliPath, stagedPackageRoot, operationRoot,
+      ownershipGuard: async createdDirectory => {
+        guards++
+        const atEntry = variant === 'mkdir' ? guards === 2
+          : variant === 'config' ? createdDirectory === path.join(operationRoot, 'pack-output')
+            : !createdDirectory && await lstat(path.join(operationRoot, 'global-npmrc')).then(() => true, () => false)
+        if (!injected && atEntry) {
+          const target = variant === 'spawn' ? stagedPackageRoot : operationRoot
+          await rename(target, target + '.displaced'); await symlink(outside, target, 'dir'); injected = true
+        }
+      },
+    })).rejects.toThrow()
+    expect(injected).toBe(true)
+    expect(await readdir(outside)).toEqual([])
+  } finally { await rm(fixture, { recursive: true, force: true }) }
+})
+
 test.each([
   'node-direct-link',
   'npm-direct-link',
@@ -637,33 +665,45 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each([
     const script = `
       import fs from 'node:fs/promises'
       import { existsSync, readFileSync, renameSync, mkdirSync, writeFileSync } from 'node:fs'
-      import { ChildProcess } from 'node:child_process'
+      import childProcess, { ChildProcess } from 'node:child_process'
       import { syncBuiltinESMExports } from 'node:module'
       const releaseRoot = ${JSON.stringify(f.releaseRoot)}
       const variant = ${JSON.stringify(variant)}
       const originalSpawn = ChildProcess.prototype.spawn
       let packs = 0; let markerBeforePack = false; let offline = false; let noScripts = false
-      ChildProcess.prototype.spawn = function(options) {
-        if (options.args.includes('pack') && options.args.includes('--pack-destination')) {
+      const observePack = args => {
+        if (args.includes('pack') && args.includes('--pack-destination')) {
           packs++
           const marker = JSON.parse(readFileSync(releaseRoot + '/.owner.json', 'utf8'))
           markerBeforePack = marker.owner === '@knight/dsh-pm-workbench' && existsSync(releaseRoot + '/.work/package/package.json')
-          offline = options.args.includes('--offline'); noScripts = options.args.includes('--ignore-scripts')
+          offline = args.includes('--offline'); noScripts = args.includes('--ignore-scripts')
           if (variant === 'pack-fail') throw new Error('synthetic pack syscall failure')
           if (variant === 'source-drift') writeFileSync(${JSON.stringify(path.join(f.root, 'packages/workbench/README.md'))}, 'source drift')
         }
+      }
+      ChildProcess.prototype.spawn = function(options) {
+        observePack(options.args)
         return originalSpawn.call(this, options)
       }
-      const originalWrite = fs.writeFile
-      fs.writeFile = async function(file, ...args) {
-        if (String(file) === releaseRoot + '/receipt.json') {
+      const originalSpawnSync = childProcess.spawnSync
+      childProcess.spawnSync = function(file, args, options) {
+        observePack(args)
+        return originalSpawnSync.call(this, file, args, options)
+      }
+      const originalLstat = fs.lstat
+      let finalizeInjected = false
+      fs.lstat = async function(file, ...args) {
+        const result = await originalLstat.call(this, file, ...args)
+        if (!finalizeInjected && String(file) === releaseRoot + '/.owner.json'
+          && existsSync(releaseRoot + '/knight-dsh-pm-workbench-0.1.0.tgz') && !existsSync(releaseRoot + '/.work')) {
+          finalizeInjected = true
           if (variant === 'finalize-fail') throw new Error('synthetic finalization failure')
           if (variant === 'ownership-substitution') {
             renameSync(releaseRoot, releaseRoot + '.displaced')
             mkdirSync(releaseRoot); writeFileSync(releaseRoot + '/unowned', 'preserve')
           }
         }
-        return originalWrite.call(this, file, ...args)
+        return result
       }
       syncBuiltinESMExports()
       const api = await import(${JSON.stringify(pathToFileURL(path.join(f.root, 'scripts/verify-package.mjs')).href)})
@@ -734,13 +774,12 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each(['work', '
       const root = ${JSON.stringify(f.releaseRoot)}
       const outside = ${JSON.stringify(outside)}
       const variant = ${JSON.stringify(variant)}
-      const boundary = root + (variant === 'work' ? '/.work/package' : '/.work/package/docs')
       const swapped = root + (variant === 'work' ? '/.work' : '/.work/package/docs')
-      const originalMkdir = fs.mkdir
+      const originalLstat = fs.lstat
       let injected = false
-      fs.mkdir = async function(file, ...args) {
-        const result = await originalMkdir.call(this, file, ...args)
-        if (!injected && String(file) === boundary) {
+      fs.lstat = async function(file, ...args) {
+        const result = await originalLstat.call(this, file, ...args)
+        if (!injected && String(file) === swapped) {
           renameSync(swapped, swapped + '.displaced')
           symlinkSync(outside, swapped, 'dir')
           injected = true
@@ -757,6 +796,127 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each(['work', '
       env: { PATH: process.env.PATH, npm_execpath: process.env.npm_execpath }, timeout: 30_000,
     })
     expect(JSON.parse(observed.stdout)).toEqual({ injected: true, rejected: true, outside: [] })
+  } finally { await rm(f.temp, { recursive: true, force: true }) }
+}, 60_000)
+
+test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each(['mkdir', 'open'] as const)('rejects C36 staging critical-section entry substitution with zero outside entries: %s', async variant => {
+  const f = await releaseFixture()
+  try {
+    const outside = path.join(f.temp, 'outside'); await mkdir(outside)
+    const script = `
+      import fs from 'node:fs/promises'
+      import { existsSync, renameSync, symlinkSync, readdirSync } from 'node:fs'
+      import { syncBuiltinESMExports } from 'node:module'
+      const root = ${JSON.stringify(f.releaseRoot)}
+      const outside = ${JSON.stringify(outside)}
+      const variant = ${JSON.stringify(variant)}
+      const swapped = root + (variant === 'mkdir' ? '/.work' : '/.work/package/docs')
+      const originalLstat = fs.lstat
+      let injected = false; let docsChecks = 0
+      fs.lstat = async function(file, ...args) {
+        const stack = new Error().stack
+        const result = await originalLstat.call(this, file, ...args)
+        // Substitute after the last asynchronous identity read returns, before the protected section.
+        const mkdirEntry = variant === 'mkdir' && stack.includes('mkdirOwned') && !stack.includes('retainDirectory')
+          && !existsSync(root + '/.work/package')
+        const writeEntry = variant === 'open' && String(file) === swapped && stack.includes('writeStagedFile')
+          && existsSync(root + '/.work/package/cordis.patch.yml') && !existsSync(root + '/.work/package/docs/compatibility.md')
+          && ++docsChecks === 3
+        if (!injected && String(file) === swapped && (mkdirEntry || writeEntry)) {
+          renameSync(swapped, swapped + '.displaced')
+          symlinkSync(outside, swapped, 'dir')
+          injected = true
+        }
+        return result
+      }
+      syncBuiltinESMExports()
+      const api = await import(${JSON.stringify(pathToFileURL(path.join(f.root, 'scripts/verify-package.mjs')).href)})
+      let rejected = false
+      try { await api.createWorkbenchRelease(root) } catch { rejected = true }
+      process.stdout.write(JSON.stringify({ injected, rejected, outside: readdirSync(outside) }))
+    `
+    const observed = await execFile(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', script], { cwd: f.root,
+      env: { PATH: process.env.PATH, npm_execpath: process.env.npm_execpath }, timeout: 30_000,
+    })
+    expect(JSON.parse(observed.stdout)).toEqual({ injected: true, rejected: true, outside: [] })
+  } finally { await rm(f.temp, { recursive: true, force: true }) }
+}, 60_000)
+
+test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1')('preserves a C36 pack directory substituted before ownership transfer', async () => {
+  const f = await releaseFixture()
+  try {
+    const script = `
+      import fs from 'node:fs/promises'
+      import { existsSync, readFileSync, renameSync, writeFileSync, mkdirSync } from 'node:fs'
+      import { syncBuiltinESMExports } from 'node:module'
+      const root = ${JSON.stringify(f.releaseRoot)}
+      const target = root + '/.work/pack/home'
+      const originalLstat = fs.lstat
+      let injected = false
+      fs.lstat = async function(file, ...args) {
+        const result = await originalLstat.call(this, file, ...args)
+        if (!injected && String(file) === target) {
+          renameSync(target, ${JSON.stringify(path.join(f.temp, 'saved-pack-home'))})
+          mkdirSync(target, { mode: 0o700 }); writeFileSync(target + '/unowned', 'preserve')
+          injected = true
+        }
+        return result
+      }
+      syncBuiltinESMExports()
+      const api = await import(${JSON.stringify(pathToFileURL(path.join(f.root, 'scripts/verify-package.mjs')).href)})
+      let rejected = false
+      try { await api.createWorkbenchRelease(root) } catch { rejected = true }
+      process.stdout.write(JSON.stringify({ injected, rejected, replacementPreserved: existsSync(target + '/unowned') && readFileSync(target + '/unowned', 'utf8') === 'preserve' }))
+    `
+    const observed = await execFile(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', script], { cwd: f.root,
+      env: { PATH: process.env.PATH, npm_execpath: process.env.npm_execpath }, timeout: 30_000,
+    })
+    expect(JSON.parse(observed.stdout)).toEqual({ injected: true, rejected: true, replacementPreserved: true })
+  } finally { await rm(f.temp, { recursive: true, force: true }) }
+}, 60_000)
+
+test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each(['unlink', 'rmdir'] as const)('rejects C36 cleanup critical-section entry substitution and preserves the substitute: %s', async variant => {
+  const f = await releaseFixture()
+  try {
+    const summary = await f.module.createWorkbenchRelease(f.releaseRoot)
+    const script = `
+      import fs from 'node:fs/promises'
+      import { existsSync, readFileSync, renameSync, writeFileSync, mkdirSync, lstatSync } from 'node:fs'
+      import { syncBuiltinESMExports } from 'node:module'
+      const root = ${JSON.stringify(f.releaseRoot)}
+      const quarantine = root + '.cleanup-' + ${JSON.stringify(summary.releaseId)}
+      const variant = ${JSON.stringify(variant)}
+      const target = quarantine + (variant === 'unlink' ? '/receipt.json' : '')
+      const originalBytes = readFileSync(root + '/receipt.json')
+      const seam = variant === 'unlink' ? 'lstat' : 'readdir'
+      const originalRead = fs[seam]
+      let injected = false; let replacementIdentity; let reads = 0
+      fs[seam] = async function(file, ...args) {
+        const result = await originalRead.call(this, file, ...args)
+        const atEntry = variant === 'unlink' ? String(file) === target && ++reads === 7 : result.length === 0
+        if (!injected && String(file) === target && atEntry) {
+          renameSync(target, ${JSON.stringify(path.join(f.temp, 'saved-original'))})
+          if (variant === 'unlink') writeFileSync(target, originalBytes, { mode: 0o600, flag: 'wx' })
+          else mkdirSync(target, { mode: 0o700 })
+          const stat = lstatSync(target)
+          replacementIdentity = { dev: stat.dev, ino: stat.ino }
+          injected = true
+        }
+        return result
+      }
+      syncBuiltinESMExports()
+      const api = await import(${JSON.stringify(pathToFileURL(path.join(f.root, 'scripts/verify-package.mjs')).href)})
+      const capability = await api.readWorkbenchRelease({ releaseRoot: root, sourceCommit: ${JSON.stringify(summary.sourceCommit)}, receiptSha256: ${JSON.stringify(summary.receiptSha256)} })
+      let rejected = false
+      try { await api.cleanupWorkbenchRelease(capability) } catch { rejected = true }
+      const present = existsSync(target)
+      const stat = present ? lstatSync(target) : undefined
+      const replacementPreserved = present && stat.dev === replacementIdentity?.dev && stat.ino === replacementIdentity?.ino
+        && (variant === 'rmdir' ? stat.isDirectory() : readFileSync(target).equals(originalBytes))
+      process.stdout.write(JSON.stringify({ injected, rejected, replacementPreserved }))
+    `
+    const observed = await execFile(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', script], { cwd: f.root, timeout: 30_000 })
+    expect(JSON.parse(observed.stdout)).toEqual({ injected: true, rejected: true, replacementPreserved: true })
   } finally { await rm(f.temp, { recursive: true, force: true }) }
 }, 60_000)
 

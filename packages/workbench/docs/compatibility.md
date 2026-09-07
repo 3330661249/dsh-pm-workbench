@@ -20,3 +20,11 @@ Product state is stored in the Harness profile by design; package removal does
 not erase that state. Delete/remove is not secure erasure. Any later runtime
 observation must use the authorized isolated synthetic-data profile and its
 exact retained release artifact.
+
+Release creation and retirement require one trusted exclusive controller on
+Node 24 / macOS. Final identity checks and filesystem mutations run in
+synchronous namespace critical sections, including the bounded offline npm
+pack child. Substitutions at asynchronous boundaries remain checked against
+held file and ancestor identities. Concurrent non-cooperating same-UID mutation is outside this claim,
+as is replacing a trusted built-in inside a critical section. This cooperative
+exclusion assumption is not a secure-erasure guarantee.

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { constants } from 'node:fs'
-import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, rmdir, unlink, writeFile } from 'node:fs/promises'
+import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeSync } from 'node:fs'
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { execFile as execFileCallback } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -381,11 +381,76 @@ async function holdDirectories(directory) {
 }
 async function checkDirectories(entries) {
   for (const entry of entries) {
-    const handle = await entry.handle.stat({ bigint: true }); const atPath = await lstat(entry.path, { bigint: true })
+    const handle = entry.handle ? await entry.handle.stat({ bigint: true }) : fstatSync(entry.fd, { bigint: true }); const atPath = await lstat(entry.path, { bigint: true })
     if (!atPath.isDirectory() || atPath.isSymbolicLink() || !equalIdentity(entry.stat, handle) || !equalIdentity(entry.stat, atPath) || handle.mode !== entry.stat.mode) failRelease()
   }
 }
-async function closeDirectories(entries) { await Promise.all(entries.map(e => e.handle.close())) }
+async function closeDirectories(entries) { await Promise.all(entries.map(e => e.handle ? e.handle.close() : closeSync(e.fd))) }
+// C36: these trusted synchronous sections assume one exclusive controller, including its npm child.
+// They close every asynchronous seam; they do not claim protection from a hostile same-UID syscall race.
+function checkDirectoriesSync(entries) {
+  for (const entry of entries) {
+    const held = fstatSync(entry.handle ? entry.handle.fd : entry.fd, { bigint: true })
+    const atPath = lstatSync(entry.path, { bigint: true })
+    if (!held.isDirectory() || !atPath.isDirectory() || atPath.isSymbolicLink() || !equalIdentity(entry.stat, held)
+      || !equalIdentity(entry.stat, atPath) || held.mode !== entry.stat.mode || atPath.mode !== entry.stat.mode) failRelease()
+  }
+}
+function absentSync(target) {
+  try { lstatSync(target); failRelease() } catch (error) { if (error.code !== 'ENOENT') throw error }
+}
+function createDirectorySync(target, parents) {
+  checkDirectoriesSync(parents)
+  if (!parents.some(entry => entry.path === path.dirname(target))) failRelease()
+  mkdirSync(target, { mode: 0o700 })
+  const fd = openSync(target, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  try {
+    const stat = fstatSync(fd, { bigint: true }); const atPath = lstatSync(target, { bigint: true })
+    if (!stat.isDirectory() || !atPath.isDirectory() || !equalIdentity(stat, atPath) || Number(stat.mode & 0o7777n) !== 0o700) failRelease()
+    checkDirectoriesSync(parents)
+    return { path: target, fd, stat }
+  } catch (error) { closeSync(fd); throw error }
+}
+function readCheckedFileSync(target, maxBytes, mode) {
+  const fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  try {
+    const stat = fstatSync(fd, { bigint: true })
+    if (!stat.isFile() || stat.nlink !== 1n || stat.size < 0n || stat.size > BigInt(maxBytes) || Number(stat.mode & 0o7777n) !== mode) failRelease()
+    const bytes = Buffer.alloc(Number(stat.size)); let offset = 0
+    while (offset < bytes.length) { const count = readSync(fd, bytes, offset, bytes.length - offset, offset); if (!count) failRelease(); offset += count }
+    if (readSync(fd, Buffer.alloc(1), 0, 1, offset)) failRelease()
+    assertSameOpenFile(stat, fstatSync(fd, { bigint: true }), 'owned file')
+    assertSameOpenFile(stat, lstatSync(target, { bigint: true }), 'owned file')
+    return { bytes, stat }
+  } finally { closeSync(fd) }
+}
+function openNewFileSync(target, mode, parents) {
+  checkDirectoriesSync(parents)
+  if (!parents.some(entry => entry.path === path.dirname(target))) failRelease()
+  const fd = openSync(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_NONBLOCK, mode)
+  try {
+    const stat = fstatSync(fd, { bigint: true })
+    if (!stat.isFile() || stat.nlink !== 1n || stat.size !== 0n || Number(stat.mode & 0o7777n) !== mode) failRelease()
+    assertSameOpenFile(stat, lstatSync(target, { bigint: true }), 'new file')
+    checkDirectoriesSync(parents)
+    return { fd, stat }
+  } catch (error) { closeSync(fd); throw error }
+}
+function writeOpenedFileSync(target, file, bytes, parents) {
+  checkDirectoriesSync(parents)
+  assertSameOpenFile(file.stat, fstatSync(file.fd, { bigint: true }), 'new file')
+  assertSameOpenFile(file.stat, lstatSync(target, { bigint: true }), 'new file')
+  let offset = 0
+  while (offset < bytes.length) { const count = writeSync(file.fd, bytes, offset, bytes.length - offset, offset); if (!count) failRelease(); offset += count }
+  const stat = fstatSync(file.fd, { bigint: true })
+  if (!equalIdentity(file.stat, stat) || stat.nlink !== 1n || stat.size !== BigInt(bytes.length) || stat.mode !== file.stat.mode) failRelease()
+  assertSameOpenFile(stat, lstatSync(target, { bigint: true }), 'written file'); checkDirectoriesSync(parents)
+  return stat
+}
+function writeNewFileSync(target, bytes, mode, parents) {
+  const file = openNewFileSync(target, mode, parents)
+  try { return writeOpenedFileSync(target, file, bytes, parents) } finally { closeSync(file.fd) }
+}
 async function stableRead(file, maxBytes, mode, consume) {
   const ancestors = await holdDirectories(path.dirname(file))
   let handle
@@ -407,7 +472,7 @@ async function stableRead(file, maxBytes, mode, consume) {
     const after = await handle.stat({ bigint: true }); const atPath = await lstat(file, { bigint: true })
     assertSameOpenFile(before, after, 'file'); assertSameOpenFile(before, atPath, 'file')
     await checkDirectories(ancestors)
-    if (consume) await consume({ bytes, stat: before, ancestors })
+    if (consume) await consume({ bytes, stat: before, ancestors, handle })
     return { bytes, stat: before }
   } finally { await handle?.close(); await closeDirectories(ancestors) }
 }
@@ -654,7 +719,28 @@ async function removeVerifiedTree(root, records) {
     const target = item.path ? path.join(root, item.path) : root
     const stat = await lstat(target, { bigint: true })
     if (!exact(item.identity, directoryIdentity(stat)) || stat.isSymbolicLink()) failRelease()
-    if (item.directory) { if ((await readdir(target)).length !== 0) failRelease(); await rmdir(target) }
+    if (item.directory) {
+      const parents = await holdDirectories(path.dirname(target))
+      try {
+        if ((await readdir(target)).length !== 0) failRelease()
+        // The last async seam is above. Validate the held parents and target without yielding.
+        checkDirectoriesSync(parents)
+        for (const entry of parents) {
+          const relative = path.relative(root, entry.path)
+          if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+            const expected = records.find(record => record.directory && record.path === relative)
+            if (!expected || !exact(expected.identity, directoryIdentity(entry.stat)) || expected.mode !== Number(entry.stat.mode & 0o7777n)) failRelease()
+          }
+        }
+        const fd = openSync(target, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+        try {
+          const held = fstatSync(fd, { bigint: true }); const current = lstatSync(target, { bigint: true })
+          if (!held.isDirectory() || !current.isDirectory() || !exact(item.identity, directoryIdentity(held))
+            || !equalIdentity(held, current) || Number(held.mode & 0o7777n) !== item.mode || readdirSync(target).length !== 0) failRelease()
+          rmdirSync(target); absentSync(target); checkDirectoriesSync(parents)
+        } finally { closeSync(fd) }
+      } finally { await closeDirectories(parents) }
+    }
     else {
       // Keep both the opened file and its no-follow parent handles alive until unlink.
       await stableRead(target, MAX_PACKED_ARTIFACT_BYTES, item.mode, async file => {
@@ -669,24 +755,47 @@ async function removeVerifiedTree(root, records) {
         }
         await checkDirectories(file.ancestors)
         assertSameOpenFile(file.stat, await lstat(target, { bigint: true }), 'cleanup file')
-        await unlink(target)
-        await checkDirectories(file.ancestors)
+        checkDirectoriesSync(file.ancestors)
+        assertSameOpenFile(file.stat, fstatSync(file.handle.fd, { bigint: true }), 'cleanup file')
+        assertSameOpenFile(file.stat, lstatSync(target, { bigint: true }), 'cleanup file')
+        unlinkSync(target)
+        const removed = fstatSync(file.handle.fd, { bigint: true })
+        if (!equalIdentity(file.stat, removed) || removed.nlink !== 0n) failRelease()
+        absentSync(target); checkDirectoriesSync(file.ancestors)
       })
     }
   }
   await absent(root)
 }
+function quarantineTreeSync(root, quarantine, rootEntry, parents) {
+  checkDirectoriesSync(parents)
+  const rootStat = rootEntry.stat
+  const held = fstatSync(rootEntry.handle ? rootEntry.handle.fd : rootEntry.fd, { bigint: true })
+  const current = lstatSync(root, { bigint: true })
+  if (!current.isDirectory() || !held.isDirectory() || !equalIdentity(rootStat, held) || held.mode !== rootStat.mode
+    || !equalIdentity(rootStat, current) || current.mode !== rootStat.mode) failRelease()
+  absentSync(quarantine)
+  renameSync(root, quarantine)
+  const moved = lstatSync(quarantine, { bigint: true })
+  if (!moved.isDirectory() || !equalIdentity(rootStat, moved) || moved.mode !== rootStat.mode) failRelease()
+  absentSync(root); checkDirectoriesSync(parents)
+}
 export async function cleanupWorkbenchRelease(capability) {
   const data = await revalidateCapability(capability, false)
   const records = await inventoryTree(data.releaseRoot)
   const quarantine = `${data.releaseRoot}.cleanup-${data.receipt.releaseId}`
-  await absent(quarantine)
-  await revalidateCapability(capability, false)
-  await rename(data.releaseRoot, quarantine)
-  if (!exact(await inventoryTree(quarantine), records)) failRelease()
-  await removeVerifiedTree(quarantine, records)
-  await absent(data.releaseRoot)
-  capabilities.delete(capability)
+  const held = await holdDirectories(data.releaseRoot)
+  try {
+    const rootEntry = held.at(-1)
+    if (!equalIdentity(data.rootStat, rootEntry.stat) || data.rootStat.mode !== rootEntry.stat.mode) failRelease()
+    await absent(quarantine)
+    await revalidateCapability(capability, false)
+    quarantineTreeSync(data.releaseRoot, quarantine, rootEntry, held.slice(0, -1))
+    if (!exact(await inventoryTree(quarantine), records)) failRelease()
+    await removeVerifiedTree(quarantine, records)
+    await absent(data.releaseRoot)
+    capabilities.delete(capability)
+  } finally { await closeDirectories(held) }
 }
 
 export async function createWorkbenchRelease(releaseRoot) {
@@ -700,57 +809,66 @@ export async function createWorkbenchRelease(releaseRoot) {
     const sources = await snapshotSources(sourceCommit)
     await cleanCommit(sourceCommit)
     await checkDirectories(ancestors); await absent(releaseRoot)
-    await mkdir(releaseRoot, { mode: 0o700 })
-    const rootHandle = await open(releaseRoot, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY)
-    const rootStat = await rootHandle.stat({ bigint: true })
+    const rootEntry = createDirectorySync(releaseRoot, ancestors)
+    const rootStat = rootEntry.stat
     const releaseId = randomUUID()
     const marker = { schemaVersion: 1, owner: packageName, releaseId, sourceCommit, rootIdentity: directoryIdentity(rootStat) }
     const markerBytes = Buffer.from(canonicalJson(marker))
-    owned = { rootHandle, rootStat, releaseId, markerBytes, markerReady: false, directories: [] }
-    await writeFile(path.join(releaseRoot, '.owner.json'), markerBytes, { flag: 'wx', mode: 0o600 })
+    owned = { rootEntry, rootStat, releaseId, markerBytes, markerReady: false, directories: [] }
+    const ownedParents = () => [...ancestors, rootEntry, ...owned.directories]
+    owned.markerStat = writeNewFileSync(path.join(releaseRoot, '.owner.json'), markerBytes, 0o600, ownedParents())
     owned.markerReady = true
     const assertOwned = async () => {
       await checkDirectories(ancestors)
-      const current = await lstat(releaseRoot, { bigint: true }); const held = await rootHandle.stat({ bigint: true })
+      const current = await lstat(releaseRoot, { bigint: true }); const held = fstatSync(rootEntry.fd, { bigint: true })
       if (!current.isDirectory() || !equalIdentity(rootStat, current) || !equalIdentity(rootStat, held) || Number(current.mode & 0o7777n) !== 0o700) failRelease()
       const currentMarker = await stableRead(path.join(releaseRoot, '.owner.json'), 4096, 0o600)
       if (!currentMarker.bytes.equals(markerBytes)) failRelease()
+      assertSameOpenFile(owned.markerStat, currentMarker.stat, 'owner marker')
       await checkDirectories(owned.directories)
     }
+    const assertOwnedSync = () => {
+      checkDirectoriesSync(ownedParents())
+      const marker = readCheckedFileSync(path.join(releaseRoot, '.owner.json'), 4096, 0o600)
+      assertSameOpenFile(owned.markerStat, marker.stat, 'owner marker')
+      if (!marker.bytes.equals(markerBytes)) failRelease()
+    }
     owned.assertOwned = assertOwned
-    const retainDirectory = async target => {
+    const retainDirectory = async (target, expectedStat) => {
       await assertOwned()
       if (path.resolve(target) !== target || owned.directories.some(entry => entry.path === target)
         || (path.dirname(target) !== releaseRoot && !owned.directories.some(entry => entry.path === path.dirname(target)))) failRelease()
-      const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY | constants.O_NONBLOCK)
+      assertOwnedSync()
+      const fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY | constants.O_NONBLOCK)
       let retained = false
       try {
-        const stat = await handle.stat({ bigint: true }); const atPath = await lstat(target, { bigint: true })
-        if (!stat.isDirectory() || !atPath.isDirectory() || atPath.isSymbolicLink() || !equalIdentity(stat, atPath) || Number(stat.mode & 0o7777n) !== 0o700) failRelease()
-        owned.directories.push({ path: target, handle, stat }); retained = true
+        const stat = fstatSync(fd, { bigint: true }); const atPath = lstatSync(target, { bigint: true })
+        if (!expectedStat || !equalIdentity(expectedStat, stat) || expectedStat.mode !== stat.mode
+          || !stat.isDirectory() || !atPath.isDirectory() || atPath.isSymbolicLink() || !equalIdentity(stat, atPath) || Number(stat.mode & 0o7777n) !== 0o700) failRelease()
+        owned.directories.push({ path: target, fd, stat }); retained = true
         await assertOwned()
-      } finally { if (!retained) await handle.close() }
+      } catch (error) { owned.ownershipLost = true; throw error }
+      finally { if (!retained) closeSync(fd) }
     }
     const mkdirOwned = async target => {
       await assertOwned()
-      await mkdir(target, { mode: 0o700 })
-      await retainDirectory(target)
+      assertOwnedSync()
+      owned.directories.push(createDirectorySync(target, ownedParents()))
     }
     const writeStagedFile = async (target, bytes) => {
       await assertOwned()
       if (!owned.directories.some(entry => entry.path === path.dirname(target))) failRelease()
-      const handle = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o644)
+      assertOwnedSync()
+      const file = openNewFileSync(target, 0o644, ownedParents())
       try {
-        const before = await handle.stat({ bigint: true })
-        if (!before.isFile() || before.nlink !== 1n || before.size !== 0n || Number(before.mode & 0o7777n) !== 0o644) failRelease()
         await assertOwned()
-        assertSameOpenFile(before, await lstat(target, { bigint: true }), 'staged file')
-        await handle.writeFile(bytes)
-        const after = await handle.stat({ bigint: true })
-        if (!equalIdentity(before, after) || after.size !== BigInt(bytes.length) || after.nlink !== 1n) failRelease()
+        assertOwnedSync()
+        const after = writeOpenedFileSync(target, file, bytes, ownedParents())
         await assertOwned()
-        assertSameOpenFile(after, await lstat(target, { bigint: true }), 'staged file')
-      } finally { await handle.close() }
+        assertOwnedSync()
+        assertSameOpenFile(after, fstatSync(file.fd, { bigint: true }), 'staged file')
+        assertSameOpenFile(after, lstatSync(target, { bigint: true }), 'staged file')
+      } finally { closeSync(file.fd) }
     }
     await assertOwned()
     const work = path.join(releaseRoot, '.work'); await mkdirOwned(work)
@@ -775,18 +893,8 @@ export async function createWorkbenchRelease(releaseRoot) {
     const { runNpmPack } = await import('./pack-dry.mjs')
     await assertOwned()
     // Exactly one real offline/no-script pack of the frozen nine files.
-    const controller = new AbortController()
-    let ownershipFailure = false
-    let checkPending = Promise.resolve()
-    const monitor = setInterval(() => {
-      checkPending = checkPending.then(assertOwned).catch(() => { ownershipFailure = true; controller.abort() })
-    }, 100)
-    let packed
-    try {
-      packed = await runNpmPack({ nodeExecutable: await realpath(process.execPath), npmCliPath: await realpath(npmCliPath), stagedPackageRoot: stagedRoot, operationRoot, dryRun: false,
-        ownershipGuard: async createdDirectory => { await assertOwned(); if (createdDirectory) await retainDirectory(createdDirectory); await assertOwned() }, signal: controller.signal })
-    } finally { clearInterval(monitor); await checkPending }
-    if (ownershipFailure) failRelease()
+    const packed = await runNpmPack({ nodeExecutable: await realpath(process.execPath), npmCliPath: await realpath(npmCliPath), stagedPackageRoot: stagedRoot, operationRoot, dryRun: false,
+      ownershipGuard: async (createdDirectory, createdStat) => { await assertOwned(); if (createdDirectory) await retainDirectory(createdDirectory, createdStat); await assertOwned() } })
     await assertOwned()
     const artifact = await stableRead(packed.tgzAbsolutePath, MAX_PACKED_ARTIFACT_BYTES)
     const members = inspectWorkbenchArchive(artifact.bytes, packed.metadata, frozen)
@@ -803,15 +911,16 @@ export async function createWorkbenchRelease(releaseRoot) {
       tgz: { filename: packageFilename, bytes: artifact.bytes.length, sha256: sha256(artifact.bytes) },
     }
     const receiptBytes = Buffer.from(canonicalJson(receipt)); validateReleaseReceipt(receiptBytes); validateReceiptArchive(receipt, artifact.bytes)
-    await assertOwned(); await writeFile(path.join(releaseRoot, packageFilename), artifact.bytes, { flag: 'wx', mode: 0o600 })
+    await assertOwned(); assertOwnedSync(); writeNewFileSync(path.join(releaseRoot, packageFilename), artifact.bytes, 0o600, ownedParents())
     if (!equalIdentity(owned.workStat, await lstat(work, { bigint: true }))) failRelease()
     const transient = await inventoryTree(work); await assertOwned(); await removeVerifiedTree(work, transient)
     await closeDirectories(owned.directories); owned.directories = []
     // Source and HEAD binding are rechecked immediately before the closed receipt is published.
     await recheckSources(sources, sourceCommit, assertOwned); await cleanCommit(sourceCommit, assertOwned)
-    await assertOwned(); await writeFile(path.join(releaseRoot, 'receipt.json'), receiptBytes, { flag: 'wx', mode: 0o600 })
+    await assertOwned(); assertOwnedSync(); writeNewFileSync(path.join(releaseRoot, 'receipt.json'), receiptBytes, 0o600, ownedParents())
     owned.finalEvidence = { releaseRoot, sourceCommit, receiptSha256: sha256(receiptBytes) }
-    await assertOwned(); await unlink(path.join(releaseRoot, '.owner.json')); owned.final = true
+    await assertOwned(); assertOwnedSync()
+    unlinkSync(path.join(releaseRoot, '.owner.json')); absentSync(path.join(releaseRoot, '.owner.json')); owned.final = true
     const receiptSha256 = sha256(receiptBytes)
     await readReleaseGeneration({ releaseRoot, sourceCommit, receiptSha256 })
     return Object.freeze({ status: 'verified', kind: 'release', releaseId, sourceCommit, tgzSha256: receipt.tgz.sha256, receiptSha256 })
@@ -819,17 +928,18 @@ export async function createWorkbenchRelease(releaseRoot) {
     if (owned?.final && owned.finalEvidence) {
       try { await cleanupWorkbenchRelease(capabilityFor(await readReleaseGeneration(owned.finalEvidence, false))) } catch { /* Preserve substituted final generations. */ }
     }
-    if (owned?.markerReady && !owned.final) {
+    if (owned?.markerReady && !owned.final && !owned.ownershipLost) {
       try {
         await owned.assertOwned?.()
         const records = await inventoryTree(releaseRoot)
         const quarantine = `${releaseRoot}.cleanup-${owned.releaseId}`
-        await absent(quarantine); await owned.assertOwned?.(); await rename(releaseRoot, quarantine)
+        await absent(quarantine); await owned.assertOwned?.()
+        quarantineTreeSync(releaseRoot, quarantine, owned.rootEntry, ancestors)
         await removeVerifiedTree(quarantine, records)
       } catch { /* A substituted or unowned generation is preserved. */ }
     }
     failRelease()
-  } finally { if (owned) { await closeDirectories(owned.directories); await owned.rootHandle.close() }; if (ancestors) await closeDirectories(ancestors) }
+  } finally { if (owned) { await closeDirectories(owned.directories); closeSync(owned.rootEntry.fd) }; if (ancestors) await closeDirectories(ancestors) }
 }
 
 async function runVerifierCli() {
