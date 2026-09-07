@@ -1429,6 +1429,26 @@ describe('Stage 2 browser and listener guards', () => {
       .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(3)
   })
 
+  it('keeps onboarding stable by backend identity when AX node ids are reassigned', async () => {
+    let clicked = false
+    const fixture = onboardingFixture({
+      readAx: ({ readCount }) => clicked
+        ? axTree()
+        : axTree(...apiDialog({
+            dialogId: `api-dialog-${readCount}`,
+            buttonId: `later-button-${readCount}`,
+            buttonParentId: `api-dialog-${readCount}`,
+          })),
+      onRelease: () => { clicked = true },
+    })
+
+    await prepareOnboarding(fixture)
+
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(1)
+  })
+
   it('handles a known onboarding alertdialog with the same exact action boundary', async () => {
     let dismissed = false
     const fixture = onboardingFixture({
@@ -1995,6 +2015,31 @@ describe('Stage 2 browser and listener guards', () => {
       method === 'DOM.getBoxModel' && params?.backendNodeId === backendNodeId)).toBe(true)
   })
 
+  it('keeps the workbench overlay stable by backend identity when its AX node id is reassigned', async () => {
+    const fixture = onboardingFixture({
+      readAx: ({ readCount }) => axTree(
+        axNode(`workbench-dialog-${readCount}`, 'dialog', 'PM Workbench 探针', {
+          parentId: 'root', backendDOMNodeId: 300,
+        }),
+        axNode(`increment-button-${readCount}`, 'button', '写入 +1', {
+          parentId: `workbench-dialog-${readCount}`, backendDOMNodeId: 101,
+        }),
+      ),
+      markerNodeIds: ({ selector }) => {
+        if (selector === '[data-dsh-pm-workbench="overlay"]') return [30]
+        if (selector === '[data-dsh-pm-workbench="increment"]') return [11]
+        return []
+      },
+      markerBackendDOMNodeId: (nodeId) => nodeId === 30 ? 300 : 101,
+    })
+
+    await clickMarkerSafely(fixture, 'increment')
+
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(1)
+  })
+
   it('rejects an unknown active modal beside the marked workbench dialog before pointer input', async () => {
     const fixture = onboardingFixture({
       readAx: () => axTree(
@@ -2063,6 +2108,21 @@ describe('Stage 2 browser and listener guards', () => {
     ])
     expect(fixture.send.mock.calls
       .filter(([method]) => method === 'Accessibility.getFullAXTree').length).toBeGreaterThan(2)
+  })
+
+  it('keeps a marker stable by backend identity when DOM.getDocument reassigns frontend node ids', async () => {
+    let nextNodeId = 10
+    const fixture = onboardingFixture({
+      readAx: () => axTree(),
+      markerNodeIds: () => [nextNodeId++],
+      markerBackendDOMNodeId: () => 100,
+    })
+
+    await clickMarkerSafely(fixture)
+
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(1)
   })
 
   it('rejects a duplicate plugin marker without pointer input', async () => {

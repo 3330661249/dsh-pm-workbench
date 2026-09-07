@@ -2369,7 +2369,7 @@ function inspectRc6OnboardingTree(response, mainFrameId, activeDom, { allowWorkb
       interactionDialogBackendNodeId: overlayBackendNodeId,
       nodeById,
       nodes: response.nodes,
-      modalSignature: `workbench-overlay:${overlayModal.nodeId}:${overlayBackendNodeId}`,
+      modalSignature: `workbench-overlay:${overlayBackendNodeId}`,
     })
   }
   if (workbenchOverlayBackendNodeIds.size > 0) return undefined
@@ -2455,7 +2455,7 @@ function inspectRc6OnboardingTree(response, mainFrameId, activeDom, { allowWorkb
     interactionDialogBackendNodeId: undefined,
     nodeById,
     nodes: response.nodes,
-    modalSignature: `${dialogIndex}:${modal.nodeId}:${dialogBackendNodeId}:${action.nodeId}:${actionBackendNodeId}:${axPropertyIsTrue(action, 'disabled') ? 0 : 1}`,
+    modalSignature: `${dialogIndex}:${dialogBackendNodeId}:${actionBackendNodeId}:${axPropertyIsTrue(action, 'disabled') ? 0 : 1}`,
   })
 }
 
@@ -2880,7 +2880,6 @@ async function captureReadyTarget(peer, sessionId, mainFrameId, onboarding, {
       onboarding.modalSignature,
       kind,
       dialogIndex ?? '',
-      nodeId ?? '',
       targetBackendNodeId,
       dialogBackendNodeId ?? '',
       point.geometrySignature,
