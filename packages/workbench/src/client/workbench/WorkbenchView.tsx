@@ -48,6 +48,7 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
   const [materialReading, setMaterialReading] = useState(false)
   const [createDialog, setCreateDialog] = useState(false), [deleteDialog, setDeleteDialog] = useState(false), [discardDialog, setDiscardDialog] = useState(false)
   const actionLatch = useRef(false), activeActions = useRef(0), prdRequest = useRef(0), recoveryRequest = useRef(0), exportRequest = useRef(0)
+  const errorOwner = useRef(0)
   const selection = useRef({ id: state.selectedProjectId, open: state.isOpen, generation: 0 })
   if (selection.current.id !== state.selectedProjectId || selection.current.open !== state.isOpen) {
     selection.current = { id: state.selectedProjectId, open: state.isOpen, generation: selection.current.generation + 1 }
@@ -59,14 +60,20 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
     setReview({ token, dirty: current.dirtyRevision, saved: current.savedDraftRevision, generation: selection.current.generation })
   }
   const sectionRefs = useRef<Array<HTMLElement | null>>([]), sectionId = useId()
-  function report(result: ActionResult) { setError(result.ok ? undefined : storeErrorText(result.code)) }
+  function ownAlert() {
+    const owner = ++errorOwner.current, captured = selection.current
+    return (message?: string) => {
+      if (owner === errorOwner.current && selectedStill(captured.id) && selection.current.generation === captured.generation) setError(message)
+    }
+  }
+  function report(result: ActionResult, update = ownAlert()) { update(result.ok ? undefined : storeErrorText(result.code)) }
   async function run(work: () => Promise<ActionResult>, latest: () => boolean = () => true) {
-    const captured = selection.current
-    activeActions.current++; setPending(activeActions.current); setError(undefined)
+    const captured = selection.current, update = ownAlert()
+    activeActions.current++; setPending(activeActions.current); update(undefined)
     const current = () => store.getSnapshot().isOpen && store.getSnapshot().selectedProjectId === captured.id
       && selection.current.generation === captured.generation && latest()
-    try { const result = await work(); if (current()) report(result) }
-    catch { if (current()) setError('工作台暂时无法连接') }
+    try { const result = await work(); if (current()) report(result, update) }
+    catch { if (current()) update('工作台暂时无法连接') }
     finally { activeActions.current--; setPending(activeActions.current) }
   }
   function mutate(work: () => Promise<ActionResult>, latest?: () => boolean) {
@@ -231,13 +238,16 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
         {['材料', '需求', '优先级', 'PRD'].map((label, index) => <section key={index} tabIndex={-1} aria-labelledby={`${sectionId}-${index}`} ref={node => { sectionRefs.current[index] = node }}>
           <h2 id={`${sectionId}-${index}`}>{label}</h2>
           {index === 0 && <MaterialPane store={store} state={state} pending={pending > 0} onResult={report} onReading={setMaterialReading}
-            onReadError={() => setError('材料读取失败，请检查 TXT 或 Markdown 文件及 UTF-8 编码后重试')}
+            onReadStart={() => { const update = ownAlert(); update(undefined); return {
+              onResult: result => report(result, update),
+              onReadError: () => update('材料读取失败，请检查 TXT 或 Markdown 文件及 UTF-8 编码后重试'),
+            } }}
             onSave={() => mutate(async () => { const result = await store.importMaterial(); if (!result.ok) return result; return store.loadSource() })}
             onAnalyse={() => mutate(() => localCommand('analysis.runFixture'))} />}
           {index === 1 && <RequirementsPane store={store} state={state} pending={pending > 0} onResult={report}
             onSave={saveRequirements} onEvidence={() => { void run(() => store.loadSource()) }} />}
           {index === 2 && <PriorityPane state={state} confirmation={confirmation} pending={pending > 0} onConfirm={confirm}
-            onReview={() => { const token = store.prepareConfirmation(); displayConfirmation(token); setError(token.ok ? undefined : storeErrorText(token.reason)) }} />}
+            onReview={() => { const token = store.prepareConfirmation(); displayConfirmation(token); report(token.ok ? done : { ok: false, code: token.reason }) }} />}
           {index === 3 && <PrdPane state={state} onSelect={selectPrd} onCopy={() => exportPrd(false)} onDownload={() => exportPrd(true)} />}
         </section>)}
       </> : <p>请选择或新建一个合成测试项目。</p>}</main>

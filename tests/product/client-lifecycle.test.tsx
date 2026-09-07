@@ -576,4 +576,50 @@ describe('Product lifecycle and real store handlers', () => {
     expect(ui.all('overlay')).toHaveLength(1); expect(h.store.getSnapshot().isOpen).toBe(true)
     dispose()
   })
+  it.each(['save-material', 'synthetic-attestation'] as const)('refuses retained %s handlers from an unmounted material pane after reopen', async marker => {
+    const h = await setup({ empty: true }); const draft = await readMaterialDraft({ kind: 'paste', text: BUILT_IN_SYNTHETIC_TEXT, displayName: 'old.txt' })
+    h.store.setMaterialDraft(draft, true); const ui = h.ui(); await ui.settle()
+    expect(ui.one('save-material').props.disabled).toBe(false)
+    const old = ui.one(marker), event = marker === 'save-material' ? 'onClick' : 'onChange'
+    ui.click('close'); ui.render(); expect(ui.all('material-input')).toHaveLength(0)
+    await h.store.open(); await ui.settle()
+    const gate = deferred(), digest = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle)
+    vi.spyOn(globalThis.crypto.subtle, 'digest').mockImplementationOnce(async (algorithm, data) => { await gate.promise; return digest(algorithm, data) })
+    const reading = vi.spyOn(materialInput, 'readMaterialDraft'), importing = vi.spyOn(h.store, 'importMaterial')
+    ui.fire('material-input', 'onChange', { value: '重新打开后正在输入的新合成材料' }); ui.render()
+    expect(ui.one('material-input').props.value).toBe('重新打开后正在输入的新合成材料')
+    old.props[event]({ currentTarget: { checked: false } })
+    expect.soft(importing).not.toHaveBeenCalled()
+    expect.soft(h.store.getSnapshot().importAttested).toBe(true)
+    await Promise.all(importing.mock.results.map(result => result.value))
+    gate.resolve(); await reading.mock.results[0]!.value; await ui.settle()
+    expect(h.commands).toHaveLength(0); expect(h.record().source).toBeNull()
+    expect(h.store.getSnapshot().materialDraft?.text).toBe('重新打开后正在输入的新合成材料')
+    expect(ui.one('material-input').props.value).toBe('重新打开后正在输入的新合成材料')
+  })
+  it.each(['copy-prd', 'download-prd'] as const)('keeps a newer source-read error when an older %s succeeds on the same PRD', async marker => {
+    const entered = deferred(), gate = deferred()
+    const exporting = async () => { entered.resolve(); await gate.promise }
+    const h = await withPrdHistory(marker === 'copy-prd' ? { writeClipboard: exporting } : { clickDownload: exporting })
+    const { ui, second } = h
+    const completion = vi.spyOn(h.store, marker === 'copy-prd' ? 'copySelectedMarkdown' : 'downloadSelectedMarkdown')
+    ui.click(marker); await entered.promise
+    h.intercept(async (endpoint, _input, next) => endpoint === 'sources.get' ? { ok: false, error: { code: 'internal', message: 'NEW_SOURCE_PRIVATE_CANARY', details: {} } } : next())
+    ui.clickText('查看原文'); await ui.settle(() => ui.text().includes('工作台暂时无法连接'))
+    gate.resolve(); await completion.mock.results[0]!.value; await ui.settle()
+    expect(ui.text()).toContain('工作台暂时无法连接'); expect(ui.text()).not.toContain('NEW_SOURCE_PRIVATE_CANARY')
+    expect(ui.one('prd-preview').props['data-prd-revision-id']).toBe(second.id)
+  })
+  it.each(['copy-prd', 'download-prd'] as const)('ignores an older %s failure after a newer source read succeeds on the same PRD', async marker => {
+    const entered = deferred(), gate = deferred()
+    const exporting = async () => { entered.resolve(); await gate.promise; throw new Error('OLD_EXPORT_PRIVATE_CANARY') }
+    const h = await withPrdHistory(marker === 'copy-prd' ? { writeClipboard: exporting } : { clickDownload: exporting })
+    const { ui, second } = h
+    const completion = vi.spyOn(h.store, marker === 'copy-prd' ? 'copySelectedMarkdown' : 'downloadSelectedMarkdown'), source = vi.spyOn(h.store, 'loadSource')
+    ui.click(marker); await entered.promise; ui.clickText('查看原文'); await source.mock.results[0]!.value; ui.render()
+    expect(ui.nodes().filter(node => node.props.role === 'alert')).toHaveLength(0)
+    gate.resolve(); await completion.mock.results[0]!.value; await ui.settle()
+    expect(ui.nodes().filter(node => node.props.role === 'alert')).toHaveLength(0); expect(ui.text()).not.toContain('OLD_EXPORT_PRIVATE_CANARY')
+    expect(ui.one('prd-preview').props['data-prd-revision-id']).toBe(second.id)
+  })
 })

@@ -3,33 +3,38 @@ import { BUILT_IN_SYNTHETIC_TEXT } from '../../analysis/fixture-manifest.js'
 import { readMaterialDraft, type MaterialDraft, type MaterialInput } from './material-input.js'
 import type { StoreResult, WorkbenchState, WorkbenchStore } from './store.js'
 
-export function MaterialPane({ store, state, pending, onResult, onReadError, onReading, onSave, onAnalyse }: {
+export function MaterialPane({ store, state, pending, onResult, onReadStart, onReading, onSave, onAnalyse }: {
   store: WorkbenchStore; state: WorkbenchState; pending: boolean
-  onResult(result: StoreResult<unknown>): void; onReadError(): void; onReading(reading: boolean): void; onSave(): void; onAnalyse(): void
+  onResult(result: StoreResult<unknown>): void
+  onReadStart(): { onResult(result: StoreResult<unknown>): void; onReadError(): void }
+  onReading(reading: boolean): void; onSave(): void; onAnalyse(): void
 }) {
-  const id = useId(), generation = useRef(0), [reading, setReading] = useState(false)
+  const id = useId(), generation = useRef(0), alive = useRef(true), [reading, setReading] = useState(false)
   const [edit, setEdit] = useState<{ text: string; verified?: MaterialDraft }>(() => ({ text: state.materialDraft?.text ?? '', verified: state.materialDraft }))
   const visibleEdit = useRef(edit)
   function display(next: typeof edit) { visibleEdit.current = next; setEdit(next) }
   useEffect(() => {
+    alive.current = true
     display({ text: state.materialDraft?.text ?? '', verified: state.materialDraft }); setReading(false); onReading(false)
-    return () => { generation.current++; onReading(false) }
+    return () => { alive.current = false; generation.current++; visibleEdit.current = { text: visibleEdit.current.text }; onReading(false) }
   }, [state.selectedProjectId, state.isOpen, state.materialDraft])
+  function live() { const current = store.getSnapshot(); return alive.current && current.isOpen && current.selectedProjectId === state.selectedProjectId }
   async function read(input: MaterialInput) {
-    const request = ++generation.current, projectId = state.selectedProjectId
+    if (!live()) return
+    const request = ++generation.current, feedback = onReadStart()
     // The controlled value must follow the input synchronously, before hashing.
     // Clearing this ref also refuses a save handler retained from an older render.
     display({ text: input.kind === 'paste' ? input.text : visibleEdit.current.text })
     setReading(true); onReading(true)
-    const current = () => request === generation.current && store.getSnapshot().isOpen && store.getSnapshot().selectedProjectId === projectId
+    const current = () => request === generation.current && live()
     try {
       const draft = await readMaterialDraft(input)
       if (current()) {
         const result = store.setMaterialDraft(draft, false)
         if (result.ok) display({ text: draft.text, verified: draft })
-        onResult(result)
+        feedback.onResult(result)
       }
-    } catch { if (current()) onReadError() }
+    } catch { if (current()) feedback.onReadError() }
     finally { if (current()) { setReading(false); onReading(false) } }
   }
   const source = state.selectedProject?.source
@@ -37,7 +42,7 @@ export function MaterialPane({ store, state, pending, onResult, onReadError, onR
   const locked = !!source || pending || state.saveState === 'uncertain'
   function validated() {
     const current = store.getSnapshot(), value = visibleEdit.current
-    return current.isOpen && current.selectedProjectId === state.selectedProjectId && !current.selectedProject?.source
+    return live() && !current.selectedProject?.source
       && current.saveState !== 'uncertain' && !!value.verified && value.verified === current.materialDraft && value.text === value.verified.text
   }
   return <>
@@ -50,6 +55,7 @@ export function MaterialPane({ store, state, pending, onResult, onReadError, onR
     <label id={`${id}-file`} htmlFor={`${id}-file-input`}>导入 TXT 或 Markdown 文件（UTF-8）</label>
     <input id={`${id}-file-input`} aria-labelledby={`${id}-file`} type="file" accept=".txt,.md,text/plain,text/markdown"
       data-dsh-pm-workbench="material-file" disabled={locked} onChange={event => {
+        if (!live()) return
         const file = event.currentTarget.files?.[0]
         if (file && !locked) void read({ kind: 'file', file })
         event.currentTarget.value = ''
@@ -64,7 +70,7 @@ export function MaterialPane({ store, state, pending, onResult, onReadError, onR
     <p data-dsh-pm-workbench="source-status" data-source-revision-id={source?.sourceRevisionId}>{source ? '材料已保存，正文已锁定' : '材料尚未保存'}</p>
     {persisted && <pre data-dsh-pm-workbench="source-text">{persisted.text}</pre>}
     <button type="button" data-dsh-pm-workbench="analyse-fixture" disabled={!source || pending || state.saveState !== 'saved' || state.selectedProject?.header.reviewStarted}
-      onClick={onAnalyse}>生成本地测试草稿</button>
+      onClick={() => { if (live()) onAnalyse() }}>生成本地测试草稿</button>
     <p className="pmwb-notice">本地 Fixture 结果，未调用模型，不代表 AI 分析</p>
   </>
 }
