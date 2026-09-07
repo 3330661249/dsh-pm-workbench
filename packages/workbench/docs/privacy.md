@@ -1,18 +1,21 @@
 # Privacy
 
-The implemented Probe is synthetic-only. Its Client sends either an empty
-`health` request or a bounded `counter.increment` request containing only the
-fixed API version, a non-negative expected version, a random UUID v4 command
-identifier and `delta: 1`. There is no free-text field.
+Stage 3A uses one built-in synthetic Fixture, makes no model call and does not
+accept real interview/customer data. Synthetic source text and human edits are
+bounded and validated. Do not enter personal, customer or confidential content.
+Stage 3B model execution is unimplemented.
 
-The Host source is limited to a synthetic integer counter, aggregate version and
-bounded idempotency receipts. It does not read a Harness workspace, session,
-conversation, file, interview, transcript, recording, identity, credential,
-provider response, prompt or model output, and it makes no model call. Strict
-schemas and closed Client errors are designed not to echo payloads, paths,
-credentials or stack traces.
+The Host owns Product state in the Harness profile. The Client keeps transient
+drafts and communicates through the six strict Product RPC endpoints. It does
+not persist Product drafts in browser storage. The implementation does not read
+Harness workspace sessions, credentials or provider responses. Public outer
+Connection failures use the fixed `internal` carrier; the Client ignores raw
+carrier messages and details.
 
-Real Harness loading and persistence have not yet been observed, so this is a
-source boundary rather than a runtime privacy certification. Use only synthetic,
-non-identifying data. Any model integration or real interview data flow requires
-a separate implementation scope, privacy review and gate.
+Product profile data is intended to survive package removal. Delete/remove is
+not secure erasure, and removing the plugin does not claim to delete profile
+storage. Task 11 checks only the static code graph and exact package bytes;
+actual restart persistence and removal/re-add behavior await Task 12.
+
+These implementation constraints are not a runtime privacy certification.
+Historical Stage 2 and Task 3 artifacts establish only their own recorded scope.

@@ -5,8 +5,7 @@ import { expect, test } from 'vitest'
 import {
   assertClientProbeBuildGraph,
   assertHostProbeBuildGraph,
-  buildWorkbench,
-} from '../../packages/workbench/build.mjs'
+} from './helpers/stage2-build-graph.js'
 
 const repositoryRoot = path.resolve(import.meta.dirname, '../..')
 
@@ -97,37 +96,28 @@ test('rejects Host, Node-shim, and storage implementation inputs from the Client
   }
 })
 
-test('bundles Zod but no Harness runtime and records closed Host and Client graphs', async () => {
-  const tempRoot = path.join(repositoryRoot, '.tmp', 'dsh-pm-workbench')
-  await mkdir(tempRoot, { recursive: true })
-  const fixture = await mkdtemp(path.join(tempRoot, 'probe-build-'))
-  const outdir = path.join(fixture, 'lib')
-
-  try {
-    const result = await buildWorkbench({ outdir })
-    expect(await filesUnder(outdir)).toEqual(['client.js', 'index.js'])
-
-    const hostInputs = bundledInputs(result.hostMetafile)
-    const clientInputs = bundledInputs(result.clientMetafile)
-    for (const inputs of [hostInputs, clientInputs]) {
-      expect(inputs.some((input) => input.includes('node_modules/zod/'))).toBe(true)
-      expect(inputs.some((input) => input.includes('node_modules/@deepseek-ai/'))).toBe(false)
-    }
-
-    const hostExternals = externalImports(result.hostMetafile)
-    const clientExternals = externalImports(result.clientMetafile)
-    expect(hostExternals.length).toBeGreaterThan(0)
-    expect(clientExternals.length).toBeGreaterThan(0)
-    expect(hostExternals.every(isHostExternal)).toBe(true)
-    expect(clientExternals.every(isClientExternal)).toBe(true)
-    expect([...hostExternals, ...clientExternals]).not.toContain('zod')
-    expect(clientExternals.some((specifier) => specifier.startsWith('node:'))).toBe(false)
-
-    const host = await readFile(path.join(outdir, 'index.js'), 'utf8')
-    const client = await readFile(path.join(outdir, 'client.js'), 'utf8')
-    expect(`${host}\n${client}`).not.toMatch(/(?:from\s*['"]zod['"]|require\(\s*['"]zod['"]\s*\))/)
-    expect(client).toContain('window.__ModuleLoader__.load')
-  } finally {
-    await rm(fixture, { recursive: true, force: true })
+test('accepts the complete frozen Stage 2 synthetic Host and Client graphs', () => {
+  const host = syntheticMetafile([
+    'packages/workbench/src/config.ts',
+    'packages/workbench/src/index.ts',
+    'packages/workbench/src/integration/harness-rc6/probe-host.ts',
+    'packages/workbench/src/probe/protocol.ts',
+    'packages/workbench/src/probe/service.ts',
+    'node_modules/zod/index.js',
+  ])
+  const client = syntheticMetafile([
+    'packages/workbench/src/client/index.tsx',
+    'packages/workbench/src/client/probe/ProbeView.tsx',
+    'packages/workbench/src/client/probe/store.ts',
+    'packages/workbench/src/client/probe/transport.ts',
+    'packages/workbench/src/probe/protocol.ts',
+    'node_modules/zod/index.js',
+  ])
+  host.outputs['synthetic-output.js']!.entryPoint = 'packages/workbench/src/index.ts'
+  client.outputs['synthetic-output.js']!.entryPoint = 'packages/workbench/src/client/index.tsx'
+  for (const graph of [host, client]) {
+    graph.outputs['synthetic-output.js']!.inputs = Object.fromEntries(Object.keys(graph.inputs).map(input => [input, { bytesInOutput: 1 }]))
   }
+  expect(() => assertHostProbeBuildGraph(host)).not.toThrow()
+  expect(() => assertClientProbeBuildGraph(client)).not.toThrow()
 })

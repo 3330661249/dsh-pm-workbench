@@ -8,30 +8,27 @@ manager could organize evidence from product discovery through requirement
 analysis, prioritization, and later POC planning inside a DeepSeek Harness
 extension.
 
-The long-term Harness workflow is a product direction. The standalone browser
-Demo and a bounded synthetic Harness Probe now exist in source; neither by
-itself establishes real Harness runtime compatibility.
+## Current Stage 3A Product source and static package
 
-## Current Harness source implementation: Stage 2 synthetic Probe
+The current production graph implements the synthetic materials → requirements
+→ priority review → PRD workflow through one Product Connection channel,
+`/dsh-pm-workbench-product-v1`, a Host-owned project aggregate, and an additive
+Client launcher and overlay. It uses one built-in synthetic Fixture, makes no
+model call, and does not accept real interview/customer data. Stage 3B model
+execution is unimplemented. Product state is stored in the Harness profile by
+design; delete/remove is not secure erasure.
 
-The Harness package source now implements a bounded, synthetic integration
-Probe. Its Host graph owns a strict two-endpoint registry for `health` and
-`counter.increment`, a `storageDomain` aggregate for the synthetic counter and
-idempotency receipts, and the single `/dsh-pm-workbench-v1` Connection RPC
-channel configured with `authority: 'loopback'`. Its Web Client contributes one
-`sidebar.footer.action` launcher and one `shell.overlay`; it does not replace a
-Harness root. Requests and responses are validated against strict shared Zod
-schemas, and the Client keeps at most eight RPC calls in flight.
+Task 11 verifies exact Product graphs and nine package members. No-argument
+`npm run verify:package` is static, needs no Git metadata and retains no tgz or
+receipt hash. `npm run pack:dry` remains an offline no-script dry run. The
+explicit release verifier binds one real archive to a clean commit and a closed
+receipt in the ignored Task 11 workspace. Task 12 must revalidate and consume
+that exact retained archive without repacking it.
 
-This is a **source implementation checkpoint**. The package has not yet been
-installed from its real tgz into an isolated Harness profile, loaded by the
-Harness Host or Client, exercised in Chrome, restarted to observe persistence,
-or removed and reinstalled. Stage 2 runtime compatibility and Gate A′ therefore
-remain unverified and must not be inferred from source, type, unit, build, or
-package checks. The Probe uses only an empty health request and synthetic
-integer/UUID command metadata. It makes no model call and does not read or
-process interviews, transcripts, files, sessions, credentials, providers, or
-other user data.
+This checkpoint does not establish real Product installation, UI behavior,
+Harness restart persistence, or remove/re-add recovery. Those observations
+remain Task 12. The historical Stage 2 Probe and Task 3 storage gate preserve
+their own evidence and cannot establish runtime behavior for these new bytes.
 
 ## Current implementation: standalone four-step Demo
 
@@ -61,7 +58,7 @@ implemented through the
 That design supersedes the older complex rollout as the current implementation
 scope; the earlier documents remain research history.
 
-The standalone Demo and the synthetic Harness Probe are separate build graphs.
+The standalone Demo and historical synthetic Harness Probe are separate from the current Product build graph.
 The Demo is not an installed Harness plugin, and the Probe is not the AI product
 manager workflow. Real Harness installation/mounting, observed restart recovery,
 model calls, and the Alpha privacy/real-data capability remain unverified or out
@@ -96,9 +93,7 @@ path. The approved canonical specification is
 Its historical gated implementation plan set is retained at
 [`docs/superpowers/plans/2026-09-02-dsh-pm-workbench-v0.1-rollout.md`](docs/superpowers/plans/2026-09-02-dsh-pm-workbench-v0.1-rollout.md).
 That wider Harness integration plan has not been executed as a product Alpha.
-The later approved simple design governs the standalone Demo, while the current
-Stage 2 source implements only the bounded synthetic Connection RPC Probe
-described above. Gate A′ has **not run**; implementing the architecture does not
+The later approved simple design governs the standalone Demo; the retained Stage 2 source describes its historical synthetic Connection RPC Probe. Gate A′ has **not run**; implementing the architecture does not
 establish that Connection RPC works from this third-party tarball.
 
 The source-free canonical result set is retained in

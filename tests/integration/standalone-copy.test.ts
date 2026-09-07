@@ -505,6 +505,10 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1')(
 
       phase = 'package-status-check'
       if (!verified.stdout.includes('"status": "verified"')) throw new Error('package verification did not report success')
+      expect(verified.stdout).toContain('"kind": "static"')
+      expect(verified.stdout).not.toMatch(/tgzSha256|receiptSha256|releaseId/)
+      await expect(access(path.join(cloneRoot, '.git'))).rejects.toThrow()
+      await expect(access(path.join(cloneRoot, '.superpowers'))).rejects.toThrow()
       phase = 'generated-output-check'
       await expect(access(path.join(cloneRoot, 'packages', 'workbench', 'lib', 'index.js'))).resolves.toBeUndefined()
       await expect(access(path.join(cloneRoot, 'packages', 'workbench', 'lib', 'client.js'))).resolves.toBeUndefined()

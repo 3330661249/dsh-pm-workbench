@@ -1,15 +1,21 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, rmdir, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { execFile as execFileCallback } from 'node:child_process'
+import { promisify } from 'node:util'
+import { gunzipSync } from 'node:zlib'
 import { pathToFileURL } from 'node:url'
 
 import {
-  assertClientProbeBuildGraph,
-  assertHostProbeBuildGraph,
+  assertClientProductBuildGraph,
+  assertHostProductBuildGraph,
   buildPackableWorkbench,
+  compileProductSnapshots, stopProductCompiler, PRODUCT_INPUT_PATHS, assertCanonicalProductGraph, assertElidedProductTypeImport, canonicalJson, wrapProductClient,
 } from '../packages/workbench/build.mjs'
 
+export { canonicalJson }
+const execFile = promisify(execFileCallback)
 const defaultRepositoryRoot = path.resolve(import.meta.dirname, '..')
 const packageName = '@knight/dsh-pm-workbench'
 const packageVersion = '0.1.0'
@@ -66,41 +72,13 @@ async function assertRealDirectory(directory, label) {
 }
 
 async function readStablePackageFile(packageRoot, relative) {
-  let ancestor = packageRoot
-  await assertRealDirectory(ancestor, 'package root')
-  const segments = relative.split('/')
-  for (const segment of segments.slice(0, -1)) {
-    ancestor = path.join(ancestor, segment)
-    await assertRealDirectory(ancestor, `package ancestor for ${relative}`)
+  let value
+  try { value = await stableRead(path.join(packageRoot, relative), MAX_PACKAGE_FILE_BYTES) }
+  catch (error) {
+    if (error.message === 'bounded-file-size-invalid') throw new Error(`package entry exceeds maximum package file size: ${relative}`)
+    throw error
   }
-
-  const absolute = path.join(packageRoot, ...segments)
-  const handle = await open(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
-  try {
-    const before = await handle.stat({ bigint: true })
-    if (!before.isFile()) throw new Error(`package entry must be a regular file: ${relative}`)
-    if (before.size < 0n || before.size > BigInt(MAX_PACKAGE_FILE_BYTES)) {
-      throw new Error(`package entry exceeds maximum package file size: ${relative}`)
-    }
-    const bytes = await handle.readFile()
-    if (bytes.byteLength > MAX_PACKAGE_FILE_BYTES) {
-      throw new Error(`package entry grew beyond maximum package file size while read: ${relative}`)
-    }
-    const after = await handle.stat({ bigint: true })
-    assertSameOpenFile(before, after, `package entry ${relative}`)
-    if (BigInt(bytes.byteLength) !== before.size) {
-      throw new Error(`package entry size changed while it was read: ${relative}`)
-    }
-    return {
-      path: relative,
-      mode: Number(before.mode & 0o7777n),
-      size: bytes.byteLength,
-      sha256: sha256(bytes),
-      bytes,
-    }
-  } finally {
-    await handle.close()
-  }
+  return { path: relative, mode: Number(value.stat.mode & 0o7777n), size: value.bytes.length, sha256: sha256(value.bytes), bytes: value.bytes }
 }
 
 function assertBuildEvidence(buildEvidence) {
@@ -114,8 +92,8 @@ function assertBuildEvidence(buildEvidence) {
   ) {
     throw new Error('build did not return Host and Client graph evidence')
   }
-  assertHostProbeBuildGraph(buildEvidence.hostMetafile)
-  assertClientProbeBuildGraph(buildEvidence.clientMetafile)
+  assertHostProductBuildGraph(buildEvidence.hostMetafile)
+  assertClientProductBuildGraph(buildEvidence.clientMetafile)
   return Object.freeze(Object.fromEntries(
     buildOutputPaths.map((output) => [output, buildEvidence.outputHashes[output]]),
   ))
@@ -153,9 +131,10 @@ export async function verifyBuiltWorkbenchPackage({
     }
   }
   const manifest = JSON.parse(byPath.get('package.json').bytes.toString('utf8'))
-  if (manifest.name !== packageName || manifest.version !== packageVersion) {
+  if (manifest.name !== packageName || manifest.version !== packageVersion || manifest.private !== true) {
     throw new Error('invalid package identity')
   }
+  assertPackageManifest(manifest)
   if (manifest.dsh?.bundle?.patch !== './cordis.patch.yml') {
     throw new Error('invalid dsh bundle patch metadata')
   }
@@ -172,6 +151,7 @@ export async function verifyBuiltWorkbenchPackage({
       throw new Error(`absolute repository path leaked into package file: ${file.path}`)
     }
     assertNoStorageGateDiagnostics(file.bytes)
+    assertProductPackageBytes(file.bytes)
     const text = file.bytes.toString('utf8')
     if (/(?:file:\/\/|\/Users\/[^\s'"`]+|\/private\/tmp\/[^\s'"`]+)/u.test(text)) {
       throw new Error(`absolute filesystem path leaked into package file: ${file.path}`)
@@ -186,12 +166,16 @@ export async function verifyBuiltWorkbenchPackage({
   if (/(?:from\s*['"]zod['"]|require\(\s*['"]zod['"]\s*\))/u.test(`${host}\n${client}`)) {
     throw new Error('bare Zod runtime import remained in output')
   }
+  if (/\bBuffer\b|node:crypto|crypto-browserify|@deepseek-ai\/dsh-storage-domain/u.test(client)) throw new Error('client-node-storage-runtime-forbidden')
   const patch = byPath.get('cordis.patch.yml').bytes.toString('utf8')
   if ((patch.match(/^- insert:/gmu) ?? []).length !== 1) {
     throw new Error('patch must contain exactly one insert')
   }
+  if (patch !== "- insert:\n    - id: dsh-pm-workbench\n      name: '@knight/dsh-pm-workbench'\n") throw new Error('invalid Product patch identity')
   const zodLicense = (await readFile(path.join(repositoryRoot, 'node_modules/zod/LICENSE'), 'utf8')).trim()
   const thirdParty = byPath.get('docs/third-party.md').bytes.toString('utf8')
+  await assertZodVersion()
+  if (!thirdParty.includes('shared Product schemas') || !thirdParty.includes('Zod 4.4.3')) throw new Error('invalid Product Zod purpose')
   if (!thirdParty.includes(zodLicense)) {
     throw new Error('packed third-party notice does not contain the complete Zod license')
   }
@@ -264,7 +248,9 @@ export function validateNpmPackMetadata(value) {
       || item.size < 0
       || !Number.isSafeInteger(item.mode)
       || item.mode < 0
-      || item.mode > 0o7777) {
+      || item.mode !== 0o644
+      || item.size > MAX_PACKAGE_FILE_BYTES
+      || Object.is(item.size, -0)) {
       throw new Error('npm pack returned an invalid package file record')
     }
     return { path: item.path, size: item.size, mode: item.mode }
@@ -299,92 +285,495 @@ export function validateNpmPackMetadata(value) {
  */
 export async function verifyPackedWorkbenchArtifact({ packOutputRoot, metadata }) {
   if (!path.isAbsolute(packOutputRoot)) throw new Error('pack output root must be absolute')
-  if (!Number.isSafeInteger(metadata?.size) || metadata.size < 1 || metadata.size > MAX_PACKED_ARTIFACT_BYTES) {
-    throw new Error('npm pack exceeded the maximum packed artifact size')
-  }
+  if (!Number.isSafeInteger(metadata?.size) || metadata.size < 1 || metadata.size > MAX_PACKED_ARTIFACT_BYTES) throw new Error('npm pack exceeded the maximum packed artifact size')
   await assertRealDirectory(packOutputRoot, 'pack output root')
-  const entries = (await readdir(packOutputRoot)).sort(comparePath)
-  if (JSON.stringify(entries) !== JSON.stringify([metadata?.filename])) {
-    throw new Error('pack output root must contain exactly one expected tgz')
-  }
+  if (JSON.stringify((await readdir(packOutputRoot)).sort(comparePath)) !== JSON.stringify([metadata.filename])) throw new Error('pack output root must contain exactly one expected tgz')
   const outputPhysicalRoot = await realpath(packOutputRoot)
   const tgzAbsolutePath = path.join(outputPhysicalRoot, metadata.filename)
-  if (path.dirname(tgzAbsolutePath) !== outputPhysicalRoot) {
-    throw new Error('package filename escaped the pack output root')
-  }
-
-  const handle = await open(tgzAbsolutePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
-  let bytes
-  try {
-    const before = await handle.stat({ bigint: true })
-    if (!before.isFile() || before.nlink !== 1n) {
-      throw new Error('packed artifact must be one regular single-link file')
-    }
-    if (before.size < 0n || before.size > BigInt(MAX_PACKED_ARTIFACT_BYTES)) {
-      throw new Error('packed artifact exceeds the maximum packed artifact size')
-    }
-    if (before.size !== BigInt(metadata.size)) {
-      throw new Error('packed artifact size differs from npm metadata')
-    }
-    bytes = await handle.readFile()
-    if (bytes.byteLength > MAX_PACKED_ARTIFACT_BYTES) {
-      throw new Error('packed artifact grew beyond the maximum packed artifact size while read')
-    }
-    const after = await handle.stat({ bigint: true })
-    assertSameOpenFile(before, after, 'packed artifact')
-  } finally {
-    await handle.close()
-  }
-
-  if (bytes.byteLength !== metadata.size) throw new Error('packed artifact size differs from npm metadata')
+  if (path.dirname(tgzAbsolutePath) !== outputPhysicalRoot) throw new Error('package filename escaped the pack output root')
+  let value
+  try { value = await stableRead(tgzAbsolutePath, MAX_PACKED_ARTIFACT_BYTES) }
+  catch (error) { if (error.message === 'bounded-file-size-invalid') throw new Error('packed artifact exceeds the maximum packed artifact size'); throw error }
+  const bytes = value.bytes
+  if (bytes.length !== metadata.size) throw new Error('packed artifact size differs from npm metadata')
   const shasum = createHash('sha1').update(bytes).digest('hex')
   if (shasum !== metadata.shasum) throw new Error('packed artifact shasum differs from npm metadata')
   const integrity = `sha512-${createHash('sha512').update(bytes).digest('base64')}`
   if (integrity !== metadata.integrity) throw new Error('packed artifact integrity differs from npm metadata')
+  inspectWorkbenchArchive(bytes, metadata)
+  if (JSON.stringify((await readdir(packOutputRoot)).sort(comparePath)) !== JSON.stringify([metadata.filename])) throw new Error('pack output root must contain exactly one expected tgz')
+  assertSameOpenFile(value.stat, await lstat(tgzAbsolutePath, { bigint: true }), 'packed artifact')
+  return Object.freeze({ tgzAbsolutePath, tgzBytes: bytes.length, sha256: sha256(bytes), shasum, integrity })
+}
 
-  return Object.freeze({
-    tgzAbsolutePath,
-    tgzBytes: bytes.byteLength,
-    sha256: sha256(bytes),
-    shasum,
-    integrity,
+const exact = (a, b) => canonicalJson(a) === canonicalJson(b)
+const failRelease = () => { throw new Error('package-verification-failed') }
+const boundedNumber = (v, max = Number.MAX_SAFE_INTEGER) => {
+  if (!Number.isSafeInteger(v) || v < 0 || v > max || Object.is(v, -0)) failRelease()
+}
+function closed(value, names) {
+  if (!isRecord(value) || !exact(Object.keys(value).sort(comparePath), [...names].sort(comparePath))) failRelease()
+}
+function digest(value) { if (typeof value !== 'string' || !sha256Pattern.test(value)) failRelease() }
+function commitHash(value) { if (typeof value !== 'string' || !/^[0-9a-f]{40}$/.test(value)) failRelease() }
+function uuid(value) { if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)) failRelease() }
+function identity(value) {
+  closed(value, ['dev', 'ino'])
+  for (const part of Object.values(value)) if (typeof part !== 'string' || !/^(0|[1-9][0-9]*)$/.test(part) || BigInt(part) > 18446744073709551615n) failRelease()
+}
+const directoryIdentity = stat => ({ dev: stat.dev.toString(), ino: stat.ino.toString() })
+const equalIdentity = (a, b) => a.dev === b.dev && a.ino === b.ino
+const releaseRelative = '.superpowers/sdd/2026-09-07-dsh-pm-workbench-stage-3a-core/task-11-release'
+const releaseCanonicalRoot = path.join(defaultRepositoryRoot, releaseRelative)
+const MAX_RECEIPT_BYTES = 1024 * 1024
+const MAX_TAR_BYTES = 9 * MAX_PACKAGE_FILE_BYTES + 64 * 1024
+export const WORKBENCH_RELEASE_SOURCE_PATHS = Object.freeze([...new Set([
+  ...PRODUCT_INPUT_PATHS,
+  'package-lock.json', 'tsconfig.json', 'packages/workbench/tsconfig.json',
+  'packages/workbench/build.mjs', 'scripts/pack-dry.mjs', 'scripts/verify-package.mjs', 'scripts/workspace-boundary.ts',
+  'packages/workbench/LICENSE', 'packages/workbench/README.md', 'packages/workbench/cordis.patch.yml',
+  'packages/workbench/docs/compatibility.md', 'packages/workbench/docs/privacy.md', 'packages/workbench/docs/third-party.md',
+  'packages/workbench/package.json', 'node_modules/zod/LICENSE', 'node_modules/zod/package.json',
+])].sort(comparePath))
+
+function assertPackageManifest(manifest) {
+  const peers = {
+    '@deepseek-ai/cordis': '4.0.1', '@deepseek-ai/dsh-invariants': '0.1.0-rc.6',
+    '@deepseek-ai/dsh-client-connection': '0.1.0-rc.6', '@deepseek-ai/dsh-client-runtime': '0.1.0-rc.6',
+    '@deepseek-ai/dsh-client-ui-layout': '0.1.0-rc.6', '@deepseek-ai/dsh-client-ui-sidebar': '0.1.0-rc.6',
+    '@deepseek-ai/dsh-client-ui-slots': '0.1.0-rc.6', '@deepseek-ai/dsh-storage-domain': '0.1.0-rc.6',
+    react: '18.3.1', 'react-dom': '18.3.1',
+  }
+  if (manifest.type !== 'module' || manifest.license !== 'UNLICENSED' || manifest.main !== './lib/index.js'
+    || !exact(manifest.exports, { '.': './lib/index.js', './client': './lib/client.js', './package.json': './package.json' })
+    || !exact(manifest.files, ['lib', 'cordis.patch.yml', 'README.md', 'LICENSE', 'docs'])
+    || !exact(manifest.dsh, { bundle: { patch: './cordis.patch.yml' }, client: { platform: 'web', inject: ['@deepseek-ai/dsh-client-connection', '@deepseek-ai/dsh-client-runtime', '@deepseek-ai/dsh-client-ui-layout', '@deepseek-ai/dsh-client-ui-sidebar'] } })
+    || !exact(manifest.peerDependencies, peers)
+    || !exact(manifest.peerDependenciesMeta, Object.fromEntries(Object.keys(peers).map(name => [name, { optional: true }])))
+    || Object.hasOwn(manifest, 'dependencies') || Object.hasOwn(manifest, 'optionalDependencies')) throw new Error('invalid Product package manifest')
+}
+function assertProductPackageBytes(bytes) {
+  const text = bytes.toString('utf8')
+  const forbidden = ['/dsh-pm-workbench-v1', 'counter.increment', 'pm-workbench-probe', 'workbench-probe-launcher', 'workbench-probe-overlay', 'src/client/probe/', 'src/probe/', 'probe-host.ts', 'src/demo/', 'DemoApp', 'runHarnessModel(', '@deepseek-ai/dsh-agent', '@deepseek-ai/dsh-llm', 'dsh_pm_workbench_probe']
+  if (forbidden.some(value => text.includes(value))) throw new Error('non-product-runtime-forbidden')
+}
+async function assertZodVersion(sources) {
+  const installed = JSON.parse((sources?.get('node_modules/zod/package.json') ?? (await stableRead(path.join(defaultRepositoryRoot, 'node_modules/zod/package.json'), MAX_PACKAGE_FILE_BYTES)).bytes).toString('utf8'))
+  const lock = JSON.parse((sources?.get('package-lock.json') ?? (await stableRead(path.join(defaultRepositoryRoot, 'package-lock.json'), MAX_PACKAGE_FILE_BYTES)).bytes).toString('utf8'))
+  const occurrences = Object.entries(lock.packages).filter(([name]) => /(^|\/)node_modules\/zod$/.test(name))
+  if (installed.name !== 'zod' || installed.version !== '4.4.3' || occurrences.length === 0 || occurrences.some(([, v]) => v.version !== '4.4.3')) failRelease()
+}
+
+async function holdDirectories(directory) {
+  if (!path.isAbsolute(directory) || path.resolve(directory) !== directory || await realpath(directory) !== directory) failRelease()
+  const entries = []
+  try {
+    let current = path.parse(directory).root
+    for (const part of ['', ...directory.slice(current.length).split('/').filter(Boolean)]) {
+      if (part) current = path.join(current, part)
+      const handle = await open(current, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY)
+      const stat = await handle.stat({ bigint: true })
+      if (!stat.isDirectory() || !equalIdentity(stat, await lstat(current, { bigint: true }))) { await handle.close(); failRelease() }
+      entries.push({ path: current, handle, stat })
+    }
+    return entries
+  } catch (error) { await Promise.all(entries.map(e => e.handle.close())); throw error }
+}
+async function checkDirectories(entries) {
+  for (const entry of entries) {
+    const handle = await entry.handle.stat({ bigint: true }); const atPath = await lstat(entry.path, { bigint: true })
+    if (!atPath.isDirectory() || atPath.isSymbolicLink() || !equalIdentity(entry.stat, handle) || !equalIdentity(entry.stat, atPath) || handle.mode !== entry.stat.mode) failRelease()
+  }
+}
+async function closeDirectories(entries) { await Promise.all(entries.map(e => e.handle.close())) }
+async function stableRead(file, maxBytes, mode) {
+  const ancestors = await holdDirectories(path.dirname(file))
+  let handle
+  try {
+    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW)
+    const before = await handle.stat({ bigint: true })
+    if (!before.isFile() || before.nlink !== 1n) failRelease()
+    if (before.size < 0n || before.size > BigInt(maxBytes)) throw new Error('bounded-file-size-invalid')
+    if (mode !== undefined && Number(before.mode & 0o7777n) !== mode) failRelease()
+    const bytes = Buffer.alloc(Number(before.size)); let offset = 0
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset)
+      if (bytesRead === 0) failRelease()
+      offset += bytesRead
+    }
+    const probe = Buffer.alloc(1)
+    if ((await handle.read(probe, 0, 1, offset)).bytesRead !== 0) failRelease()
+    const after = await handle.stat({ bigint: true }); const atPath = await lstat(file, { bigint: true })
+    assertSameOpenFile(before, after, 'file'); assertSameOpenFile(before, atPath, 'file')
+    await checkDirectories(ancestors)
+    return { bytes, stat: before }
+  } finally { await handle?.close(); await closeDirectories(ancestors) }
+}
+
+function octal(bytes) {
+  const value = bytes.toString('ascii')
+  if (!/^[0-7]+[\0 ]*$/.test(value)) failRelease()
+  const result = Number.parseInt(value, 8); boundedNumber(result); return result
+}
+function fieldName(bytes) {
+  const end = bytes.indexOf(0)
+  if (end !== -1 && bytes.subarray(end).some(byte => byte !== 0)) failRelease()
+  const used = end === -1 ? bytes : bytes.subarray(0, end)
+  if (used.some(byte => byte < 32 || byte > 126)) failRelease()
+  return used.toString('ascii')
+}
+export function inspectWorkbenchArchive(archive, metadata, frozenFiles) {
+  if (!Buffer.isBuffer(archive) || archive.length < 18 || archive.length > MAX_PACKED_ARTIFACT_BYTES || archive[0] !== 31 || archive[1] !== 139) failRelease()
+  let tar
+  try { tar = gunzipSync(archive, { maxOutputLength: MAX_TAR_BYTES }) } catch { failRelease() }
+  if (tar.length > MAX_TAR_BYTES || tar.length % 512 !== 0) failRelease()
+  const members = new Map(); let offset = 0; let ended = false
+  while (offset + 512 <= tar.length) {
+    const header = tar.subarray(offset, offset + 512)
+    if (header.every(byte => byte === 0)) {
+      if (offset + 1024 > tar.length || tar.subarray(offset).some(byte => byte !== 0)) failRelease()
+      ended = true; break
+    }
+    const checksum = octal(header.subarray(148, 156))
+    let calculated = 0
+    for (let i = 0; i < 512; i++) calculated += i >= 148 && i < 156 ? 32 : header[i]
+    if (checksum !== calculated || header.subarray(257, 263).toString('ascii') !== 'ustar\0' || header.subarray(263, 265).toString('ascii') !== '00') failRelease()
+    const name = fieldName(header.subarray(0, 100))
+    if (header.subarray(500, 512).some(byte => byte !== 0) || header.subarray(345, 500).some(byte => byte !== 0) || header.subarray(157, 257).some(byte => byte !== 0)) failRelease()
+    const relative = WORKBENCH_PACKAGE_FILES.find(file => name === `package/${file}`)
+    if (!relative || members.has(relative) || ![0, 48].includes(header[156])) failRelease()
+    const mode = octal(header.subarray(100, 108)); const size = octal(header.subarray(124, 136))
+    if (mode !== 0o644 || size > MAX_PACKAGE_FILE_BYTES) failRelease()
+    const bodyStart = offset + 512; const bodyEnd = bodyStart + size
+    const paddedEnd = bodyStart + Math.ceil(size / 512) * 512
+    if (paddedEnd > tar.length || tar.subarray(bodyEnd, paddedEnd).some(byte => byte !== 0)) failRelease()
+    const bytes = Buffer.from(tar.subarray(bodyStart, bodyEnd))
+    const expected = metadata?.files.find(file => file.path === relative)
+    if (metadata && (!expected || expected.size !== size || expected.mode !== mode)) failRelease()
+    const frozen = frozenFiles?.find(file => file.path === relative)
+    if (frozenFiles && (!frozen || !bytes.equals(frozen.bytes))) failRelease()
+    members.set(relative, { path: relative, mode, size, sha256: sha256(bytes), bytes })
+    offset = paddedEnd
+  }
+  if (!ended || !exact([...members.keys()].sort(comparePath), WORKBENCH_PACKAGE_FILES)) failRelease()
+  return WORKBENCH_PACKAGE_FILES.map(name => members.get(name))
+}
+
+export function validateReleaseReceipt(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_RECEIPT_BYTES) failRelease()
+  let receipt
+  try { receipt = JSON.parse(bytes.toString('utf8')); if (!Buffer.from(canonicalJson(receipt)).equals(bytes)) failRelease() } catch { failRelease() }
+  closed(receipt, ['schemaVersion', 'stage', 'owner', 'releaseId', 'sourceCommit', 'rootIdentity', 'package', 'sources', 'sourceInventorySha256', 'graphs', 'graphHashes', 'outputHashes', 'members', 'memberInventorySha256', 'tgz'])
+  if (receipt.schemaVersion !== 1 || receipt.stage !== 'stage-3a' || receipt.owner !== packageName) failRelease()
+  uuid(receipt.releaseId); commitHash(receipt.sourceCommit); identity(receipt.rootIdentity)
+  closed(receipt.package, ['name', 'version', 'private'])
+  if (!exact(receipt.package, { name: packageName, version: packageVersion, private: true })) failRelease()
+  if (!Array.isArray(receipt.sources) || !exact(receipt.sources.map(s => s.path), WORKBENCH_RELEASE_SOURCE_PATHS)) failRelease()
+  for (const source of receipt.sources) { closed(source, ['path', 'bytes', 'sha256']); boundedNumber(source.bytes, MAX_PACKAGE_FILE_BYTES); digest(source.sha256) }
+  digest(receipt.sourceInventorySha256)
+  if (receipt.sourceInventorySha256 !== sha256(canonicalJson(receipt.sources))) failRelease()
+  closed(receipt.graphs, ['host', 'client']); closed(receipt.graphHashes, ['host', 'client'])
+  for (const role of ['host', 'client']) {
+    assertCanonicalProductGraph(receipt.graphs[role], role); digest(receipt.graphHashes[role])
+    if (receipt.graphHashes[role] !== sha256(canonicalJson(receipt.graphs[role]))) failRelease()
+    for (const input of receipt.graphs[role].inputs) {
+      const source = receipt.sources.find(s => s.path === input.path)
+      if (!source || source.bytes !== input.bytes || source.sha256 !== input.sha256) failRelease()
+    }
+  }
+  closed(receipt.outputHashes, buildOutputPaths)
+  if (!Array.isArray(receipt.members) || !exact(receipt.members.map(m => m.path), WORKBENCH_PACKAGE_FILES)) failRelease()
+  for (const member of receipt.members) {
+    closed(member, ['path', 'type', 'mode', 'bytes', 'sha256'])
+    if (member.type !== 'file' || member.mode !== 420) failRelease()
+    boundedNumber(member.bytes, MAX_PACKAGE_FILE_BYTES); digest(member.sha256)
+    const source = receipt.sources.find(s => s.path === `packages/workbench/${member.path}`)
+    if (source && (source.bytes !== member.bytes || source.sha256 !== member.sha256)) failRelease()
+  }
+  for (const output of buildOutputPaths) {
+    digest(receipt.outputHashes[output]); const member = receipt.members.find(m => m.path === output)
+    if (receipt.outputHashes[output] !== member.sha256) failRelease()
+  }
+  const host = receipt.members.find(m => m.path === 'lib/index.js')
+  if (host.sha256 !== receipt.graphs.host.output.sha256 || host.bytes !== receipt.graphs.host.output.bytes) failRelease()
+  digest(receipt.memberInventorySha256)
+  if (receipt.memberInventorySha256 !== sha256(canonicalJson(receipt.members))) failRelease()
+  closed(receipt.tgz, ['filename', 'bytes', 'sha256']); digest(receipt.tgz.sha256); boundedNumber(receipt.tgz.bytes, MAX_PACKED_ARTIFACT_BYTES)
+  if (receipt.tgz.filename !== packageFilename || receipt.tgz.bytes < 1) failRelease()
+  return receipt
+}
+function validateReceiptArchive(receipt, tgz) {
+  if (tgz.length !== receipt.tgz.bytes || sha256(tgz) !== receipt.tgz.sha256) failRelease()
+  const members = inspectWorkbenchArchive(tgz)
+  for (const member of members) {
+    const record = receipt.members.find(m => m.path === member.path)
+    if (record.bytes !== member.size || record.sha256 !== member.sha256 || record.mode !== member.mode) failRelease()
+    assertNoStorageGateDiagnostics(member.bytes); assertProductPackageBytes(member.bytes)
+  }
+  const client = members.find(m => m.path === 'lib/client.js').bytes
+  const prefix = Buffer.from("window.__ModuleLoader__.load({ id:'@knight/dsh-pm-workbench', factory(require) { const module={exports:{}}; const exports=module.exports; ")
+  const suffix = Buffer.from('; return module.exports; } });\n')
+  if (!client.subarray(0, prefix.length).equals(prefix) || !client.subarray(-suffix.length).equals(suffix)) failRelease()
+  const raw = client.subarray(prefix.length, -suffix.length)
+  if (raw.length !== receipt.graphs.client.output.bytes || sha256(raw) !== receipt.graphs.client.output.sha256 || !wrapProductClient(raw).equals(client)) failRelease()
+  return members
+}
+
+async function gitRead(args, guard) {
+  await guard?.()
+  const result = await execFile('git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', ...args], {
+    cwd: defaultRepositoryRoot, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' },
+    encoding: 'buffer', timeout: 10_000, maxBuffer: 3 * 1024 * 1024,
   })
+  await guard?.()
+  return Buffer.from(result.stdout)
+}
+async function cleanCommit(expected, guard) {
+  if ((await gitRead(['rev-parse', '--show-toplevel'], guard)).toString().trim() !== defaultRepositoryRoot) failRelease()
+  const commit = (await gitRead(['rev-parse', '--verify', 'HEAD'], guard)).toString().trim(); commitHash(commit)
+  if (expected && commit !== expected) failRelease()
+  if ((await gitRead(['status', '--porcelain=v1', '-z', '--untracked-files=all'], guard)).length !== 0) failRelease()
+  return commit
+}
+async function snapshotSources(commit, guard) {
+  const map = new Map(); const records = []; const identities = new Map()
+  for (const name of WORKBENCH_RELEASE_SOURCE_PATHS) {
+    await guard?.()
+    const value = await stableRead(path.join(defaultRepositoryRoot, name), MAX_PACKAGE_FILE_BYTES)
+    if (!name.startsWith('node_modules/zod/') && commit) {
+      const committed = await gitRead(['show', `${commit}:${name}`], guard)
+      if (!committed.equals(value.bytes)) failRelease()
+    }
+    map.set(name, value.bytes); identities.set(name, value.stat)
+    records.push({ path: name, bytes: value.bytes.length, sha256: sha256(value.bytes) })
+  }
+  assertElidedProductTypeImport(map); await assertZodVersion(map)
+  return { map, records, identities }
+}
+async function recheckSources(before, commit, guard) {
+  const after = await snapshotSources(commit, guard)
+  if (!exact(before.records, after.records)) failRelease()
+  for (const [name, stat] of before.identities) assertSameOpenFile(stat, after.identities.get(name), 'source')
+}
+async function absent(target) {
+  try { await lstat(target); failRelease() } catch (error) { if (error.code !== 'ENOENT') throw error }
+}
+const capabilities = new WeakMap()
+function capabilityFor(data) { const capability = Object.freeze(Object.create(null)); capabilities.set(capability, data); return capability }
+async function readReleaseGeneration({ releaseRoot, sourceCommit, receiptSha256 }, checkSources = true) {
+  if (releaseRoot !== releaseCanonicalRoot) failRelease()
+  commitHash(sourceCommit); digest(receiptSha256)
+  const ancestors = await holdDirectories(releaseRoot)
+  try {
+    const rootStat = ancestors.at(-1).stat
+    if (Number(rootStat.mode & 0o7777n) !== 0o700) failRelease()
+    if (!exact((await readdir(releaseRoot)).sort(comparePath), [packageFilename, 'receipt.json'])) failRelease()
+    const receiptFile = await stableRead(path.join(releaseRoot, 'receipt.json'), MAX_RECEIPT_BYTES, 0o600)
+    if (sha256(receiptFile.bytes) !== receiptSha256) failRelease()
+    const receipt = validateReleaseReceipt(receiptFile.bytes)
+    if (receipt.sourceCommit !== sourceCommit || !exact(receipt.rootIdentity, directoryIdentity(rootStat))) failRelease()
+    const tgzFile = await stableRead(path.join(releaseRoot, packageFilename), MAX_PACKED_ARTIFACT_BYTES, 0o600)
+    validateReceiptArchive(receipt, tgzFile.bytes)
+    if (checkSources) {
+      await gitRead(['merge-base', '--is-ancestor', sourceCommit, 'HEAD'])
+      const sources = await snapshotSources(sourceCommit)
+      if (!exact(sources.records, receipt.sources)) failRelease()
+    }
+    await checkDirectories(ancestors)
+    if (!exact((await readdir(releaseRoot)).sort(comparePath), [packageFilename, 'receipt.json'])) failRelease()
+    for (const [name, file] of [['receipt.json', receiptFile], [packageFilename, tgzFile]]) assertSameOpenFile(file.stat, await lstat(path.join(releaseRoot, name), { bigint: true }), 'retained file')
+    return { releaseRoot, sourceCommit, receiptSha256, receipt, rootStat, receiptFile, tgzFile }
+  } finally { await closeDirectories(ancestors) }
+}
+export async function readWorkbenchRelease(options) {
+  try {
+    closed(options, ['releaseRoot', 'sourceCommit', 'receiptSha256'])
+    return capabilityFor(await readReleaseGeneration(options))
+  } catch { failRelease() }
+}
+function requireCapability(capability) { const data = capabilities.get(capability); if (!data) failRelease(); return data }
+async function revalidateCapability(capability, checkSources) {
+  const before = requireCapability(capability)
+  const after = await readReleaseGeneration({ releaseRoot: before.releaseRoot, sourceCommit: before.sourceCommit, receiptSha256: before.receiptSha256 }, checkSources)
+  if (!equalIdentity(before.rootStat, after.rootStat)) failRelease()
+  assertSameOpenFile(before.receiptFile.stat, after.receiptFile.stat, 'retained receipt')
+  assertSameOpenFile(before.tgzFile.stat, after.tgzFile.stat, 'retained artifact')
+  return after
+}
+export async function withWorkbenchReleaseTgz(capability, consume) {
+  if (typeof consume !== 'function') failRelease()
+  const data = await revalidateCapability(capability, true)
+  const result = await consume(path.join(data.releaseRoot, packageFilename))
+  await revalidateCapability(capability, true)
+  return result
+}
+async function inventoryTree(root) {
+  const records = []
+  async function visit(target, relative) {
+    const stat = await lstat(target, { bigint: true })
+    if (stat.isSymbolicLink()) failRelease()
+    if (stat.isDirectory()) {
+      records.push({ path: relative, directory: true, identity: directoryIdentity(stat), mode: Number(stat.mode & 0o7777n) })
+      for (const name of (await readdir(target)).sort(comparePath)) await visit(path.join(target, name), relative ? `${relative}/${name}` : name)
+    } else {
+      const file = await stableRead(target, MAX_PACKED_ARTIFACT_BYTES)
+      records.push({ path: relative, directory: false, identity: directoryIdentity(file.stat), mode: Number(file.stat.mode & 0o7777n), bytes: file.bytes.length, sha256: sha256(file.bytes) })
+    }
+    if (records.length > 4096) failRelease()
+  }
+  await visit(root, '')
+  return records
+}
+async function removeVerifiedTree(root, records) {
+  if (!exact(await inventoryTree(root), records)) failRelease()
+  for (const item of [...records].reverse()) {
+    const target = item.path ? path.join(root, item.path) : root
+    const stat = await lstat(target, { bigint: true })
+    if (!exact(item.identity, directoryIdentity(stat)) || stat.isSymbolicLink()) failRelease()
+    if (item.directory) { if ((await readdir(target)).length !== 0) failRelease(); await rmdir(target) }
+    else {
+      const file = await stableRead(target, MAX_PACKED_ARTIFACT_BYTES)
+      if (file.bytes.length !== item.bytes || sha256(file.bytes) !== item.sha256) failRelease()
+      await unlink(target)
+    }
+  }
+  await absent(root)
+}
+export async function cleanupWorkbenchRelease(capability) {
+  const data = await revalidateCapability(capability, false)
+  const records = await inventoryTree(data.releaseRoot)
+  const quarantine = `${data.releaseRoot}.cleanup-${data.receipt.releaseId}`
+  await absent(quarantine)
+  await revalidateCapability(capability, false)
+  await rename(data.releaseRoot, quarantine)
+  if (!exact(await inventoryTree(quarantine), records)) failRelease()
+  await removeVerifiedTree(quarantine, records)
+  await absent(data.releaseRoot)
+  capabilities.delete(capability)
+}
+
+export async function createWorkbenchRelease(releaseRoot) {
+  let owned; let ancestors
+  try {
+    if (releaseRoot !== releaseCanonicalRoot || await realpath(defaultRepositoryRoot) !== defaultRepositoryRoot) failRelease()
+    ancestors = await holdDirectories(path.dirname(releaseRoot))
+    await absent(releaseRoot)
+    const sourceCommit = await cleanCommit()
+    await gitRead(['check-ignore', '-q', releaseRelative])
+    const sources = await snapshotSources(sourceCommit)
+    await cleanCommit(sourceCommit)
+    await checkDirectories(ancestors); await absent(releaseRoot)
+    await mkdir(releaseRoot, { mode: 0o700 })
+    const rootHandle = await open(releaseRoot, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY)
+    const rootStat = await rootHandle.stat({ bigint: true })
+    const releaseId = randomUUID()
+    const marker = { schemaVersion: 1, owner: packageName, releaseId, sourceCommit, rootIdentity: directoryIdentity(rootStat) }
+    const markerBytes = Buffer.from(canonicalJson(marker))
+    owned = { rootHandle, rootStat, releaseId, markerBytes, markerReady: false }
+    await writeFile(path.join(releaseRoot, '.owner.json'), markerBytes, { flag: 'wx', mode: 0o600 })
+    owned.markerReady = true
+    const assertOwned = async () => {
+      await checkDirectories(ancestors)
+      const current = await lstat(releaseRoot, { bigint: true }); const held = await rootHandle.stat({ bigint: true })
+      if (!current.isDirectory() || !equalIdentity(rootStat, current) || !equalIdentity(rootStat, held) || Number(current.mode & 0o7777n) !== 0o700) failRelease()
+      const currentMarker = await stableRead(path.join(releaseRoot, '.owner.json'), 4096, 0o600)
+      if (!currentMarker.bytes.equals(markerBytes)) failRelease()
+    }
+    owned.assertOwned = assertOwned
+    await assertOwned()
+    const work = path.join(releaseRoot, '.work'); await mkdir(work, { mode: 0o700 })
+    owned.workStat = await lstat(work, { bigint: true })
+    let buildEvidence
+    try { buildEvidence = await compileProductSnapshots(sources.map, assertOwned) } finally { stopProductCompiler() }
+    await assertOwned()
+    const stagedRoot = path.join(work, 'package'); await mkdir(stagedRoot, { mode: 0o700 })
+    const frozen = []
+    for (const name of WORKBENCH_PACKAGE_FILES) {
+      await assertOwned()
+      const bytes = buildEvidence.outputBytes[name] ?? sources.map.get(`packages/workbench/${name}`)
+      if (!Buffer.isBuffer(bytes)) failRelease()
+      await mkdir(path.dirname(path.join(stagedRoot, name)), { recursive: true, mode: 0o700 })
+      await writeFile(path.join(stagedRoot, name), bytes, { flag: 'wx', mode: 0o644 })
+      frozen.push({ path: name, bytes })
+    }
+    await verifyBuiltWorkbenchPackage({ packageRoot: stagedRoot, buildEvidence })
+    const operationRoot = path.join(work, 'pack'); await mkdir(operationRoot, { mode: 0o700 })
+    const npmCliPath = process.env.npm_execpath
+    if (!npmCliPath || !path.isAbsolute(npmCliPath)) failRelease()
+    const { runNpmPack } = await import('./pack-dry.mjs')
+    await assertOwned()
+    // Exactly one real offline/no-script pack of the frozen nine files.
+    const controller = new AbortController()
+    let ownershipFailure = false
+    let checkPending = Promise.resolve()
+    const monitor = setInterval(() => {
+      checkPending = checkPending.then(assertOwned).catch(() => { ownershipFailure = true; controller.abort() })
+    }, 100)
+    let packed
+    try {
+      packed = await runNpmPack({ nodeExecutable: await realpath(process.execPath), npmCliPath: await realpath(npmCliPath), stagedPackageRoot: stagedRoot, operationRoot, dryRun: false, ownershipGuard: assertOwned, signal: controller.signal })
+    } finally { clearInterval(monitor); await checkPending }
+    if (ownershipFailure) failRelease()
+    await assertOwned()
+    const artifact = await stableRead(packed.tgzAbsolutePath, MAX_PACKED_ARTIFACT_BYTES)
+    const members = inspectWorkbenchArchive(artifact.bytes, packed.metadata, frozen)
+    for (const file of frozen) if (!(await stableRead(path.join(stagedRoot, file.path), MAX_PACKAGE_FILE_BYTES)).bytes.equals(file.bytes)) failRelease()
+    await recheckSources(sources, sourceCommit, assertOwned)
+    await cleanCommit(sourceCommit, assertOwned)
+    const memberRecords = members.map(m => ({ path: m.path, type: 'file', mode: 420, bytes: m.size, sha256: m.sha256 }))
+    const receipt = {
+      schemaVersion: 1, stage: 'stage-3a', owner: packageName, releaseId, sourceCommit,
+      rootIdentity: directoryIdentity(rootStat), package: { name: packageName, version: packageVersion, private: true },
+      sources: sources.records, sourceInventorySha256: sha256(canonicalJson(sources.records)),
+      graphs: buildEvidence.graphs, graphHashes: buildEvidence.graphHashes, outputHashes: buildEvidence.outputHashes,
+      members: memberRecords, memberInventorySha256: sha256(canonicalJson(memberRecords)),
+      tgz: { filename: packageFilename, bytes: artifact.bytes.length, sha256: sha256(artifact.bytes) },
+    }
+    const receiptBytes = Buffer.from(canonicalJson(receipt)); validateReleaseReceipt(receiptBytes); validateReceiptArchive(receipt, artifact.bytes)
+    await assertOwned(); await writeFile(path.join(releaseRoot, packageFilename), artifact.bytes, { flag: 'wx', mode: 0o600 })
+    if (!equalIdentity(owned.workStat, await lstat(work, { bigint: true }))) failRelease()
+    const transient = await inventoryTree(work); await assertOwned(); await removeVerifiedTree(work, transient)
+    // Source and HEAD binding are rechecked immediately before the closed receipt is published.
+    await recheckSources(sources, sourceCommit, assertOwned); await cleanCommit(sourceCommit, assertOwned)
+    await assertOwned(); await writeFile(path.join(releaseRoot, 'receipt.json'), receiptBytes, { flag: 'wx', mode: 0o600 })
+    owned.finalEvidence = { releaseRoot, sourceCommit, receiptSha256: sha256(receiptBytes) }
+    await assertOwned(); await unlink(path.join(releaseRoot, '.owner.json')); owned.final = true
+    const receiptSha256 = sha256(receiptBytes)
+    await readReleaseGeneration({ releaseRoot, sourceCommit, receiptSha256 })
+    return Object.freeze({ status: 'verified', kind: 'release', releaseId, sourceCommit, tgzSha256: receipt.tgz.sha256, receiptSha256 })
+  } catch {
+    if (owned?.final && owned.finalEvidence) {
+      try { await cleanupWorkbenchRelease(capabilityFor(await readReleaseGeneration(owned.finalEvidence, false))) } catch { /* Preserve substituted final generations. */ }
+    }
+    if (owned?.markerReady && !owned.final) {
+      try {
+        await owned.assertOwned?.()
+        const records = await inventoryTree(releaseRoot)
+        const quarantine = `${releaseRoot}.cleanup-${owned.releaseId}`
+        await absent(quarantine); await owned.assertOwned?.(); await rename(releaseRoot, quarantine)
+        await removeVerifiedTree(quarantine, records)
+      } catch { /* A substituted or unowned generation is preserved. */ }
+    }
+    failRelease()
+  } finally { await owned?.rootHandle.close(); if (ancestors) await closeDirectories(ancestors) }
 }
 
 async function runVerifierCli() {
+  const args = process.argv.slice(2)
+  if (args.length !== 0 && !(args.length === 2 && args[0] === '--release-root' && path.isAbsolute(args[1]))) failRelease()
+  if (args.length) { console.log(JSON.stringify(await createWorkbenchRelease(args[1]))); return }
   const npmCliPath = process.env.npm_execpath
-  if (typeof npmCliPath !== 'string' || !path.isAbsolute(npmCliPath)) {
-    throw new Error('npm run verify:package requires an absolute npm CLI entry')
-  }
+  if (!npmCliPath || !path.isAbsolute(npmCliPath)) failRelease()
   const buildEvidence = await buildPackableWorkbench()
   const verified = await verifyBuiltWorkbenchPackage({ buildEvidence })
-  const cacheParent = path.join(defaultRepositoryRoot, '.tmp', 'npm-cache')
-  await mkdir(cacheParent, { recursive: true })
+  const cacheParent = path.join(defaultRepositoryRoot, '.tmp', 'npm-cache'); await mkdir(cacheParent, { recursive: true })
   const operationRoot = await mkdtemp(path.join(cacheParent, 'verify-package-'))
   try {
     const { runNpmPack } = await import('./pack-dry.mjs')
-    const packed = await runNpmPack({
-      nodeExecutable: process.execPath,
-      npmCliPath,
-      stagedPackageRoot: path.join(defaultRepositoryRoot, 'packages/workbench'),
-      operationRoot,
-      dryRun: true,
-    })
-    console.log(JSON.stringify({
-      files: packed.metadata.files.map((file) => file.path),
-      bundledZod: verified.bundledZod,
-      runtimeDependencies: verified.runtimeDependencies,
-      status: 'verified',
-    }, null, 2))
-  } finally {
-    await rm(operationRoot, { recursive: true, force: true })
-  }
+    const packed = await runNpmPack({ nodeExecutable: await realpath(process.execPath), npmCliPath: await realpath(npmCliPath), stagedPackageRoot: path.join(defaultRepositoryRoot, 'packages/workbench'), operationRoot, dryRun: true })
+    for (const file of verified.files) if (!(await readStablePackageFile(path.join(defaultRepositoryRoot, 'packages/workbench'), file.path)).bytes.equals(file.bytes)) failRelease()
+    console.log(JSON.stringify({ files: packed.metadata.files.map(f => f.path), bundledZod: true, runtimeDependencies: 0, status: 'verified', kind: 'static' }, null, 2))
+  } finally { await rm(operationRoot, { recursive: true, force: true }) }
 }
-
 const isEntry = Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href
-if (isEntry) {
-  runVerifierCli().catch((error) => {
-    console.error(error)
-    process.exitCode = 1
-  })
-}
+if (isEntry) runVerifierCli().catch(() => { console.error('package-verification-failed'); process.exitCode = 1 })

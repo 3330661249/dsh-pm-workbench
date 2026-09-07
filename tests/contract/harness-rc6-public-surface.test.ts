@@ -392,6 +392,8 @@ describe('rc.6 public smoke surface', () => {
     }
 
     expect(workbenchManifest).not.toHaveProperty('dependencies')
+    expect(workbenchManifest).not.toHaveProperty('optionalDependencies')
+    expect(workbenchManifest.version).toBe('0.1.0')
     expect(workspaceLock).not.toHaveProperty('dependencies')
     expect(dsh.client).toEqual({
       platform: 'web',

@@ -1,11 +1,13 @@
 import { execFile as execFileCallback } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises'
+import { chmod, cp, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { pathToFileURL } from 'node:url'
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
+import { gzipSync } from 'node:zlib'
+import * as verifier from '../../scripts/verify-package.mjs'
 
 import { buildPackableWorkbench } from '../../packages/workbench/build.mjs'
 import {
@@ -40,7 +42,7 @@ function hash(algorithm: string, bytes: string | Buffer): string {
   return createHash(algorithm).update(bytes).digest('hex')
 }
 
-function packMetadata(artifact = Buffer.from('synthetic tgz bytes')) {
+function packMetadata(artifact = syntheticArchive()) {
   return [{
     id: '@knight/dsh-pm-workbench@0.1.0',
     name: '@knight/dsh-pm-workbench',
@@ -88,6 +90,8 @@ test('the verify-package CLI completes without an ESM top-level-await cycle', as
   })
 
   expect(result.stdout).toContain('"status": "verified"')
+  expect(result.stdout).toContain('"kind": "static"')
+  expect(result.stdout).not.toMatch(/tgzSha256|receiptSha256|releaseId/)
   expect(result.stderr).toBe('')
 })
 
@@ -120,7 +124,7 @@ test('builds only through the fixed packable entrypoint and verifies exact sourc
 
 test('rejects a frozen lib whose bytes do not match the canonical build output hashes', async () => {
   const buildEvidence = await buildPackableWorkbench()
-  const fixture = await mkdtemp(path.join(os.tmpdir(), 'workbench-build-hash-drift-'))
+  const fixture = await mkdtemp(path.join(await realpath(os.tmpdir()), 'workbench-build-hash-drift-'))
   const canonicalPackageRoot = path.join(repositoryRoot, 'packages/workbench')
 
   try {
@@ -144,7 +148,7 @@ test('rejects a frozen lib whose bytes do not match the canonical build output h
 
 test('rejects an oversized package source file instead of reading it into the frozen receipt', async () => {
   const buildEvidence = await buildPackableWorkbench()
-  const fixture = await mkdtemp(path.join(os.tmpdir(), 'workbench-package-file-limit-'))
+  const fixture = await mkdtemp(path.join(await realpath(os.tmpdir()), 'workbench-package-file-limit-'))
   const canonicalPackageRoot = path.join(repositoryRoot, 'packages/workbench')
 
   try {
@@ -186,7 +190,7 @@ test('accepts only one exact npm package record with the immutable nine-file inv
 })
 
 test('creates an explicit Node plus npm CLI invocation with a closed environment and owned paths', async () => {
-  const fixture = await mkdtemp(path.join(os.tmpdir(), 'workbench-pack-invocation-'))
+  const fixture = await mkdtemp(path.join(await realpath(os.tmpdir()), 'workbench-pack-invocation-'))
   const operationRoot = path.join(fixture, 'operation')
   const stagedPackageRoot = path.join(fixture, 'package-source')
   const npmCliPath = path.join(fixture, 'npm-cli.js')
@@ -296,7 +300,7 @@ test('packs with the explicit CLI and returns the independently verified artifac
   const operationRoot = path.join(fixture, 'operation')
   const stagedPackageRoot = path.join(fixture, 'package-source')
   const npmCliPath = path.join(fixture, 'fake-npm-cli.mjs')
-  const artifact = Buffer.from('real frozen tgz bytes')
+  const artifact = syntheticArchive()
   const metadata = packMetadata(artifact)
 
   try {
@@ -339,8 +343,8 @@ test('packs with the explicit CLI and returns the independently verified artifac
 })
 
 test('verifies a sole regular tgz and rejects metadata hash drift', async () => {
-  const fixture = await mkdtemp(path.join(os.tmpdir(), 'workbench-artifact-'))
-  const artifact = Buffer.from('artifact bytes')
+  const fixture = await mkdtemp(path.join(await realpath(os.tmpdir()), 'workbench-artifact-'))
+  const artifact = syntheticArchive()
   const metadata = validateNpmPackMetadata(packMetadata(artifact))
 
   try {
@@ -361,7 +365,7 @@ test('verifies a sole regular tgz and rejects metadata hash drift', async () => 
 })
 
 test('rejects an oversized opened tgz before reading its contents', async () => {
-  const fixture = await mkdtemp(path.join(os.tmpdir(), 'workbench-artifact-limit-'))
+  const fixture = await mkdtemp(path.join(await realpath(os.tmpdir()), 'workbench-artifact-limit-'))
   const artifact = Buffer.from('small declared artifact')
   const metadata = validateNpmPackMetadata(packMetadata(artifact))
 
@@ -377,4 +381,289 @@ test('rejects an oversized opened tgz before reading its contents', async () => 
   } finally {
     await rm(fixture, { recursive: true, force: true })
   }
+})
+
+
+// Real bounded ustar fixtures. A compressed hash cannot substitute for member validation.
+function syntheticArchive(change?: (tar: Buffer) => Buffer | void): Buffer {
+  const records: Buffer[] = []
+  for (const [index, file] of exactFiles.entries()) {
+    const header = Buffer.alloc(512)
+    header.write(`package/${file}`, 0, 100, 'ascii')
+    header.write('0000644\0', 100, 8, 'ascii')
+    header.write('0000000\0', 108, 8, 'ascii'); header.write('0000000\0', 116, 8, 'ascii')
+    header.write((index + 1).toString(8).padStart(11, '0') + '\0', 124, 12, 'ascii')
+    header.write('00000000000\0', 136, 12, 'ascii')
+    header.fill(32, 148, 156); header[156] = 48
+    header.write('ustar\0', 257, 6, 'ascii'); header.write('00', 263, 2, 'ascii')
+    fixTarChecksum(header)
+    const body = Buffer.alloc(512); body.fill(index + 1, 0, index + 1)
+    records.push(header, body)
+  }
+  records.push(Buffer.alloc(1024))
+  const tar = Buffer.concat(records)
+  return gzipSync(change?.(tar) ?? tar)
+}
+function fixTarChecksum(header: Buffer): void {
+  header.fill(32, 148, 156)
+  const sum = header.subarray(0, 512).reduce((n, byte) => n + byte, 0)
+  header.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii')
+}
+function api(name: string): any {
+  const value = (verifier as unknown as Record<string, any>)[name]
+  expect(value, `${name} implements the closed release contract`).toBeTypeOf('function')
+  return value
+}
+
+test('parses real bounded gzip/ustar bytes and compares every body with npm and frozen inputs', () => {
+  const inspect = api('inspectWorkbenchArchive')
+  const archive = syntheticArchive()
+  const metadata = validateNpmPackMetadata(packMetadata(archive))
+  const members = inspect(archive, metadata)
+  expect(members.map((m: any) => m.path)).toEqual(exactFiles)
+  for (const [index, member] of members.entries()) {
+    expect(member.bytes).toEqual(Buffer.alloc(index + 1, index + 1))
+    expect(member.mode).toBe(420)
+  }
+  const frozen = members.map((m: any) => ({ ...m, bytes: Buffer.from(m.bytes) }))
+  frozen[0].bytes[0] = 99
+  expect(() => inspect(archive, metadata, frozen)).toThrow()
+})
+
+test.each([
+  ['plain-string', () => Buffer.from('synthetic tgz bytes')],
+  ['bad-checksum', () => syntheticArchive(t => { t[20] = 42 })],
+  ['truncated-header', () => syntheticArchive(t => t.subarray(0, 100))],
+  ['truncated-body', () => syntheticArchive(t => t.subarray(0, 514))],
+  ['missing-end-block', () => syntheticArchive(t => t.subarray(0, -512))],
+  ['header-padding', () => syntheticArchive(t => { t[511] = 1; fixTarChecksum(t.subarray(0, 512)) })],
+  ['nonzero-padding', () => syntheticArchive(t => { t[1023] = 1 })],
+  ['nonzero-tail', () => syntheticArchive(t => Buffer.concat([t, Buffer.alloc(512, 1)]))],
+  ['duplicate', () => syntheticArchive(t => { t.copy(t, 1024, 0, 512) })],
+  ['extra', () => syntheticArchive(t => { t.fill(0, 0, 100); t.write('package/extra.js'); fixTarChecksum(t.subarray(0, 512)) })],
+  ['traversal', () => syntheticArchive(t => { t.fill(0, 0, 100); t.write('package/../LICENSE'); fixTarChecksum(t.subarray(0, 512)) })],
+  ['alias', () => syntheticArchive(t => { t.fill(0, 0, 100); t.write('package/./LICENSE'); fixTarChecksum(t.subarray(0, 512)) })],
+  ['backslash', () => syntheticArchive(t => { t[7] = 92; fixTarChecksum(t.subarray(0, 512)) })],
+  ['wrong-mode', () => syntheticArchive(t => { t.write('0000755\0', 100); fixTarChecksum(t.subarray(0, 512)) })],
+  ['wrong-size', () => syntheticArchive(t => { t.write('00000000002\0', 124); fixTarChecksum(t.subarray(0, 512)) })],
+  ['oversized-member', () => syntheticArchive(t => { t.write('00010000001\0', 124); fixTarChecksum(t.subarray(0, 512)) })],
+  ...['1', '2', '3', '4', '5', '6', '7', 'x', 'g', 'L', 'S'].map(type => [
+    `special-${type}`, () => syntheticArchive(t => { t[156] = type.charCodeAt(0); fixTarChecksum(t.subarray(0, 512)) }),
+  ]),
+  ['gzip-overflow', () => gzipSync(Buffer.alloc(9 * 2 * 1024 * 1024 + 65537))],
+  ['compressed-overflow', () => Buffer.alloc(8 * 1024 * 1024 + 1)],
+  ['concatenated-nonzero', () => Buffer.concat([syntheticArchive(), gzipSync(Buffer.from('extra'))])],
+] as Array<[string, () => Buffer]>)('rejects malformed or non-exact archive: %s', (_name, make) => {
+  const inspect = api('inspectWorkbenchArchive')
+  expect(() => inspect(make(), validateNpmPackMetadata(packMetadata()))).toThrow()
+})
+
+test.each([['--unknown'], ['--release-root'], ['relative'], ['--release-root', '/x', '--release-root', '/y'], ['--release-root', '/x', 'extra']])(
+  'rejects invalid verifier CLI arguments before creating output: %j', async (...args) => {
+    const result = await execFile(process.execPath, ['--experimental-strip-types', path.join(repositoryRoot, 'scripts/verify-package.mjs'), ...args], {
+      cwd: repositoryRoot, env: { npm_execpath: process.env.npm_execpath },
+    }).then(r => ({ ...r, code: 0 }), (e: any) => ({ stdout: e.stdout, stderr: e.stderr, code: e.code }))
+    expect(result.code).not.toBe(0)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('package-verification-failed\n')
+  },
+)
+
+test('refuses path strings or serialized objects as cleanup capabilities', async () => {
+  const cleanup = api('cleanupWorkbenchRelease')
+  await expect(cleanup('/unowned')).rejects.toThrow()
+  await expect(cleanup({ releaseRoot: '/unowned', owner: '@knight/dsh-pm-workbench' })).rejects.toThrow()
+})
+
+async function releaseFixture(): Promise<{ temp: string; root: string; releaseRoot: string; module: any; git: (args: string[]) => Promise<string> }> {
+  const temp = await mkdtemp(path.join(await realpath(os.tmpdir()), 'workbench-release-contract-'))
+  const root = path.join(temp, 'repository')
+  await mkdir(root)
+  // Independent subprocess repository: production still derives its fixed root from import.meta.dirname.
+  const sourceManifest = JSON.parse(await readFile(path.join(repositoryRoot, 'tests/fixtures/standalone-source-manifest.json'), 'utf8'))
+  for (const relative of sourceManifest.files as string[]) {
+    if (!relative.startsWith('packages/workbench/') && !['package-lock.json', 'tsconfig.json', 'scripts/pack-dry.mjs', 'scripts/verify-package.mjs', 'scripts/workspace-boundary.ts'].includes(relative)) continue
+    const target = path.join(root, relative); await mkdir(path.dirname(target), { recursive: true })
+    await writeFile(target, await readFile(path.join(repositoryRoot, relative)))
+  }
+  await writeFile(path.join(root, 'package.json'), '{"private":true,"type":"module"}\n')
+  await writeFile(path.join(root, 'README.md'), '# Test repository\n')
+  await writeFile(path.join(root, '.gitignore'), 'node_modules/\n.tmp/\n.superpowers/\npackages/workbench/lib/\n')
+  for (const relative of ['node_modules/zod', 'node_modules/esbuild', `node_modules/@esbuild/${process.platform}-${process.arch}`]) {
+    await mkdir(path.dirname(path.join(root, relative)), { recursive: true })
+    await cp(path.join(repositoryRoot, relative), path.join(root, relative), { recursive: true })
+  }
+  const git = async (args: string[]) => (await execFile('git', args, { cwd: root, env: { PATH: process.env.PATH, HOME: temp, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } })).stdout.trim()
+  await git(['init', '-q']); await git(['add', '.'])
+  await git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture source'])
+  const releaseRoot = path.join(root, '.superpowers/sdd/2026-09-07-dsh-pm-workbench-stage-3a-core/task-11-release')
+  await mkdir(path.dirname(releaseRoot), { recursive: true })
+  const module = await import(pathToFileURL(path.join(root, 'scripts/verify-package.mjs')).href)
+  return { temp, root, releaseRoot, module, git }
+}
+
+test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1')('binds a real committed retained release, read-only reopen, all hashes, and obsolete-generation retirement', async () => {
+  api('createWorkbenchRelease'); api('readWorkbenchRelease'); api('validateReleaseReceipt')
+  const f = await releaseFixture()
+  let capability: any
+  try {
+    const commit = await f.git(['rev-parse', 'HEAD'])
+    const summary = await f.module.createWorkbenchRelease(f.releaseRoot)
+    expect(Object.keys(summary).sort()).toEqual(['kind', 'receiptSha256', 'releaseId', 'sourceCommit', 'status', 'tgzSha256'])
+    expect(summary).toMatchObject({ status: 'verified', kind: 'release', sourceCommit: commit })
+    expect(await readdir(f.releaseRoot)).toEqual(['knight-dsh-pm-workbench-0.1.0.tgz', 'receipt.json'])
+    expect((await lstat(f.releaseRoot)).mode & 0o777).toBe(0o700)
+    const receiptPath = path.join(f.releaseRoot, 'receipt.json')
+    const tgzPath = path.join(f.releaseRoot, 'knight-dsh-pm-workbench-0.1.0.tgz')
+    const receiptBytes = await readFile(receiptPath); const tgzBytes = await readFile(tgzPath)
+    expect(hash('sha256', receiptBytes)).toBe(summary.receiptSha256)
+    expect(hash('sha256', tgzBytes)).toBe(summary.tgzSha256)
+    for (const file of [receiptPath, tgzPath]) { const stat = await lstat(file); expect(stat.mode & 0o777).toBe(0o600); expect(stat.nlink).toBe(1) }
+    const receipt = f.module.validateReleaseReceipt(receiptBytes)
+    expect(receipt.sources.some((s: any) => s.path === 'README.md' || s.path === 'package.json')).toBe(false)
+    expect(receipt.sources.some((s: any) => s.path === 'package-lock.json')).toBe(true)
+    expect(receipt.members.map((m: any) => m.path)).toEqual(exactFiles)
+    const read = () => f.module.readWorkbenchRelease({ releaseRoot: f.releaseRoot, sourceCommit: commit, receiptSha256: summary.receiptSha256 })
+    capability = await read()
+    expect(JSON.stringify(capability)).toBe('{}')
+    const seen = await f.module.withWorkbenchReleaseTgz(capability, async (file: string) => hash('sha256', await readFile(file)))
+    expect(seen).toBe(summary.tgzSha256)
+    await expect(f.module.createWorkbenchRelease(f.releaseRoot)).rejects.toThrow()
+    expect(await readFile(receiptPath)).toEqual(receiptBytes)
+    await writeFile(path.join(f.root, 'README.md'), '# Allowed Task 12 documentation\n')
+    await f.git(['add', 'README.md']); await f.git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'root-only'])
+    capability = await read()
+    expect(await readFile(receiptPath)).toEqual(receiptBytes)
+    for (const mutate of [
+      (r: any) => { r.extra = true }, (r: any) => { r.package.extra = null },
+      (r: any) => { r.sources[0].bytes = -1 }, (r: any) => { r.sources[0].sha256 = 'A'.repeat(64) },
+      (r: any) => { r.sources.push(r.sources[0]) }, (r: any) => { r.members.reverse() },
+      (r: any) => { r.graphs.host.inputs[0].imports.push(r.graphs.host.inputs[0].imports[0]) },
+      (r: any) => { r.graphHashes.host = '0'.repeat(64) }, (r: any) => { r.outputHashes['lib/client.js'] = '0'.repeat(64) },
+      (r: any) => { r.rootIdentity.ino = '00' }, (r: any) => { r.releaseId = r.releaseId.toUpperCase() },
+    ]) {
+      const changed = structuredClone(receipt); mutate(changed)
+      expect(() => f.module.validateReleaseReceipt(Buffer.from(f.module.canonicalJson(changed)))).toThrow()
+    }
+    for (const changed of [Buffer.concat([receiptBytes, Buffer.from('\n')]), Buffer.from('{"schemaVersion":1,' + receiptBytes.toString().slice(1)), Buffer.from('\ufeff' + receiptBytes), Buffer.alloc(1024 * 1024 + 1)]) {
+      expect(() => f.module.validateReleaseReceipt(changed)).toThrow()
+    }
+    await expect(f.module.readWorkbenchRelease({ releaseRoot: f.releaseRoot, sourceCommit: '0'.repeat(40), receiptSha256: summary.receiptSha256 })).rejects.toThrow()
+    await expect(f.module.readWorkbenchRelease({ releaseRoot: f.releaseRoot, sourceCommit: commit, receiptSha256: '0'.repeat(64) })).rejects.toThrow()
+    await rename(tgzPath, tgzPath + '.saved'); await writeFile(tgzPath, tgzBytes, { mode: 0o600 })
+    await expect(f.module.withWorkbenchReleaseTgz(capability, async () => true)).rejects.toThrow()
+    await rm(tgzPath); await rename(tgzPath + '.saved', tgzPath)
+    capability = await read()
+    const quarantine = f.releaseRoot + '.cleanup-' + summary.releaseId
+    await mkdir(quarantine)
+    await expect(f.module.cleanupWorkbenchRelease(capability)).rejects.toThrow()
+    expect(await readFile(receiptPath)).toEqual(receiptBytes)
+    await rm(quarantine, { recursive: true })
+    await writeFile(path.join(f.root, 'packages/workbench/README.md'), 'obsolete bytes\n')
+    await expect(read()).rejects.toThrow()
+    await f.module.cleanupWorkbenchRelease(capability)
+    await expect(lstat(f.releaseRoot)).rejects.toThrow()
+    await f.git(['checkout', '--', 'packages/workbench/README.md'])
+    const replacement = await f.module.createWorkbenchRelease(f.releaseRoot)
+    expect(replacement.releaseId).not.toBe(summary.releaseId)
+    const replacementCapability = await f.module.readWorkbenchRelease({ releaseRoot: f.releaseRoot, sourceCommit: replacement.sourceCommit, receiptSha256: replacement.receiptSha256 })
+    await f.module.cleanupWorkbenchRelease(replacementCapability)
+  } finally { await rm(f.temp, { recursive: true, force: true }) }
+}, 120_000)
+
+test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1')('rejects dirty and unowned release generations without output or deletion', async () => {
+  api('createWorkbenchRelease')
+  const f = await releaseFixture()
+  try {
+    const source = path.join(f.root, 'packages/workbench/README.md')
+    const original = await readFile(source)
+    await writeFile(source, 'dirty')
+    await expect(f.module.createWorkbenchRelease(f.releaseRoot)).rejects.toThrow()
+    await expect(lstat(f.releaseRoot)).rejects.toThrow()
+    await f.git(['add', 'packages/workbench/README.md'])
+    await expect(f.module.createWorkbenchRelease(f.releaseRoot)).rejects.toThrow()
+    await f.git(['reset', '--', 'packages/workbench/README.md']); await writeFile(source, original)
+    await writeFile(path.join(f.root, 'unexpected'), 'untracked')
+    await expect(f.module.createWorkbenchRelease(f.releaseRoot)).rejects.toThrow()
+    await rm(path.join(f.root, 'unexpected'))
+    await mkdir(f.releaseRoot)
+    await writeFile(path.join(f.releaseRoot, '.owner.json'), '{"unowned":true}')
+    await expect(f.module.createWorkbenchRelease(f.releaseRoot)).rejects.toThrow()
+    expect(await readFile(path.join(f.releaseRoot, '.owner.json'), 'utf8')).toBe('{"unowned":true}')
+    for (const wrong of [path.join(f.root, 'elsewhere'), f.releaseRoot + '/.', 'relative']) await expect(f.module.createWorkbenchRelease(wrong)).rejects.toThrow()
+  } finally { await rm(f.temp, { recursive: true, force: true }) }
+}, 120_000)
+
+test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each([
+  'observe', 'pack-fail', 'finalize-fail', 'source-drift', 'ownership-substitution',
+] as const)('owns actual subprocesses and safely handles release failure: %s', async variant => {
+  const f = await releaseFixture()
+  try {
+    await mkdir(path.join(f.root, '.tmp'), { recursive: true })
+    const script = `
+      import fs from 'node:fs/promises'
+      import { existsSync, readFileSync, renameSync, mkdirSync, writeFileSync } from 'node:fs'
+      import { ChildProcess } from 'node:child_process'
+      import { syncBuiltinESMExports } from 'node:module'
+      const releaseRoot = ${JSON.stringify(f.releaseRoot)}
+      const variant = ${JSON.stringify(variant)}
+      const originalSpawn = ChildProcess.prototype.spawn
+      let packs = 0; let markerBeforePack = false; let offline = false; let noScripts = false
+      ChildProcess.prototype.spawn = function(options) {
+        if (options.args.includes('pack') && options.args.includes('--pack-destination')) {
+          packs++
+          const marker = JSON.parse(readFileSync(releaseRoot + '/.owner.json', 'utf8'))
+          markerBeforePack = marker.owner === '@knight/dsh-pm-workbench' && existsSync(releaseRoot + '/.work/package/package.json')
+          offline = options.args.includes('--offline'); noScripts = options.args.includes('--ignore-scripts')
+          if (variant === 'pack-fail') throw new Error('synthetic pack syscall failure')
+          if (variant === 'source-drift') writeFileSync(${JSON.stringify(path.join(f.root, 'packages/workbench/README.md'))}, 'source drift')
+        }
+        return originalSpawn.call(this, options)
+      }
+      const originalWrite = fs.writeFile
+      fs.writeFile = async function(file, ...args) {
+        if (String(file) === releaseRoot + '/receipt.json') {
+          if (variant === 'finalize-fail') throw new Error('synthetic finalization failure')
+          if (variant === 'ownership-substitution') {
+            renameSync(releaseRoot, releaseRoot + '.displaced')
+            mkdirSync(releaseRoot); writeFileSync(releaseRoot + '/unowned', 'preserve')
+          }
+        }
+        return originalWrite.call(this, file, ...args)
+      }
+      syncBuiltinESMExports()
+      const api = await import(${JSON.stringify(pathToFileURL(path.join(f.root, 'scripts/verify-package.mjs')).href)})
+      let summary; let ok = false
+      try { summary = await api.createWorkbenchRelease(releaseRoot); ok = true } catch {}
+      process.stdout.write(JSON.stringify({ ok, packs, markerBeforePack, offline, noScripts, summary,
+        rootExists: existsSync(releaseRoot), unownedPreserved: existsSync(releaseRoot + '/unowned') && readFileSync(releaseRoot + '/unowned', 'utf8') === 'preserve' }))
+    `
+    const childPath = path.join(f.root, '.tmp', 'fault.mjs')
+    await writeFile(childPath, script)
+    const result = await execFile(process.execPath, ['--experimental-strip-types', childPath], { cwd: f.root,
+      env: { PATH: process.env.PATH, npm_execpath: process.env.npm_execpath }, timeout: 30_000,
+    })
+    expect(result.stderr).toBe('')
+    const observed = JSON.parse(result.stdout)
+    expect(observed).toMatchObject({ packs: 1, markerBeforePack: true, offline: true, noScripts: true })
+    expect(observed.ok).toBe(variant === 'observe')
+    if (variant === 'observe') {
+      const capability = await f.module.readWorkbenchRelease({ releaseRoot: f.releaseRoot, sourceCommit: observed.summary.sourceCommit, receiptSha256: observed.summary.receiptSha256 })
+      await f.module.cleanupWorkbenchRelease(capability)
+    } else if (variant === 'ownership-substitution') expect(observed.unownedPreserved).toBe(true)
+    else expect(observed.rootExists).toBe(false)
+  } finally { await rm(f.temp, { recursive: true, force: true }) }
+}, 60_000)
+
+test('checks C34 source declaration and its frozen resolution, not only its serialized tuple', async () => {
+  const build = await import('../../packages/workbench/build.mjs')
+  const parent = 'packages/workbench/src/application/project-service.ts'
+  const target = 'packages/workbench/src/application/project-repository.ts'
+  const source = await readFile(path.join(repositoryRoot, parent))
+  const snapshots = new Map([[parent, source], [target, Buffer.from('frozen target')]])
+  expect(() => build.assertElidedProductTypeImport(snapshots)).not.toThrow()
+  snapshots.set(parent, Buffer.from(source.toString().replace('type ProjectRepository,', 'ProjectRepository,')))
+  expect(() => build.assertElidedProductTypeImport(snapshots)).toThrow()
+  snapshots.set(parent, source); snapshots.delete(target)
+  expect(() => build.assertElidedProductTypeImport(snapshots)).toThrow()
 })

@@ -36,6 +36,7 @@ function operationPath(operationRoot, name) {
  * @property {string} operationRoot
  * @property {boolean} [dryRun]
  * @property {AbortSignal} [signal]
+ * @property {() => Promise<void>} [ownershipGuard]
  */
 
 /** @param {NpmPackOptions} options */
@@ -103,6 +104,7 @@ export function createNpmPackInvocation({
       env: environment,
       encoding: 'utf8',
       maxBuffer: 20 * 1024 * 1024,
+      timeout: 30_000,
       ...(signal ? { signal } : {}),
     }),
   })
@@ -132,6 +134,7 @@ async function requireRealFile(file, label) {
 
 /** @param {NpmPackOptions} options */
 export async function runNpmPack(options) {
+  await options.ownershipGuard?.()
   const requested = createNpmPackInvocation(options)
   await requireRealDirectory(options.operationRoot, 'npm pack operation root')
   await requireRealDirectory(options.stagedPackageRoot, 'staged package root')
@@ -144,6 +147,7 @@ export async function runNpmPack(options) {
     requested.options.env.npm_config_cache,
     requested.packOutputRoot,
   ]) {
+    await options.ownershipGuard?.()
     await mkdir(directory, { mode: 0o700 })
     await requireRealDirectory(directory, 'npm pack owned directory')
   }
@@ -155,7 +159,9 @@ export async function runNpmPack(options) {
     nodeExecutable,
     npmCliPath,
   })
+  await options.ownershipGuard?.()
   const result = await execFile(invocation.file, invocation.args, invocation.options)
+  await options.ownershipGuard?.()
   const metadata = validateNpmPackMetadata(JSON.parse(result.stdout))
   if (options.dryRun) {
     return Object.freeze({

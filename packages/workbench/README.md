@@ -1,49 +1,36 @@
 # DSH PM Workbench
 
-Private development bundle for a local interview requirements workbench.
+Private, unofficial `@knight/dsh-pm-workbench@0.1.0` package for Harness `0.1.0-rc.6`.
 
-## Standalone browser Demo
+## Stage 3A Product package
 
-From the repository root, run:
+The Product workflow is materials → requirements → priority review → PRD. Its
+Host owns the project aggregate and strict Connection RPC on
+`/dsh-pm-workbench-product-v1`; its Client contributes an additive launcher and
+overlay. The six endpoints are `health`, `projects.list`, `projects.get`,
+`sources.get`, `artifacts.getMarkdown`, and `projects.command`. Zod 4.4.3 is
+bundled into both outputs; React and the observed public Harness runtime imports
+remain external. There are no runtime dependencies in the package manifest.
 
-```sh
-npm run demo:serve
-open http://127.0.0.1:4173/
-```
+Stage 3A uses one built-in synthetic Fixture. It makes no model call and does
+not accept real interview/customer data. Synthetic source import, evidence
+review, human requirement revision, priority confirmation, immutable baselines,
+and deterministic Markdown are implemented in source. Stage 3B model execution
+is unimplemented; reserved protocol tags do not enable it.
 
-This is an in-memory fixture Demo, not an installed Harness plugin or a real
-model result. It runs locally with synthetic interview data, stores no session
-state, and loses edits on refresh. Use only synthetic material. The server builds
-the three browser files in `.tmp/dsh-pm-workbench/demo/` before listening on
-`127.0.0.1:4173`; stop it with Ctrl+C. `npm run demo:build` builds those files
-without starting the server. These commands are separate from Harness and from
-the package build.
+Product data persists in the Harness profile by design. Package removal does
+not erase that profile data. Delete/remove is not secure erasure. Use only
+synthetic, non-identifying material.
 
-## Package status
+## Evidence boundary
 
-This package source implements a bounded synthetic Harness Probe through public
-Connection RPC and strict shared schemas. The Host exposes only `health` and
-`counter.increment` on `/dsh-pm-workbench-v1` with `authority: 'loopback'`. It
-uses a `storageDomain` aggregate for a synthetic integer counter and bounded
-idempotency receipts. The Web Client contributes one additive sidebar-footer
-launcher and one additive shell overlay; it does not replace the Harness root.
+Task 11 verifies the static Product code graphs, nine package members and a
+retained archive bound to a clean source commit. No Task 11 result proves a real
+install, Harness UI behavior, persistence across a Harness restart, or removal
+and re-add recovery. Task 12 must consume and validate the same retained tgz for
+those observations; it must never repack it. Stage 2 and the Task 3 storage gate
+are historical evidence for their own artifacts, not this Product package.
 
-The Probe accepts no free text, calls no model and reads no workspace, session,
-interview, transcript, file, credential, provider response, or other user data.
-It is not the product-manager workflow implemented by the standalone Demo.
-
-This source and its local contracts do not prove that the packed tgz installs,
-loads, mounts, calls Host RPC from a browser, persists across a real Harness
-restart, disappears on removal, or restores state after reinstall. Those runtime
-observations have not been performed. No compatibility, Gate A′, model,
-interview-analysis, real-data, or release claim has been established.
-
-The target remains Harness `0.1.0-rc.6`. The package is private, UNLICENSED and
-not published. The next real-tarball observation must use a fresh isolated
-profile, a dynamically allocated loopback port that is not `3080`, and synthetic
-counter data only. Gate A′ remains not run.
-
-The implemented route requests `authority: 'loopback'`. The planned isolated
-runtime boundary also restricts the listener to `127.0.0.1` and empty
-`trustedHosts`. Source configuration is not an authentication or real-data
-guarantee.
+The repository's separate standalone Demo is an in-memory fixture tool and is
+excluded from this package. This package is private and UNLICENSED; it is not
+published or approved for real data.

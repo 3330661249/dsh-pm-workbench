@@ -7,7 +7,7 @@ this bundle.
 ## Zod 4.4.3
 
 The package build bundles Zod 4.4.3 into both the Host and Web Client outputs so
-their shared Probe schemas can validate both sides of the Connection RPC
+their shared Product schemas can validate both sides of the Connection RPC
 boundary. Zod is removed from the published package's runtime `dependencies`;
 the bundled code remains subject to the following MIT license. This text is
 copied exactly from the installed `node_modules/zod/LICENSE` artifact.
