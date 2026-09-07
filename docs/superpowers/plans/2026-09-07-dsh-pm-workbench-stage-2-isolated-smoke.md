@@ -51,7 +51,7 @@
 - Consumes: `HostConnectionHandle.rpc.handle`, `ConnectionHandle.rpc.call`, `DomainFacility.open`, `SlotRegistry.inject/register`.
 - Produces: exact dependency pins and compile-only Host/Client contracts without calling or constructing fake runtime objects.
 
-- [ ] **Step 1: Write failing contract tests**
+- [x] **Step 1: Write failing contract tests**
 
 The runtime test must resolve the exact package manifests and assert version `0.1.0-rc.6`. Keep the historical `tsconfig.surface.*` files byte-identical because they belong to the frozen legacy declaration evidence. The new Stage 2 Host compile fixture uses `tsconfig.stage2.surface.host.json` and must typecheck:
 
@@ -83,7 +83,7 @@ ctx.slots.inject('sidebar.footer.action', () =>
 )
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 npm test -- tests/contract/harness-rc6-public-surface.test.ts tests/contract/package-manifest.test.ts
@@ -93,13 +93,13 @@ npm test -- tests/contract/harness-rc6-public-surface.test.ts tests/contract/pac
 
 Expected: fail because Connection, storage, sidebar, slots, and Zod are not yet pinned in this worktree.
 
-- [ ] **Step 3: Add exact public dependencies and package injection metadata**
+- [x] **Step 3: Add exact public dependencies and package injection metadata**
 
 Pin the complete 56-package rc.6 closure exactly in the root development graph and verify every installed occurrence stays on `0.1.0-rc.6`. Pin the four observed compatible Cordis support packages and one exact Zod version. The contract must prove that root DSH development dependency keys equal the declared direct set, every override-designated DSH package is absent from root development dependencies, the sets do not overlap, and their union is the complete closure. The workbench Client injection graph contains only packages that expose an rc.6 Web client bundle: Connection, runtime, layout, and sidebar, in dependency-topological order. `@deepseek-ai/dsh-client-ui-slots` remains a type/peer dependency and must not appear in `dsh.client.inject` because rc.6 exposes no `dsh.client` declaration or `./client` bundle for it. Every Harness peer is exact and optional. The Host exports Cordis service injection keys `inject = ['connection', 'storageDomain']` only after Task 2.
 
 The root dependency and workbench package changes intentionally leave the new Stage 2 workspace outside the old immutable rc.6 acceptance production boundary. Do not rewrite the old expected hashes. Preserve the legacy tests through one committed, path-free, exact-byte boundary fixture whose path set and every SHA-256 are checked before reconstruction; explicitly test that the current Stage 2 workspace is rejected by the legacy boundary. Append the resulting supersession status to the historical ledger without rewriting prior evidence.
 
-- [ ] **Step 4: Run GREEN and record the observed public signatures**
+- [x] **Step 4: Run GREEN and record the observed public signatures**
 
 ```bash
 npm test -- tests/contract/harness-rc6-public-surface.test.ts tests/contract/package-manifest.test.ts
@@ -111,7 +111,7 @@ npm run typecheck
 npm test -- tests/integration/rc6-declaration-input.test.ts
 ```
 
-- [ ] **Step 5: Commit the exact Task 1 file inventory**
+- [x] **Step 5: Commit the exact Task 1 file inventory**
 
 ```bash
 git diff --check
@@ -168,23 +168,23 @@ git commit -m "build: pin rc6 smoke integration surface"
 - `counter.increment({ apiVersion, expectedVersion, commandId, delta: 1 })` implements CAS and same-command idempotency over synthetic state.
 - The wire capability versions are strings (`apiVersion: 'pmwb-v1'`, `wireSchemaVersion: '1'`, `dataSchemaVersion: '1'`); only persisted `ProbeState.schemaVersion` is numeric `1`.
 
-- [ ] **Step 1: Write RED protocol and service tests**
+- [x] **Step 1: Write RED protocol and service tests**
 
 Cover strict empty health input, canonical UUID v4 command IDs, extra/missing fields, invalid version/delta, successful increment, idempotent replay, reused ID with different payload, stale expected version, and unknown endpoint.
 
-- [ ] **Step 2: Implement the smallest strict registry and service**
+- [x] **Step 2: Implement the smallest strict registry and service**
 
 All parsing uses strict Zod schemas. The handler catches every internal error and returns a bounded safe envelope without `Error.message`, stack, payload, paths, or an incident id. The public rc.6 outer `internal` error details are exactly empty; record this bounded deviation from the older architecture spec instead of widening or privately importing the carrier.
 
-- [ ] **Step 3: Write RED Client transport tests**
+- [x] **Step 3: Write RED Client transport tests**
 
 Cover success, Host business rejection, malformed success output, carrier rejection, transport exception, and cancellation. A malformed or failed result must not update the Client's authoritative snapshot.
 
-- [ ] **Step 4: Implement the Connection RPC adapter**
+- [x] **Step 4: Implement the Connection RPC adapter**
 
 The adapter calls only channel `/dsh-pm-workbench-v1`; it validates request before send and response after receive, returning a closed discriminated result.
 
-- [ ] **Step 5: Write RED lifecycle/UI tests**
+- [x] **Step 5: Write RED lifecycle/UI tests**
 
 Use fake public-shaped contexts to prove exactly one launcher and one overlay registration, open/close state, focus restoration, abort/generation behavior, and disposal without duplicate registrations after remount. Keep this Task 2 suite dependency-free: test a DOM-independent store/controller, server-render the React markup for semantic markers, and test slot lifecycles with public-shaped fakes. Real rendered clicks and focus belong to Task 3's isolated Chrome observation. Treat the plugin-owned DOM contract as stable public smoke markers:
 
@@ -200,11 +200,11 @@ The overlay is a `role="dialog"` with `aria-modal="true"`; the counter exposes n
 
 Keep Host lifecycle and build-graph proof in their own focused files. Host lifecycle tests cover transactional Domain/route setup, the 16-request cap, and ordered idempotent drain. Build tests inspect esbuild metafiles rather than searching source strings, while preserving the existing Demo and write-boundary tests.
 
-- [ ] **Step 6: Implement Host and Client entrypoints**
+- [x] **Step 6: Implement Host and Client entrypoints**
 
 Host opens the synthetic domain, registers one loopback channel, rejects excess in-flight requests, and performs ordered drain: stop admissions, unregister route, abort lifecycle, await in-flight work and repository writes, then close storage. Its Cordis `inject` keys are the provided service names `['connection', 'storageDomain']`, not the provider package/plugin names. Client contributes one `sidebar.footer.action` and one `shell.overlay`, renders no replacement root, uses the public rc.6 Connection-context intersection, imports the public Client declaration entrypoints it consumes instead of relying on test-global augmentations, and restores focus after close. Add `tsc -p packages/workbench/tsconfig.json --noEmit` to the root typecheck chain so production Host and Client sources compile in their own program. Bundle Zod into both Host and Client artifacts; keep the root development pin but remove Zod from the published package runtime dependencies so a fresh profile can install the tgz offline. Use esbuild metafiles to prove both entry graphs include Zod, exclude Cordis/DeepSeek runtime source, and contain only the declared external packages; never use `packages: 'external'`. Keep Host externals at `@deepseek-ai/*` plus Cordis and Node built-ins, and Client externals at React/React DOM and `@deepseek-ai/*`. Update both manifest contracts that currently require a published Zod dependency. Package verification must prove zero published runtime dependencies, no bare Zod runtime import, no bundled second Harness/Cordis runtime, and inclusion of the Zod notice. Append the resulting Task 2 dependency delta to the Task 1 research checkpoint and append a source-only checkpoint to `docs/probe-results.md`; do not rewrite its immutable historical run blocks or call the checkpoint a runtime PASS. Update the packed third-party notice and root notice with the applicable Zod 4.4.3 MIT attribution/license, and update packed privacy/compatibility plus root/package READMEs from “static no-op” to “implemented but not yet runtime-verified.” Add every new production file, Probe test, and required build/contract/doc file to the standalone relocation manifest so the cloned verification path runs the same implementation and checks. No document may claim installation or smoke success before Task 3 observes it.
 
-- [ ] **Step 7: Run Task 2 verification and commit**
+- [x] **Step 7: Run Task 2 verification and commit**
 
 ```bash
 npm test -- tests/probe
@@ -246,7 +246,7 @@ git commit -m "feat: add minimal Harness smoke probe"
 - `scripts/verify-stage-2-smoke-result.mjs` independently validates the emitted closed result schema, outcome-specific evidence, allowed claims, size bounds, and sanitization. Only its verified Markdown output is eligible to be copied into `docs/gate-results/`.
 - Network evidence is deliberately scoped to the attached Chrome page target. The runner may report that this page target made zero observed external attempts, while separately proving that package-manager operations were configured offline and Harness listeners were loopback-only; it does not claim host-wide packet capture or global process-network observation. The page-target counter must survive any later observation exception. Any non-PASS result may retain a non-zero counter; absent a higher-priority cleanup/process `SAFETY_ABORT`, a non-zero counter fixes the primary failure to `STAGE2_EXTERNAL_NETWORK_ATTEMPT`. Arm a `Page.windowOpen` guard before the first pointer input; any window-open event forbids further input and PASS. Stage 2 does not claim global new-target packet observation.
 
-- [ ] **Step 1: Write RED ownership, provenance, command-graph, and UI-boundary tests**
+- [x] **Step 1: Write RED ownership, provenance, command-graph, and UI-boundary tests**
 
 Use injected filesystem, child-process, `lsof`, package, and browser/CDP fakes; these tests do not start real Harness, Chrome, npm, or pnpm processes.
 
@@ -279,7 +279,7 @@ Prove the closed result states `PASS`, `FAIL`, `INCONCLUSIVE`, `NEEDS_NETWORK_PE
 
 The deterministic browser fakes must also prove: both known dialogs together fail closed; the API dialog alone is handled; a modal arriving during quiet time resets readiness; a modal arriving after `mouseMoved` prevents `mousePressed`; duplicate dialogs/actions, ignored or disabled actions, non-descendant actions, unknown dialogs, wrong-frame/sibling/shadow hits, target replacement, degenerate or out-of-viewport geometry, and a reappearing dialog all send zero unsafe input; a hit on the exact target's text/icon descendant is accepted; each click uses one exact moved/pressed/released sequence and is never retried after press; an external request followed by AX failure or cleanup `SAFETY_ABORT` retains its count; and `Page.windowOpen` prevents continued observation or PASS.
 
-- [ ] **Step 2: Implement the non-bypassable canonical build and byte-frozen package**
+- [x] **Step 2: Implement the non-bypassable canonical build and byte-frozen package**
 
 In `packages/workbench/build.mjs`, retain the existing test hook only as an additional restriction. Immediately after that hook and immediately before every `rm`, `mkdir`, or `writeFile`, always run repository-owned `assertWorkbenchWritePath`; a caller-supplied no-op guard must never weaken the physical boundary.
 
@@ -311,7 +311,7 @@ With cwd exactly `<run-root>/package-source`, invoke the explicit absolute Node 
 
 The only permitted trailing arguments are fixed safety restrictions owned by this repository: `--ignore-scripts`, `--offline`, an explicit `--pack-destination` below `<run-root>/pack`, explicit cache/user-config/global-config paths below the same owned operation root, disabled audit/fund/update-notifier, and bounded error logging. Do not run a separate npm dry-run, do not use `npm pack --workspace`, and do not resolve npm through `PATH`. Reject package lifecycle hooks that could mutate the frozen package source. Require exactly one newly created regular tgz in the explicit pack destination, validate npm's exact nine-member path/size/mode inventory, revalidate the staged nine-file byte receipt after packing, independently verify the tgz byte count, npm SHA-1 and SHA-512 integrity, then compute and freeze the whole-tgz SHA-256 for every later add or reinstall. npm metadata does not expose per-member SHA-256, so Stage 2 makes no such claim. Do not publish, rebuild after freeze, select a tgz by “latest” or mtime, or accept a package created by another command.
 
-- [ ] **Step 3: Initialize the isolated profile with the owned pnpm shim**
+- [x] **Step 3: Initialize the isolated profile with the owned pnpm shim**
 
 Create the run root exclusively below the canonical system temporary directory, write its random ownership marker with `wx`, record root and marker device/inode/mode identities, and create every isolation path beneath it.
 
@@ -329,7 +329,7 @@ Verify in the isolated profile that `package.json` has exact dependency `@knight
 
 Do not treat `--dump-config`, a profile listing, package listing, or filesystem presence as runtime PASS evidence. If offline add proves an exact required external artifact is unavailable, return `NEEDS_NETWORK_PERMISSION`; never retry online.
 
-- [ ] **Step 4: Start and stop only identity-witnessed isolated children**
+- [x] **Step 4: Start and stop only identity-witnessed isolated children**
 
 Launch Harness only as:
 
@@ -351,7 +351,7 @@ Do not require OS `ps` start time, OS-reported argv, or executable-name matching
 
 If validated Chrome cannot start, expose bounded CDP, or render the isolated loopback page, return `INCONCLUSIVE`; do not infer UI success.
 
-- [ ] **Step 5: Observe the smoke graph through rendered UI only**
+- [x] **Step 5: Observe the smoke graph through rendered UI only**
 
 The runner may use CDP `Page`, `DOM`, `Input`, and accessibility/lifecycle operations needed to navigate, wait, query stable plugin-owned attributes, read attributes/text, and dispatch real pointer input. It must not evaluate or inject code that calls `fetch`, `XMLHttpRequest`, a Connection object, the Probe channel, or any Harness API. It must not inspect Harness-private classes, component structure, globals, source modules, or private DOM.
 
@@ -390,7 +390,7 @@ It contains neither `--offline` nor `--ignore-scripts`. Every plugin-set change 
 
 UI increment followed by restart persistence is the RPC proof: it demonstrates the shipped Client invoking the shipped Host through public Connection RPC without the runner calling the carrier. Disabled and removed states are proved by isolated-profile state plus rendered plugin-marker absence. Do not call a raw RPC or HTTP endpoint, and do not accept `404` or `405` as evidence.
 
-- [ ] **Step 6: Cleanup with rename, revalidation, no-follow removal, and post-deletion emission**
+- [x] **Step 6: Cleanup with rename, revalidation, no-follow removal, and post-deletion emission**
 
 First stop only children satisfying retained-child, spawn-receipt, cwd, marker, and listener witnesses. Verify every Harness and Chrome listener disappeared.
 
@@ -412,7 +412,7 @@ If identity changes before rename, do not rename or delete. If it changes after 
 
 This rename/revalidate/remove sequence protects against accidental path or ownership drift. An interior symlink with an external target does not extend deletion authority because inventory and removal never follow it; only the link entry inside the owned tombstone is unlinked. The result does not attest to ownership or validity of the target. The sequence does not claim resistance to a malicious same-user process racing filesystem mutations between checks; that adversarial same-user race is explicitly outside the Stage 2 threat model.
 
-- [ ] **Step 7: Verify, sanitize, and commit only code plus an eligible report**
+- [x] **Step 7: Verify, sanitize, and commit only code plus an eligible report**
 
 Run:
 
