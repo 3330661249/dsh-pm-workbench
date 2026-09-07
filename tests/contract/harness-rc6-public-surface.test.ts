@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import ts from 'typescript'
 import { describe, expect, test } from 'vitest'
 
 const workspaceRoot = resolve(import.meta.dirname, '../..')
@@ -118,9 +119,154 @@ function packageNameFromLockLocation(location: string): string | undefined {
   return location.slice(markerIndex + marker.length)
 }
 
-function importedSpecifiers(source: string): string[] {
-  return [...source.matchAll(/^import(?: type)?(?: .*? from)? ['"]([^'"]+)['"]$/gm)]
-    .map((match) => match[1])
+type SurfaceCall = {
+  callee: string
+  arguments: string[]
+  awaited: boolean
+}
+
+type SurfaceSyntax = {
+  imports: string[]
+  unsupportedModuleLoads: string[]
+  calls: SurfaceCall[]
+  memberAccesses: string[]
+}
+
+function compactSyntax(node: ts.Node, sourceFile: ts.SourceFile): string {
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    true,
+    ts.LanguageVariant.Standard,
+    node.getText(sourceFile),
+  )
+  const tokens: string[] = []
+  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    tokens.push(scanner.getTokenText())
+  }
+  return tokens.join('')
+}
+
+function inspectSurfaceSyntax(source: string, fixturePath: string): SurfaceSyntax {
+  const sourceFile = ts.createSourceFile(
+    fixturePath,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    fixturePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  )
+  const syntax: SurfaceSyntax = {
+    imports: [],
+    unsupportedModuleLoads: [],
+    calls: [],
+    memberAccesses: [],
+  }
+
+  function visit(node: ts.Node): void {
+    if (ts.isImportDeclaration(node)) {
+      if (ts.isStringLiteral(node.moduleSpecifier)) {
+        syntax.imports.push(node.moduleSpecifier.text)
+      } else {
+        syntax.unsupportedModuleLoads.push('non-literal static import')
+      }
+    } else if (ts.isImportEqualsDeclaration(node)) {
+      syntax.unsupportedModuleLoads.push('import equals')
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier) {
+      syntax.unsupportedModuleLoads.push('re-export')
+    }
+
+    if (ts.isCallExpression(node)) {
+      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+        syntax.unsupportedModuleLoads.push('dynamic import')
+      } else if (
+        (ts.isIdentifier(node.expression) && node.expression.text === 'require')
+        || (ts.isPropertyAccessExpression(node.expression)
+          && compactSyntax(node.expression, sourceFile).startsWith('require.'))
+      ) {
+        syntax.unsupportedModuleLoads.push('CommonJS require')
+      }
+      syntax.calls.push({
+        callee: compactSyntax(node.expression, sourceFile),
+        arguments: node.arguments.map((argument) => compactSyntax(argument, sourceFile)),
+        awaited: ts.isAwaitExpression(node.parent),
+      })
+    }
+
+    if (ts.isPropertyAccessExpression(node)) {
+      syntax.memberAccesses.push(compactSyntax(node, sourceFile))
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  visit(sourceFile)
+  return syntax
+}
+
+function expectCall(
+  syntax: SurfaceSyntax,
+  callee: string,
+  args: string[],
+  awaited = false,
+): void {
+  expect(syntax.calls).toContainEqual({ callee, arguments: args, awaited })
+}
+
+function assertHostProductSurface(source: string): void {
+  const syntax = inspectSurfaceSyntax(source, productSurfaceFixtures.host.path)
+
+  expect(syntax.imports).toEqual(productSurfaceFixtures.host.imports)
+  expect(syntax.unsupportedModuleLoads).toEqual([])
+  expectCall(syntax, 'domainTable', ['recordSchema'])
+  expectCall(syntax, 'defineDomain', [
+    "{name:'dsh_pm_workbench_product_surface',version:1,tables:{projects:domainTable<ProjectId,z.infer<typeofrecordSchema>>(recordSchema)},}",
+  ])
+  expectCall(syntax, 'ctx.storageDomain.open', ['spec'], true)
+  expectCall(syntax, 'domain.table', ["'projects'"])
+  expectCall(syntax, 'projects.get', ['id'])
+  expectCall(syntax, 'projects.entries', [])
+  expectCall(syntax, 'projects.keys', [])
+  expect(syntax.memberAccesses).toContain('projects.size')
+  expectCall(syntax, 'projects.put', ['id', "{kind:'surface',version:1}"], true)
+  expectCall(syntax, 'projects.update', [
+    'id',
+    'current=>({...current,version:current.version+1})',
+  ], true)
+  expectCall(syntax, 'projects.delete', ['id'], true)
+  expectCall(syntax, 'ctx.connection.rpc.handle', [
+    "'/dsh-pm-workbench-product-v1'",
+    'handler',
+    "{authority:'loopback'}",
+  ])
+  expectCall(syntax, 'dispose', [], true)
+  expectCall(syntax, 'domain.close', [], true)
+}
+
+function assertClientProductSurface(source: string): void {
+  const syntax = inspectSurfaceSyntax(source, productSurfaceFixtures.client.path)
+
+  expect(syntax.imports).toEqual(productSurfaceFixtures.client.imports)
+  expect(syntax.unsupportedModuleLoads).toEqual([])
+  expectCall(syntax, 'ctx.connection.rpc.call', [
+    "'/dsh-pm-workbench-product-v1'",
+    "'health'",
+    "{apiVersion:'pmwb-product-v1'}",
+    'signal',
+  ], true)
+  expectCall(syntax, 'ctx.slots.inject', [
+    "'sidebar.footer.action'",
+    "()=>ctx.slots.register({name:'sidebar.footer.action',id:'pm-workbench-product-launcher',order:90},Launcher,)",
+  ])
+  expectCall(syntax, 'ctx.slots.register', [
+    "{name:'sidebar.footer.action',id:'pm-workbench-product-launcher',order:90}",
+    'Launcher',
+  ])
+  expectCall(syntax, 'ctx.slots.inject', [
+    "'shell.overlay'",
+    "()=>ctx.slots.register({name:'shell.overlay',id:'pm-workbench-product-overlay',order:90},Overlay,)",
+  ])
+  expectCall(syntax, 'ctx.slots.register', [
+    "{name:'shell.overlay',id:'pm-workbench-product-overlay',order:90}",
+    'Overlay',
+  ])
 }
 
 describe('rc.6 public smoke surface', () => {
@@ -261,32 +407,71 @@ describe('rc.6 public smoke surface', () => {
   test('freezes the Product Host declaration contract on public rc.6 entrypoints', async () => {
     const source = await readFile(resolve(workspaceRoot, productSurfaceFixtures.host.path), 'utf8')
 
-    expect(importedSpecifiers(source)).toEqual(productSurfaceFixtures.host.imports)
-    expect(source).toContain('defineDomain({')
-    expect(source).toContain('domainTable<ProjectId, z.infer<typeof recordSchema>>')
-    expect(source).toContain('ctx.storageDomain.open(spec)')
-    expect(source).toContain("domain.table('projects')")
-    expect(source).toContain('projects.get(id)')
-    expect(source).toContain('projects.entries()')
-    expect(source).toContain('projects.keys()')
-    expect(source).toContain('projects.size')
-    expect(source).toContain('projects.put(id,')
-    expect(source).toContain('projects.update(id,')
-    expect(source).toContain('projects.delete(id)')
-    expect(source).toContain("ctx.connection.rpc.handle('/dsh-pm-workbench-product-v1'")
-    expect(source).toContain('await dispose()')
-    expect(source).toContain('await domain.close()')
+    assertHostProductSurface(source)
   })
 
   test('freezes the Product Client declaration contract on public rc.6 entrypoints', async () => {
     const source = await readFile(resolve(workspaceRoot, productSurfaceFixtures.client.path), 'utf8')
 
-    expect(importedSpecifiers(source)).toEqual(productSurfaceFixtures.client.imports)
-    expect(source).toContain("ctx.connection.rpc.call('/dsh-pm-workbench-product-v1'")
-    expect(source).toContain("{ apiVersion: 'pmwb-product-v1' }")
-    expect(source).toContain("ctx.slots.inject('sidebar.footer.action'")
-    expect(source).toContain("ctx.slots.inject('shell.overlay'")
-    expect(source).toContain("id: 'pm-workbench-product-launcher'")
-    expect(source).toContain("id: 'pm-workbench-product-overlay'")
+    assertClientProductSurface(source)
+  })
+
+  test('rejects a multiline private static import added to a Product fixture', async () => {
+    const source = await readFile(resolve(workspaceRoot, productSurfaceFixtures.host.path), 'utf8')
+    const mutated = `${source}\nimport {\n  privateSurface,\n} from '@deepseek-ai/dsh-storage-domain/private'\n`
+    const syntax = inspectSurfaceSyntax(mutated, productSurfaceFixtures.host.path)
+
+    expect(syntax.imports).toContain('@deepseek-ai/dsh-storage-domain/private')
+    expect(() => assertHostProductSurface(mutated)).toThrow()
+  })
+
+  test.each([
+    ['dynamic import', "void import('@deepseek-ai/dsh-client-connection/private')", 'dynamic import'],
+    ['CommonJS require', "void require('@deepseek-ai/dsh-client-connection/private')", 'CommonJS require'],
+  ])('rejects an added %s module load', async (_label, moduleLoad, expectedKind) => {
+    const source = await readFile(resolve(workspaceRoot, productSurfaceFixtures.client.path), 'utf8')
+    const mutated = `${source}\n${moduleLoad}\n`
+    const syntax = inspectSurfaceSyntax(mutated, productSurfaceFixtures.client.path)
+
+    expect(syntax.unsupportedModuleLoads).toContain(expectedKind)
+    expect(() => assertClientProductSurface(mutated)).toThrow()
+  })
+
+  test('rejects API markers that survive only in comments and inert strings', async () => {
+    const source = await readFile(resolve(workspaceRoot, productSurfaceFixtures.host.path), 'utf8')
+    const mutated = source.replace(
+      'void projects.keys()',
+      "// void projects.keys()\nconst inertMarker = 'projects.keys()'",
+    )
+    const syntax = inspectSurfaceSyntax(mutated, productSurfaceFixtures.host.path)
+
+    expect(mutated).not.toBe(source)
+    expect(syntax.calls).not.toContainEqual({
+      callee: 'projects.keys',
+      arguments: [],
+      awaited: false,
+    })
+    expect(() => assertHostProductSurface(mutated)).toThrow()
+  })
+
+  test('preserves string literal whitespace while matching executable call arguments', async () => {
+    const source = await readFile(resolve(workspaceRoot, productSurfaceFixtures.host.path), 'utf8')
+    const mutated = source.replace(
+      "'/dsh-pm-workbench-product-v1'",
+      "'/dsh-pm-workbench-product-v1 '",
+    )
+    const syntax = inspectSurfaceSyntax(mutated, productSurfaceFixtures.host.path)
+
+    expect(mutated).not.toBe(source)
+    expect(syntax.calls).toContainEqual({
+      callee: 'ctx.connection.rpc.handle',
+      arguments: [
+        "'/dsh-pm-workbench-product-v1 '",
+        'handler',
+        "{authority:'loopback'}",
+      ],
+      awaited: false,
+    })
+    expect(() => assertHostProductSurface(mutated)).toThrow()
   })
 })
