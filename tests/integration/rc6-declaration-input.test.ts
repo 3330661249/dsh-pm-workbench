@@ -18,6 +18,13 @@ import {
 const workspaceRoot = resolve(import.meta.dirname, '../..')
 const legacyBoundaryFixtureRelativePath =
   'tests/fixtures/rc6-legacy-production-boundary.json'
+const stage3aProductSurfaceFiles = [
+  'research/2026-09-07-stage-3a-product-surface.md',
+  'tests/types/harness-client-rc6-product-surface.ts',
+  'tests/types/harness-host-rc6-product-surface.ts',
+  'tsconfig.stage3a.surface.client.json',
+  'tsconfig.stage3a.surface.host.json',
+] as const
 
 const acceptance = await import('../../scripts/accept-rc6-declaration-input.mjs')
 const execFileAsync = promisify(execFile)
@@ -503,6 +510,13 @@ async function makeTinyCache({ indexLines }: { indexLines?: string[] } = {}) {
 }
 
 describe('rc.6 accepted declaration input', () => {
+  test('carries the Stage 3A Product declaration evidence in the standalone source inventory', async () => {
+    const manifest = await readJson('tests/fixtures/standalone-source-manifest.json')
+
+    expect(manifest.schemaVersion).toBe(1)
+    expect(manifest.files).toEqual(expect.arrayContaining([...stage3aProductSurfaceFiles]))
+  })
+
   test('serializes canonical JSON with UTF-8 key order independent of insertion order', () => {
     const left = { '2': 'two', '10': 'ten', a: 'ascii', é: 'utf8', list: [3, { b: true, a: null }] }
     const right = { list: [3, { a: null, b: true }], é: 'utf8', a: 'ascii', '10': 'ten', '2': 'two' }

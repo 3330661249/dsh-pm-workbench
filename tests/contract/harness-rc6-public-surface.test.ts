@@ -81,6 +81,31 @@ const compatibilityOverrides = {
   '@deepseek-ai/cosmokit': '1.8.2',
   '@deepseek-ai/schemastery': '3.18.1',
 } as const
+const productSurfaceFixtures = {
+  host: {
+    path: 'tests/types/harness-host-rc6-product-surface.ts',
+    imports: [
+      '@deepseek-ai/dsh-client-connection',
+      '@deepseek-ai/dsh-storage-domain',
+      '@deepseek-ai/cordis',
+      '@deepseek-ai/dsh-client-connection',
+      '@deepseek-ai/dsh-storage-domain',
+      'zod',
+    ],
+  },
+  client: {
+    path: 'tests/types/harness-client-rc6-product-surface.ts',
+    imports: [
+      '@deepseek-ai/dsh-client-connection/client',
+      '@deepseek-ai/dsh-client-runtime/client',
+      '@deepseek-ai/dsh-client-ui-layout/client',
+      '@deepseek-ai/dsh-client-ui-sidebar/client',
+      '@deepseek-ai/dsh-client-connection/client',
+      '@deepseek-ai/dsh-client-runtime/client',
+      'react',
+    ],
+  },
+} as const
 
 async function readJson(path: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
@@ -91,6 +116,11 @@ function packageNameFromLockLocation(location: string): string | undefined {
   const markerIndex = location.lastIndexOf(marker)
   if (markerIndex === -1) return undefined
   return location.slice(markerIndex + marker.length)
+}
+
+function importedSpecifiers(source: string): string[] {
+  return [...source.matchAll(/^import(?: type)?(?: .*? from)? ['"]([^'"]+)['"]$/gm)]
+    .map((match) => match[1])
 }
 
 describe('rc.6 public smoke surface', () => {
@@ -226,5 +256,37 @@ describe('rc.6 public smoke surface', () => {
     expect(peerDependenciesMeta).toEqual(Object.fromEntries(
       optionalWorkbenchPeers.map((packageName) => [packageName, { optional: true }]),
     ))
+  })
+
+  test('freezes the Product Host declaration contract on public rc.6 entrypoints', async () => {
+    const source = await readFile(resolve(workspaceRoot, productSurfaceFixtures.host.path), 'utf8')
+
+    expect(importedSpecifiers(source)).toEqual(productSurfaceFixtures.host.imports)
+    expect(source).toContain('defineDomain({')
+    expect(source).toContain('domainTable<ProjectId, z.infer<typeof recordSchema>>')
+    expect(source).toContain('ctx.storageDomain.open(spec)')
+    expect(source).toContain("domain.table('projects')")
+    expect(source).toContain('projects.get(id)')
+    expect(source).toContain('projects.entries()')
+    expect(source).toContain('projects.keys()')
+    expect(source).toContain('projects.size')
+    expect(source).toContain('projects.put(id,')
+    expect(source).toContain('projects.update(id,')
+    expect(source).toContain('projects.delete(id)')
+    expect(source).toContain("ctx.connection.rpc.handle('/dsh-pm-workbench-product-v1'")
+    expect(source).toContain('await dispose()')
+    expect(source).toContain('await domain.close()')
+  })
+
+  test('freezes the Product Client declaration contract on public rc.6 entrypoints', async () => {
+    const source = await readFile(resolve(workspaceRoot, productSurfaceFixtures.client.path), 'utf8')
+
+    expect(importedSpecifiers(source)).toEqual(productSurfaceFixtures.client.imports)
+    expect(source).toContain("ctx.connection.rpc.call('/dsh-pm-workbench-product-v1'")
+    expect(source).toContain("{ apiVersion: 'pmwb-product-v1' }")
+    expect(source).toContain("ctx.slots.inject('sidebar.footer.action'")
+    expect(source).toContain("ctx.slots.inject('shell.overlay'")
+    expect(source).toContain("id: 'pm-workbench-product-launcher'")
+    expect(source).toContain("id: 'pm-workbench-product-overlay'")
   })
 })
