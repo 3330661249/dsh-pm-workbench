@@ -1,0 +1,122 @@
+import { renderToStaticMarkup } from 'react-dom/server'
+import { describe, expect, it } from 'vitest'
+import { WorkbenchLauncher, WorkbenchView } from '../../packages/workbench/src/client/workbench/WorkbenchView.js'
+import { PriorityPane } from '../../packages/workbench/src/client/workbench/PriorityPane.js'
+import { PrdPane } from '../../packages/workbench/src/client/workbench/PrdPane.js'
+import { ProjectList } from '../../packages/workbench/src/client/workbench/ProjectList.js'
+import type { WorkbenchState, WorkbenchStore, ConfirmationSnapshot } from '../../packages/workbench/src/client/workbench/store.js'
+import type { ProjectView } from '../../packages/workbench/src/application/project-views.js'
+import { FIXTURE_MANIFEST, BUILT_IN_SYNTHETIC_HASH, BUILT_IN_SYNTHETIC_TEXT } from '../../packages/workbench/src/analysis/fixture-manifest.js'
+import { baselineIdSchema, prdRevisionIdSchema, requirementRevisionIdSchema } from '../../packages/workbench/src/domain/ids.js'
+import { makeSmallActiveRecord, SMALL_PROJECT_ID, OTHER_PROJECT_ID } from './helpers/synthetic-records.js'
+
+const candidate = FIXTURE_MANIFEST.sources[BUILT_IN_SYNTHETIC_HASH]!.candidate
+const generated = candidate.generatedRequirements[0]!
+const header = { ...makeSmallActiveRecord().header, name: 'PROJECT_CANARY', researchGoal: 'GOAL_CANARY', projectVersion: 8, contentVersion: 7, reviewStarted: true }
+const revision = { id: requirementRevisionIdSchema.parse('60000000-0000-4000-8000-000000000001'), requirementId: generated.requirementId,
+  basedOnDraftId: generated.id, title: '人工最终标题 TITLE_CANARY', painPoint: 'PAIN_CANARY', description: 'DESCRIPTION_CANARY' }
+const project: ProjectView = { header, source: { projectId: SMALL_PROJECT_ID, sourceRevisionId: candidate.analysis.sourceRevisionId, revision: 1,
+  displayName: 'FILE_CANARY.txt', format: 'pasted', utf8Bytes: new TextEncoder().encode(BUILT_IN_SYNTHETIC_TEXT).length,
+  contentHash: BUILT_IN_SYNTHETIC_HASH, syntheticDataAttested: true }, analysis: candidate.analysis,
+  generatedRequirements: candidate.generatedRequirements, selectedHumanRevisions: [revision],
+  humanDecisions: [{ requirementId: generated.requirementId, selectedText: { kind: 'human-revision', revisionId: revision.id }, priority: 'high', decision: 'include', humanReason: 'REASON_CANARY' }],
+  requirementOrder: [generated.requirementId], evidence: candidate.evidence, currentBaseline: null, prdSummaries: [] }
+const ready: WorkbenchState = { isOpen: true, projects: [header], selectedProjectId: SMALL_PROJECT_ID, selectedProject: project,
+  selectedSource: { ...project.source!, text: BUILT_IN_SYNTHETIC_TEXT }, drafts: [], dirtyRevision: 0, savedDraftRevision: 0,
+  dirty: false, saveState: 'saved', acceptedVersionFloor: 8, importAttested: false, materialDirty: false }
+const token = (state: WorkbenchState): ConfirmationSnapshot => state.saveState === 'saved' && state.selectedProject
+  ? Object.freeze({ ok: true, projectVersion: state.selectedProject.header.projectVersion, contentVersion: state.selectedProject.header.contentVersion, project: state.selectedProject })
+  : { ok: false, reason: state.saveState === 'saved' ? 'unsaved' : state.saveState }
+function staticStore(state = ready): WorkbenchStore {
+  return { getSnapshot: () => state, subscribe: () => () => {}, getConfirmationSnapshot: () => token(state) } as unknown as WorkbenchStore
+}
+const render = (state = ready) => renderToStaticMarkup(<WorkbenchView store={staticStore(state)} />)
+function tag(html: string, marker: string) { return html.match(new RegExp(`<[^>]+data-dsh-pm-workbench="${marker}"[^>]*>`))?.[0] ?? '' }
+function dataNames(element: string) { return [...element.matchAll(/\b(data-[a-z-]+)=/g)].map(m => m[1]).filter(n => n !== 'data-dsh-pm-workbench').sort() }
+
+describe('Product semantic markup', () => {
+  it('shows the synthetic-only gate, local-test identity, and four ordinary labelled area buttons', () => {
+    const html = render()
+    for (const text of ['当前仅支持合成测试材料，请勿导入真实访谈或客户信息', '我确认这是新写的合成测试材料，不含真实个人或客户数据',
+      '生成本地测试草稿', '本地 Fixture 结果，未调用模型，不代表 AI 分析', '材料', '需求', '优先级', 'PRD', '确认并保存材料', '保存修改']) expect(html).toContain(text)
+    expect(html).not.toContain('role="tab"')
+    for (const text of ['API key', 'provider', '发送消息', '选择模型', '发布基线']) expect(html).not.toContain(text)
+  })
+  it('uses a native pointer-active named Workbench dialog and a keyboard button launcher', () => {
+    const html = render()
+    expect(tag(html, 'overlay')).toMatch(/^<dialog/)
+    expect(tag(html, 'overlay')).toContain('aria-labelledby=')
+    expect(tag(html, 'overlay')).toContain('pointer-events:auto')
+    expect(tag(html, 'close')).toContain('type="button"')
+    const launcher = renderToStaticMarkup(<WorkbenchLauncher onOpen={() => {}} />)
+    expect(tag(launcher, 'launcher')).toMatch(/^<button/)
+    expect(launcher).not.toContain('aria-label=')
+    expect(render({ ...ready, isOpen: false })).toBe('')
+  })
+  it('renders empty inventory, optional goal, limit and Host-supplied row order using only public summaries', () => {
+    const empty = render({ ...ready, projects: [], selectedProject: undefined, selectedProjectId: undefined, selectedSource: undefined })
+    expect(empty).toContain('暂时没有项目'); expect(empty).toContain('新建项目')
+    const headers = [{ ...header, id: OTHER_PROJECT_ID, name: '第二个先显示', researchGoal: null }, { ...header, name: '第一个后显示' }]
+    const html = renderToStaticMarkup(<ProjectList state={{ ...ready, projects: headers }} />)
+    expect(html.indexOf('第二个先显示')).toBeLessThan(html.indexOf('第一个后显示'))
+    expect(html).toContain('研究目标未提供')
+    for (const text of ['材料已导入', '已分析', 'PRD 已过期', '需求审核中']) expect(html).not.toContain(text)
+    const full = render({ ...ready, projects: Array.from({ length: 20 }, (_, n) => ({ ...header, id: `${header.id.slice(0, -2)}${String(n).padStart(2, '0')}` as typeof header.id })) })
+    expect(full).toContain('已达到 20 个项目上限'); expect(tag(full, 'new-project')).toContain('disabled=""')
+  })
+  it.each(['unsaved', 'saving', 'failed', 'uncertain'] as const)('blocks final publication while save state is %s', saveState => {
+    const state = { ...ready, saveState }
+    const html = renderToStaticMarkup(<PriorityPane state={state} confirmation={token(state)} />)
+    expect(html).toContain('确认本期需求并生成 PRD')
+    expect(tag(html, 'confirm-scope')).toContain('disabled=""')
+    expect(tag(html, 'confirmation-summary')).toBe('')
+  })
+  it('renders the complete authoritative summary, not a newer local title, with exact identity witnesses', () => {
+    const html = renderToStaticMarkup(<PriorityPane state={ready} confirmation={token(ready)} />)
+    for (const text of [revision.title, revision.painPoint, revision.description, '高', '纳入本期', 'REASON_CANARY', candidate.evidence[0]!.quote]) expect(html).toContain(text)
+    expect(tag(html, 'confirmation-summary')).toContain('data-confirmation-content-version="7"')
+    expect(dataNames(tag(html, 'confirmation-summary'))).toEqual(['data-confirmation-content-version', 'data-confirmation-project-version', 'data-project-id'])
+  })
+  it.each([['unsaved', '未保存'], ['saving', '保存中'], ['saved', '已保存'], ['failed', '保存失败'], ['uncertain', '结果待确认']] as const)(
+    'renders %s independently of selected review stage', (saveState, label) => {
+      const html = render({ ...ready, saveState }); expect(html).toContain(label); expect(html).toContain('需求审核中')
+      expect(dataNames(tag(html, 'save-state'))).toEqual([])
+    })
+  it.each([['transport-internal', '工作台暂时无法连接'], ['host-unavailable', '工作台暂时无法连接'],
+    ['version-conflict', '内容已更新，请刷新后重试'], ['invalid-evidence', '原文依据无法核对，请刷新后重试']] as const)('renders fixed safe %s errors', (error, message) => {
+      expect(render({ ...ready, error })).toContain(message)
+    })
+  it('renders a neutral no-valid-needs message and source and evidence as visible text with exact witnesses', () => {
+    expect(render({ ...ready, selectedProject: { ...project, generatedRequirements: [], requirementOrder: [], humanDecisions: [], selectedHumanRevisions: [] } }))
+      .toContain('暂未找到有充分依据的需求，可检查材料或保留为后续研究问题。')
+    const html = render()
+    expect(html).toContain('查看原文'); expect(html).toContain(BUILT_IN_SYNTHETIC_TEXT)
+    expect(tag(html, 'source-text')).not.toContain('hidden')
+    expect(dataNames(tag(html, 'source-status'))).toEqual(['data-source-revision-id'])
+    expect(dataNames(tag(html, 'evidence'))).toEqual(['data-evidence-id', 'data-quote-end', 'data-quote-hash', 'data-quote-start', 'data-source-revision-id'])
+    for (const name of ['requirement-title', 'requirement-pain-point', 'requirement-description', 'priority', 'decision', 'human-reason', 'requirement-order', 'evidence-quote', 'evidence-context']) expect(tag(html, name)).not.toBe('')
+  })
+  it('binds retained stale and current PRD markup and trace to a selected history revision', () => {
+    const summary = { projectId: SMALL_PROJECT_ID, prdRevisionId: prdRevisionIdSchema.parse('70000000-0000-4000-8000-000000000001'),
+      baselineId: baselineIdSchema.parse('80000000-0000-4000-8000-000000000001'), sourceRevisionId: candidate.analysis.sourceRevisionId,
+      baselineContentVersion: 6, rendererVersion: 'pmwb-prd-v1' as const, contentHash: BUILT_IN_SYNTHETIC_HASH, utf8Bytes: 15, createdAt: header.updatedAt, status: 'stale' as const }
+    const state = { ...ready, selectedProject: { ...project, prdSummaries: [summary] }, selectedPrdRevisionId: summary.prdRevisionId,
+      selectedMarkdown: { ...summary, markdown: 'MARKDOWN_CANARY' } }
+    const html = renderToStaticMarkup(<PrdPane state={state} />)
+    for (const text of ['需求已调整，此 PRD 保留的是上次确认的内容', '复制 Markdown', '下载 Markdown', 'MARKDOWN_CANARY', summary.baselineId]) expect(html).toContain(text)
+    for (const marker of ['prd-preview', 'prd-history-item']) expect(dataNames(tag(html, marker))).toEqual(['data-baseline-id', 'data-prd-current', 'data-prd-hash', 'data-prd-revision-id'])
+    expect(tag(html, 'prd-preview')).toContain('data-prd-current="false"'); expect(tag(html, 'prd-markdown')).not.toContain('hidden')
+    const current = renderToStaticMarkup(<PrdPane state={{ ...state, selectedProject: { ...project, prdSummaries: [{ ...summary, status: 'current' }] } }} />)
+    expect(tag(current, 'prd-preview')).toContain('data-prd-current="true"')
+  })
+  it('keeps every free-text canary out of all Product witness, title, hidden and accessibility attributes', () => {
+    const html = render()
+    const risky = [...html.matchAll(/\b(?:data-[\w-]+|title|aria-[\w-]+|hidden)="([^"]*)"/g)].map(match => match[0]).join('\n')
+    for (const text of ['CANARY', generated.title, candidate.evidence[0]!.quote, 'synthetic.txt']) expect(risky).not.toContain(text)
+    expect(html).not.toMatch(/\b(?:title|aria-label|hidden)=/)
+    for (const match of html.matchAll(/\b(data-[\w-]+)="([^"]*)"/g)) {
+      if (match[1] === 'data-dsh-pm-workbench') continue
+      expect(match[2]).toMatch(/^(?:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|[0-9a-f]{64}|true|false|\d+)$/)
+    }
+  })
+})

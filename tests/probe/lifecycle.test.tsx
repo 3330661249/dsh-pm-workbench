@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   mountProbeClient,
   type ProbeClientContext,
-} from '../../packages/workbench/src/client/index.js'
+} from '../../packages/workbench/src/client/probe/index.js'
 import type { ProbeStore } from '../../packages/workbench/src/client/probe/store.js'
 
 type SlotComponent = ComponentType<Record<string, unknown>>
