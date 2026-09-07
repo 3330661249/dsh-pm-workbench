@@ -91,6 +91,18 @@ const affectsContent = (payload: Payload) => ['source.importText', 'analysis.run
 const emptyState = (): WorkbenchState => Object.freeze({ isOpen: false, projects: [], drafts: [], dirtyRevision: 0,
   savedDraftRevision: 0, dirty: false, saveState: 'unsaved', acceptedVersionFloor: 0, importAttested: false, materialDirty: false, selectedProject: undefined, pendingRetry: undefined })
 
+/** Immutable Markdown may become stale, but every summary binding must still identify these exact bytes. */
+function markdownMatchesSelection(value: MarkdownView | undefined, project: ProjectView | undefined,
+  selectedId: PrdRevisionId | undefined): value is MarkdownView {
+  if (!isVerifiedMarkdown(value) || !project || !selectedId) return false
+  const summary = project.prdSummaries.find(prd => prd.prdRevisionId === selectedId)
+  return !!summary && value.projectId === project.header.id && value.projectId === summary.projectId
+    && value.prdRevisionId === selectedId && value.contentHash === summary.contentHash
+    && value.sourceRevisionId === summary.sourceRevisionId && value.baselineId === summary.baselineId
+    && value.baselineContentVersion === summary.baselineContentVersion && value.rendererVersion === summary.rendererVersion
+    && value.utf8Bytes === summary.utf8Bytes && value.createdAt === summary.createdAt
+}
+
 /** One selected-project queue: switching is refused until its complete barrier is clean. */
 export function createWorkbenchStore(transport: WorkbenchTransport, ids: WorkbenchClientIds, browser: WorkbenchBrowserPort): WorkbenchStore {
   let state = emptyState()
@@ -98,15 +110,16 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
   let observation = new AbortController(), prdAbort = new AbortController()
   let intents: Intent[] = [], active: Active | undefined, running = 0
   let tail: Promise<unknown> = Promise.resolve()
-  let readbackFailed = false, reviewRequired = false
+  // Read observation failure is distinct from durable receipts still held in intents.
+  let readFailed = false, reviewRequired = false
   const listeners = new Set<() => void>()
   let confirmations = new WeakMap<object, { selection: number; observation: number; revision: number; saved: number; project: ProjectView }>()
   function publish(patch: Partial<WorkbenchState> = {}): void {
     if (disposed) return
     const next = { ...state, ...patch }
     const dirty = next.dirtyRevision !== next.savedDraftRevision || next.materialDirty
-    const saveState: SaveState = next.pendingRetry ? 'uncertain' : intents.some(i => i.failure) || readbackFailed ? 'failed'
-      : active?.admitted ? 'saving' : dirty || running > 0 || !next.selectedProject ? 'unsaved' : 'saved'
+    const saveState: SaveState = next.pendingRetry ? 'uncertain' : intents.some(i => i.failure) || readFailed ? 'failed'
+      : active?.admitted ? 'saving' : dirty || running > 0 || !!next.selectedProjectId && !next.selectedProject ? 'unsaved' : 'saved'
     state = Object.freeze({ ...next, dirty, saveState, drafts: Object.freeze(intents.map(i => Object.freeze({
       projectId: i.projectId, selectionGeneration: i.selectionGeneration, revision: i.revision, payload: i.payload,
     }))) })
@@ -133,7 +146,7 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
       }
     }
     intents = intents.filter(intent => intent.revision > saved)
-    readbackFailed = false
+    readFailed = false
     publish({ savedDraftRevision: saved, error: intents.find(i => i.failure)?.failure })
   }
   async function readProject(): Promise<StoreResult<ProjectView>> {
@@ -144,23 +157,22 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
     try { result = await transport.getProject({ ...api, projectId: id }, observation.signal) }
     catch { result = { ok: false, error: { code: 'host-unavailable', uncertain: false } } }
     if (!current(selection, observationId)) return fail('cancelled')
-    if (!result.ok) { readbackFailed = true; publish({ error: result.error.code }); return fail(result.error.code) }
+    if (!result.ok) { readFailed = true; publish({ error: result.error.code }); return fail(result.error.code) }
     let outcome
     try { outcome = parseProductOutcome('projects.get', result.value, { ...api, projectId: id }) }
-    catch { readbackFailed = true; publish({ error: 'protocol-invalid' }); return fail('protocol-invalid') }
-    if (outcome.status === 'rejected') { readbackFailed = true; publish({ error: outcome.error.code }); return fail(outcome.error.code) }
+    catch { readFailed = true; publish({ error: 'protocol-invalid' }); return fail('protocol-invalid') }
+    if (outcome.status === 'rejected') { readFailed = true; publish({ error: outcome.error.code }); return fail(outcome.error.code) }
     const view = outcome.value
     if (state.selectedProject?.header.projectVersion === view.header.projectVersion && canonicalJson(view) !== canonicalJson(state.selectedProject)) {
-      readbackFailed = true; publish({ error: 'protocol-invalid' }); return fail('protocol-invalid')
+      readFailed = true; publish({ error: 'protocol-invalid' }); return fail('protocol-invalid')
     }
     if (view.header.projectVersion < state.acceptedVersionFloor) {
-      readbackFailed = true; publish({ error: 'refresh-required' }); return fail('refresh-required')
+      readFailed = true; publish({ error: 'refresh-required' }); return fail('refresh-required')
     }
     if (!state.selectedProject || view.header.projectVersion >= state.selectedProject.header.projectVersion) {
       const chain = state.baselineChain
       if (chain && (view.header.contentVersion !== chain.confirmedContentVersion || view.currentBaseline?.id !== chain.baselineId)) invalidateChain()
-      const selectedSummary = view.prdSummaries.find(p => p.prdRevisionId === state.selectedPrdRevisionId)
-      const retainMarkdown = state.selectedMarkdown && selectedSummary && state.selectedMarkdown.contentHash === selectedSummary.contentHash
+      const retainMarkdown = markdownMatchesSelection(state.selectedMarkdown, view, state.selectedPrdRevisionId)
       const projects = [...state.projects.filter(project => project.id !== view.header.id), view.header]
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id))
       publish({ projects: Object.freeze(projects), selectedProject: view, selectedMarkdown: retainMarkdown ? state.selectedMarkdown : undefined })
@@ -185,7 +197,7 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
     observation.abort(); prdAbort.abort()
     observation = new AbortController(); prdAbort = new AbortController()
     selectionGeneration++; observationGeneration++; prdGeneration++
-    intents = []; active = undefined; running = 0; tail = Promise.resolve(); readbackFailed = false; reviewRequired = false
+    intents = []; active = undefined; running = 0; tail = Promise.resolve(); readFailed = false; reviewRequired = false
     publish({ selectedProjectId: id, selectedProject: undefined, selectedSource: undefined, selectedPrdRevisionId: undefined,
       selectedMarkdown: undefined, materialDraft: undefined, importAttested: false, materialDirty: false, dirtyRevision: 0, savedDraftRevision: 0,
       acceptedVersionFloor: 0, acceptedReceipt: undefined, pendingRetry: undefined, baselineChain: undefined, error: undefined })
@@ -295,12 +307,29 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
     return task.finally(() => { if (current(selection, observationId)) { running--; publish() } })
   }
   function flushProjectEdits(): Promise<StoreResult<ProjectView>> {
+    const unavailable = available(); if (unavailable) return Promise.resolve(fail(unavailable))
     const barrier = state.dirtyRevision
     return serialized(() => drain(barrier), fail('cancelled'))
   }
+  function finalizeAcceptedDelete(receipt: Accepted): StoreResult<null> {
+    // Invalidate all observations before aborting them; their completions belong to the deleted selection.
+    selectionGeneration++; observationGeneration++; prdGeneration++
+    observation.abort(); prdAbort.abort()
+    observation = new AbortController(); prdAbort = new AbortController()
+    intents = []; active = undefined; running = 0; tail = Promise.resolve()
+    readFailed = false; reviewRequired = false; confirmations = new WeakMap()
+    browser.close()
+    publish({ selectedProjectId: undefined, selectedProject: undefined, selectedSource: undefined,
+      selectedPrdRevisionId: undefined, selectedMarkdown: undefined, materialDraft: undefined,
+      importAttested: false, materialDirty: false, dirtyRevision: 0, savedDraftRevision: 0,
+      pendingRetry: undefined, baselineChain: undefined, error: undefined,
+      acceptedReceipt: receipt, acceptedVersionFloor: receipt.value.projectVersion,
+      projects: Object.freeze(state.projects.filter(project => project.id !== receipt.projectId)) })
+    return success(null)
+  }
   async function command(input: Stage3aProjectCommand): Promise<StoreResult<ProjectView | null>> {
     const unavailable = available(); if (unavailable) return fail(unavailable)
-    if (state.dirtyRevision !== state.savedDraftRevision || running || active || state.pendingRetry || intents.some(i => i.failure) || readbackFailed) return fail(state.saveState === 'saved' ? 'unsaved' : state.saveState)
+    if (state.dirtyRevision !== state.savedDraftRevision || running || active || state.pendingRetry || intents.some(i => i.failure) || readFailed) return fail(state.saveState === 'saved' ? 'unsaved' : state.saveState)
     let captured: Stage3aProjectCommand
     try {
       captured = parseProductInput('projects.command', input) as Stage3aProjectCommand
@@ -313,11 +342,7 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
     const intent = intents[intents.length - 1]!
     return serialized(async () => {
       const result = await execute(intent); if (!result.ok) return result
-      intents = []
-      publish({ selectedProject: undefined, selectedProjectId: undefined, selectedSource: undefined, selectedMarkdown: undefined,
-        selectedPrdRevisionId: undefined, baselineChain: undefined, materialDraft: undefined, importAttested: false,
-        savedDraftRevision: state.dirtyRevision, projects: state.projects.filter(project => project.id !== captured.projectId) })
-      return success(null)
+      return finalizeAcceptedDelete(result.value)
     }, fail('cancelled'))
   }
   async function retryUncertain(): Promise<StoreResult<ProjectView | null>> {
@@ -328,11 +353,7 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
     if (!intent) return fail('protocol-invalid')
     return serialized(async () => {
       const outcome = await execute(intent, true); if (!outcome.ok) return outcome
-      if (retry.payload.kind === 'project.delete') {
-        intents = []; publish({ selectedProject: undefined, selectedProjectId: undefined, savedDraftRevision: state.dirtyRevision,
-          selectedSource: undefined, selectedMarkdown: undefined, selectedPrdRevisionId: undefined, baselineChain: undefined })
-        return success(null)
-      }
+      if (retry.payload.kind === 'project.delete') return finalizeAcceptedDelete(outcome.value)
       return readProject()
     }, fail('cancelled'))
   }
@@ -355,7 +376,7 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
   function prepareConfirmation(): ConfirmationSnapshot {
     // An explicit reopened summary can acknowledge a rejected obsolete continuation.
     // Content drafts and uncertain commands are never discarded by this action.
-    if (reviewRequired && !readbackFailed && !active && !running && !state.pendingRetry && intents.length
+    if (reviewRequired && !readFailed && !active && !running && !state.pendingRetry && intents.length
       && intents.every(intent => !!intent.failure && ['baseline.publish', 'prd.render'].includes(intent.payload.kind))) {
       intents = []
       publish({ savedDraftRevision: state.dirtyRevision, error: undefined })
@@ -419,17 +440,13 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
     if (!result.ok) return fail(result.error.code)
     if (result.value.status === 'rejected') return fail(result.value.error.code)
     const value = result.value.value
-    const currentSummary = state.selectedProject?.prdSummaries.find(p => p.prdRevisionId === id)
-    if (!isVerifiedMarkdown(value) || value.projectId !== projectId || value.prdRevisionId !== id || value.contentHash !== currentSummary?.contentHash
-      || value.baselineId !== currentSummary.baselineId || value.sourceRevisionId !== currentSummary.sourceRevisionId
-      || value.baselineContentVersion !== currentSummary.baselineContentVersion) return fail('protocol-invalid')
+    if (!markdownMatchesSelection(value, state.selectedProject, state.selectedPrdRevisionId)) return fail('protocol-invalid')
     publish({ selectedMarkdown: value }); return success(value)
   }
   async function exportSelected(download: boolean): Promise<StoreResult> {
     const unavailable = available(); if (unavailable) return fail(unavailable)
     const value = state.selectedMarkdown
-    if (!value || value.prdRevisionId !== state.selectedPrdRevisionId
-      || value.contentHash !== state.selectedProject?.prdSummaries.find(p => p.prdRevisionId === state.selectedPrdRevisionId)?.contentHash) return fail('protocol-invalid')
+    if (!markdownMatchesSelection(value, state.selectedProject, state.selectedPrdRevisionId)) return fail('protocol-invalid')
     try { if (download) await browser.download(value); else await browser.copy(value); return success(undefined) }
     catch { return fail('transport-internal') }
   }
@@ -460,9 +477,9 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
       const unavailable = available(); if (unavailable) return fail(unavailable)
       if (running || active) return fail('saving')
       if (state.pendingRetry) return fail('uncertain')
-      if (intents.some(intent => intent.accepted) || readbackFailed) return fail('refresh-required')
+      if (intents.some(intent => intent.accepted)) return fail('refresh-required')
       intents = []
-      reviewRequired = false
+      readFailed = false; reviewRequired = false
       publish({ materialDraft: undefined, materialDirty: false, importAttested: false, baselineChain: undefined,
         savedDraftRevision: state.dirtyRevision, error: undefined })
       return success(undefined)

@@ -347,3 +347,100 @@ it('refuses explicit discard for queued, admitted, uncertain and accepted-unread
     gate.resolve(); await Promise.all(reads); await pending
   }
 })
+it('rejects a late closed or disposed flush without leaking queue state across reopen', async () => {
+  const h = await setup(); const before = h.store.getSnapshot().selectedProject
+  h.store.close()
+  expect(await h.store.flushProjectEdits()).toEqual({ ok: false, code: 'closed' })
+  await h.store.open()
+  expect(h.store.getSnapshot()).toMatchObject({ dirty: false, saveState: 'saved', selectedProject: before })
+  expect(h.store.getConfirmationSnapshot().ok).toBe(true)
+  expect(await h.store.selectProject(OTHER_PROJECT_ID)).toMatchObject({ ok: true })
+  h.store.dispose()
+  expect(await h.store.flushProjectEdits()).toEqual({ ok: false, code: 'disposed' })
+  expect(h.commands).toHaveLength(0)
+})
+it.each([false, true])('exact delete retry clears the deleted selection and inventory after intervening failed refresh: %s', async refreshDuringUncertainty => {
+  const h = await setup(); await h.store.loadSource()
+  const material = await readMaterialDraft({ kind: 'paste', text: BUILT_IN_SYNTHETIC_TEXT, displayName: 'unsent.txt' })
+  h.store.setMaterialDraft(material, true)
+  const input = parseProductInput('projects.command', { ...api, projectId: SMALL_PROJECT_ID, expectedVersion: 3,
+    commandId: uuid(9001), payload: { kind: 'project.delete' } }) as Stage3aProjectCommand
+  h.intercept(async (endpoint, _input, next) => { const result = await next(); if (endpoint === 'projects.command') throw new Error('delete response lost'); return result })
+  expect(await h.store.command(input)).toMatchObject({ ok: false, code: 'uncertain' })
+  const retry = h.store.getSnapshot().pendingRetry
+  if (refreshDuringUncertainty) expect(await h.store.refresh()).toEqual({ ok: false, code: 'not-found' })
+  h.intercept()
+  expect(await h.store.retryUncertain()).toEqual({ ok: true, value: null })
+  expect(h.commands).toHaveLength(2); expect(h.commands[1]).toEqual(retry)
+  const snapshot = h.store.getSnapshot()
+  expect(snapshot.projects.some(project => project.id === SMALL_PROJECT_ID)).toBe(false)
+  expect(snapshot).toMatchObject({ selectedProjectId: undefined, selectedProject: undefined, selectedSource: undefined,
+    selectedPrdRevisionId: undefined, selectedMarkdown: undefined, materialDraft: undefined, importAttested: false,
+    materialDirty: false, dirty: false, drafts: [], pendingRetry: undefined, baselineChain: undefined,
+    saveState: 'saved', error: undefined, acceptedVersionFloor: 4, acceptedReceipt: { projectId: SMALL_PROJECT_ID, commandId: input.commandId, value: { projectVersion: 4 } } })
+  expect(await h.store.selectProject(OTHER_PROJECT_ID)).toMatchObject({ ok: true })
+})
+it('normal accepted deletion clears an unsent material form and leaves a clean inventory', async () => {
+  const h = await setup()
+  h.store.setMaterialDraft(await readMaterialDraft({ kind: 'paste', text: BUILT_IN_SYNTHETIC_TEXT, displayName: 'unsent.txt' }), true)
+  const input = parseProductInput('projects.command', { ...api, projectId: SMALL_PROJECT_ID, expectedVersion: 3,
+    commandId: uuid(9002), payload: { kind: 'project.delete' } }) as Stage3aProjectCommand
+  expect(await h.store.command(input)).toEqual({ ok: true, value: null })
+  expect(h.store.getSnapshot()).toMatchObject({ selectedProjectId: undefined, dirty: false, materialDirty: false,
+    importAttested: false, materialDraft: undefined, saveState: 'saved', drafts: [] })
+  expect(await h.store.selectProject(OTHER_PROJECT_ID)).toMatchObject({ ok: true })
+})
+it('accepted deletion invalidates delayed source observations before they can restore deleted material', async () => {
+  const h = await setup(); const gate = deferred(); const entered = deferred()
+  h.intercept(async (endpoint, _input, next) => { const result = await next(); if (endpoint === 'sources.get') { entered.resolve(); await gate.promise } return result })
+  const pendingSource = h.store.loadSource(); await entered.promise
+  const input = parseProductInput('projects.command', { ...api, projectId: SMALL_PROJECT_ID, expectedVersion: 3,
+    commandId: uuid(9003), payload: { kind: 'project.delete' } }) as Stage3aProjectCommand
+  await h.store.command(input)
+  gate.resolve()
+  expect(await pendingSource).toEqual({ ok: false, code: 'cancelled' })
+  expect(h.store.getSnapshot().selectedSource).toBeUndefined()
+  expect(await h.store.selectProject(OTHER_PROJECT_ID)).toMatchObject({ ok: true })
+})
+it.each([false, true])('allows explicit discard after an ordinary failed refresh with known rejected edits: %s', async knownRejected => {
+  const h = await setup(); h.store.editRequirement(h.requirementId, { title: '可主动放弃的修改' })
+  if (knownRejected) {
+    await h.external({ kind: 'requirement.update', requirementId: h.requirementId, title: '外部权威文本' })
+    expect(await h.store.flushProjectEdits()).toMatchObject({ ok: false, code: 'version-conflict' })
+  }
+  const authority = h.store.getSnapshot().selectedProject
+  const previousMutations = h.commands.length
+  h.intercept(async (endpoint, _input, next) => { if (endpoint === 'projects.get') throw new Error('read unavailable'); return next() })
+  expect(await h.store.refresh()).toEqual({ ok: false, code: 'host-unavailable' })
+  const calls = vi.fn()
+  h.intercept(async (_endpoint, _input, next) => { calls(); return next() })
+  expect(h.store.discardDrafts()).toEqual({ ok: true, value: undefined })
+  expect(calls).not.toHaveBeenCalled(); expect(h.commands).toHaveLength(previousMutations)
+  if (!knownRejected) expect(h.commands).toHaveLength(0)
+  expect(h.store.getSnapshot()).toMatchObject({ dirty: false, saveState: 'saved', error: undefined, drafts: [], selectedProject: authority })
+  expect(h.store.getConfirmationSnapshot().ok).toBe(true)
+  expect(await h.store.selectProject(OTHER_PROJECT_ID)).toMatchObject({ ok: true })
+})
+it.each(['baselineId', 'baselineContentVersion', 'createdAt'] as const)('refresh invalidates same-ID/hash Markdown when authoritative %s changes', async changedField => {
+  const h = await setup(); h.store.editRequirement(h.requirementId, { decision: 'include' }); await h.store.flushProjectEdits()
+  await h.store.publishConfirmedBaseline(h.store.getConfirmationSnapshot()); await h.store.renderPublishedBaseline()
+  const prd = h.record().prdRevisions[0]!
+  await h.store.selectPrd(prd.id)
+  expect(h.store.getSnapshot().selectedMarkdown?.contentHash).toBe(prd.contentHash)
+  h.intercept(async (endpoint, _input, next) => {
+    const result = await next() as any
+    if (endpoint !== 'projects.get') return result
+    const project = result.value.value
+    const summary = project.prdSummaries[0]
+    const patch = changedField === 'baselineId' ? { baselineId: uuid(9010), status: 'stale' }
+      : changedField === 'baselineContentVersion' ? { baselineContentVersion: summary.baselineContentVersion + 1, status: 'stale' }
+      : { createdAt: '2026-09-08T08:00:00.000Z' }
+    return { ok: true, value: { status: 'accepted', value: { ...project,
+      header: { ...project.header, projectVersion: project.header.projectVersion + 1 }, prdSummaries: [{ ...summary, ...patch }],
+    } } }
+  })
+  expect(await h.store.refresh()).toMatchObject({ ok: true })
+  expect(h.store.getSnapshot().selectedMarkdown).toBeUndefined()
+  expect(await h.store.copySelectedMarkdown()).toEqual({ ok: false, code: 'protocol-invalid' })
+  expect(await h.store.downloadSelectedMarkdown()).toEqual({ ok: false, code: 'protocol-invalid' })
+})
