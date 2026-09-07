@@ -2,5 +2,5 @@ export { workbenchConfig } from './config.js'
 export {
   apply,
   inject,
-  probeDomainSpec,
-} from './integration/harness-rc6/probe-host.js'
+  projectDomainSpec,
+} from './integration/harness-rc6/product-host.js'

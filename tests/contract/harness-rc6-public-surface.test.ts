@@ -517,3 +517,14 @@ describe('rc.6 public smoke surface', () => {
     expect(() => assertHostProductSurface(mutated)).toThrow()
   })
 })
+
+describe('production Product Host entrypoint', () => {
+  test('exports the mountable Product host without a Probe runtime entry', async () => {
+    const entry = await import('../../packages/workbench/src/index.js')
+    const product = await import('../../packages/workbench/src/integration/harness-rc6/product-host.js')
+    expect(entry.apply).toBe(product.apply)
+    expect(entry.inject).toBe(product.inject)
+    expect(entry).toHaveProperty('projectDomainSpec', product.projectDomainSpec)
+    expect(Object.keys(entry).sort()).toEqual(['apply', 'inject', 'projectDomainSpec', 'workbenchConfig'])
+  })
+})
