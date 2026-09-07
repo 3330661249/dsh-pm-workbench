@@ -426,16 +426,17 @@ async function readStableFile(file, {
   includeBytes = false,
   executable = false,
   code = 'STAGE3A_INPUT_IDENTITY_INVALID',
+  fs = { lstat, realpath, open },
 } = {}) {
   const absolute = assertAbsolute(file)
-  const lexical = await lstat(absolute, { bigint: true }).catch(() => fail(code, 'SAFETY_ABORT'))
+  const lexical = await fs.lstat(absolute, { bigint: true }).catch(() => fail(code, 'SAFETY_ABORT'))
   if (!lexical.isFile() || lexical.isSymbolicLink()) fail(code, 'SAFETY_ABORT')
-  const physical = await realpath(absolute).catch(() => fail(code, 'SAFETY_ABORT'))
+  const physical = await fs.realpath(absolute).catch(() => fail(code, 'SAFETY_ABORT'))
   if (physical !== absolute) fail(code, 'SAFETY_ABORT')
   if (lexical.size < 0n || lexical.size > BigInt(maxBytes)) fail(code, 'SAFETY_ABORT')
   if (executable && (Number(lexical.mode) & 0o111) === 0) fail(code, 'SAFETY_ABORT')
 
-  const handle = await open(absolute, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0))
+  const handle = await fs.open(absolute, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0))
   try {
     const before = await handle.stat({ bigint: true })
     if (!before.isFile() || before.size > BigInt(maxBytes)) fail(code, 'SAFETY_ABORT')
@@ -532,29 +533,16 @@ async function boundedExec(file, args, options = {}) {
 /** @param {string} file @param {{ fs?: any, expected?: any }} [options] */
 export async function verifyToolFile(file, { fs, expected } = {}) {
   assertAbsolute(file)
-  if (fs === undefined) {
-    const stable = await readStableFile(file, { executable: true })
-    const receipt = { ...stable.identity, sha256: stable.sha256 }
-    if (expected && canonical(receipt) !== canonical(expected)) fail('STAGE3A_INPUT_IDENTITY_DRIFT', 'SAFETY_ABORT')
-    return Object.freeze(receipt)
-  }
-  const before = await fs.lstat(file)
-  if (!before.isFile() || before.isSymbolicLink() || (before.mode & 0o111) === 0 || await fs.realpath(file) !== file) fail('STAGE3A_INPUT_IDENTITY_INVALID', 'SAFETY_ABORT')
-  const bytes = await fs.readFile(file)
-  const after = await fs.lstat(file)
-  if (await fs.realpath(file) !== file || bytes.length !== before.size) fail('STAGE3A_INPUT_IDENTITY_DRIFT', 'SAFETY_ABORT')
-  const receipt = { sha256: sha256(bytes) }
-  for (const key of ['dev','ino','size','mode','mtimeMs','ctimeMs']) {
-    if (before[key] !== after[key]) fail('STAGE3A_INPUT_IDENTITY_DRIFT', 'SAFETY_ABORT')
-    receipt[key] = before[key]
-  }
-  if (expected && Object.keys(receipt).some(key => receipt[key] !== expected[key])) fail('STAGE3A_INPUT_IDENTITY_DRIFT', 'SAFETY_ABORT')
+  const stable = await readStableFile(file, { executable: true, ...(fs === undefined ? {} : { fs }) })
+  const receipt = { ...stable.identity, sha256: stable.sha256 }
+  if (expected && canonical(receipt) !== canonical(expected)) fail('STAGE3A_INPUT_IDENTITY_DRIFT', 'SAFETY_ABORT')
   return Object.freeze(receipt)
 }
 
-export async function validateProductionInputs(inputs) {
+/** @param {any} inputs @param {{ processExecPath?: string, exec?: any }} [options] */
+export async function validateProductionInputs(inputs, { processExecPath = process.execPath, exec = boundedExec } = {}) {
   const keys = ['node','dshCli','npmCli','pnpmNode','pnpmCli','chrome']
-  if (!inputs || Object.keys(inputs).sort().join(',') !== [...keys].sort().join(',') || inputs.node !== process.execPath) fail('STAGE3A_INPUT_INVALID', 'SAFETY_ABORT')
+  if (!inputs || Object.keys(inputs).sort().join(',') !== [...keys].sort().join(',') || inputs.node !== processExecPath) fail('STAGE3A_INPUT_INVALID', 'SAFETY_ABORT')
   const receipts = {}
   for (const key of keys) receipts[key] = await verifyToolFile(inputs[key])
   receipts.lsof = await verifyToolFile(LSOF_ENTRY)
@@ -575,7 +563,7 @@ export async function validateProductionInputs(inputs) {
     const packaged = packages[key] !== undefined
     if (packaged) await assertFiles(nodeKey)
     await assertFiles(key)
-    const result = await boundedExec(packaged ? inputs[nodeKey] : inputs[key], packaged ? [inputs[key], '--version'] : ['--version'])
+    const result = await exec(packaged ? inputs[nodeKey] : inputs[key], packaged ? [inputs[key], '--version'] : ['--version'])
     if (packaged) await assertFiles(nodeKey)
     await assertFiles(key)
     return result.stdout.trim()
@@ -803,7 +791,7 @@ async function listTreeFiles(root) {
   return found
 }
 
-async function createProductionWorkspace(validated) {
+export async function createProductionWorkspace(validated) {
   const tempParent = await realpath(tmpdir())
   const parentStats = await lstat(tempParent, { bigint: true })
   if (!parentStats.isDirectory() || parentStats.isSymbolicLink()) fail('STAGE3A_TEMP_ROOT_INVALID', 'SAFETY_ABORT')
@@ -942,13 +930,14 @@ async function createProductionWorkspace(validated) {
   }
 }
 
-async function cleanupProductionWorkspace(run) {
+/** @param {any} run @param {{ execFile?: any, remove?: any }} [options] */
+export async function cleanupProductionWorkspace(run, { execFile = execFileAsync, remove = rm } = {}) {
   if (!(run.activeChildren instanceof Set) || run.activeChildren.size !== 0) {
     fail('STAGE3A_LIVE_CHILD_UNCERTAIN', 'SAFETY_ABORT')
   }
   await run.assertOwned()
   const beforeInventory = await inventoryOwnedTree(run.runRoot)
-  await proveNoOpenHandles(run.runRoot, run.validated)
+  await proveNoOpenHandles(run.runRoot, run.validated, { execFile })
   await run.assertOwned()
   await ensureAbsent(run.tombstoneRoot)
   return cleanupOwnedRunRoot({
@@ -973,7 +962,7 @@ async function cleanupProductionWorkspace(run) {
       await ensureAbsent(from)
     },
     remove: async (candidate) => {
-      await rm(candidate, { recursive: true, force: false, maxRetries: 0 })
+      await remove(candidate, { recursive: true, force: false, maxRetries: 0 })
     },
     assertAbsent: async (candidate) => {
       await ensureAbsent(candidate, 'STAGE3A_CLEANUP_ABSENCE_INVALID')
@@ -1106,11 +1095,12 @@ async function revalidateStagedPackage(run, verification, allowlist) {
   }
 }
 
-async function freezeProductionPackage({ inputs, run, validated }) {
+/** @param {any} options @param {{ exec?: any }} [ports] */
+export async function freezeProductionPackage({ inputs, run, validated }, { exec = boundedExec } = {}) {
   await run.assertOwned()
   await assertPackToolProvenance(validated)
   const fixture = path.resolve(import.meta.dirname, '../tests/integration/fixtures/stage3a-storage-gate')
-  await boundedExec(inputs.node, [path.join(fixture, 'build.mjs'), run.runRoot], { cwd: fixture, env: run.environment })
+  await exec(inputs.node, [path.join(fixture, 'build.mjs'), run.runRoot], { cwd: fixture, env: run.environment })
   const buildReceipt = (await readStableJson(path.join(run.runRoot, 'build-receipt.json'))).value
   const { assertFixtureGraph, PACKAGE_FILES } = await import('../tests/integration/fixtures/stage3a-storage-gate/build.mjs')
   assertFixtureGraph(buildReceipt.hostMetafile, 'host'); assertFixtureGraph(buildReceipt.clientMetafile, 'client')
@@ -1126,7 +1116,7 @@ async function freezeProductionPackage({ inputs, run, validated }) {
   run.frozenPackageReceipt = buildReceipt
   await revalidateStagedPackage(run, buildReceipt, PACKAGE_FILES)
   await assertPackToolProvenance(validated)
-  const packed = await boundedExec(inputs.node, [inputs.npmCli, 'pack', run.packageSourceRoot, '--json', '--ignore-scripts', '--offline', '--pack-destination', run.packRoot], { cwd: run.runRoot, env: run.pluginEnvironment })
+  const packed = await exec(inputs.node, [inputs.npmCli, 'pack', run.packageSourceRoot, '--json', '--ignore-scripts', '--offline', '--pack-destination', run.packRoot], { cwd: run.runRoot, env: run.pluginEnvironment })
   const entries = JSON.parse(packed.stdout)
   if (!Array.isArray(entries) || entries.length !== 1 || entries[0].name !== PLUGIN_NAME || entries[0].version !== PLUGIN_VERSION) fail('STAGE3A_PACK_IDENTITY_INVALID', 'SAFETY_ABORT')
   const metadata = entries[0]
@@ -1244,10 +1234,11 @@ async function lsofListener(pid, port, validated) {
   return parseLsofListenerWitness(stdout, { pid, port })
 }
 
-async function assertListenerAbsent(port, validated) {
+/** @param {number} port @param {any} validated @param {{ execFile?: any }} [options] */
+export async function assertListenerAbsent(port, validated, { execFile = execFileAsync } = {}) {
   await validated.assert('lsof')
   try {
-    const { stdout } = await execFileAsync(LSOF_ENTRY, [
+    const { stdout } = await execFile(LSOF_ENTRY, [
       '-nP', `-iTCP:${String(port)}`, '-sTCP:LISTEN', '-Fpn',
     ], {
       shell: false,
@@ -1265,7 +1256,7 @@ async function assertListenerAbsent(port, validated) {
   }
 }
 
-function makeSpawnReceipt({ kind, executable, argv, run, environment, child, closeWitness }) {
+export function makeSpawnReceipt({ kind, executable, argv, run, environment, child, closeWitness }) {
   if (!Number.isSafeInteger(child.pid) || child.pid <= 0) fail('STAGE3A_SPAWN_INVALID', 'SAFETY_ABORT')
   if (
     !closeWitness

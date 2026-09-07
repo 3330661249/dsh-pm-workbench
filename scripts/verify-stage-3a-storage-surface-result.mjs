@@ -7,8 +7,8 @@ const KEYS = ['schemaVersion','outcome','harnessVersion','packageName','packageV
 const HASH = /^[a-f0-9]{64}$/
 export function verifyStage3aStorageSurfaceResult(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(KEYS)) throw Error('unsafe-result-field')
-  if (!HASH.test(value.nearLimitHashAfterRestart ?? '')) throw Error('missing-near-limit-restart-witness')
-  for (const key of ['packageSha256','hostMetafileSha256','clientMetafileSha256','smallHashBeforeRestart','smallHashAfterRestart','nearLimitHashBeforeRestart','nearLimitHashAfterRestart']) if (!HASH.test(value[key])) throw Error('missing-hash-witness')
+  if (typeof value.nearLimitHashAfterRestart !== 'string' || !HASH.test(value.nearLimitHashAfterRestart)) throw Error('missing-near-limit-restart-witness')
+  for (const key of ['packageSha256','hostMetafileSha256','clientMetafileSha256','smallHashBeforeRestart','smallHashAfterRestart','nearLimitHashBeforeRestart','nearLimitHashAfterRestart']) if (typeof value[key] !== 'string' || !HASH.test(value[key])) throw Error('missing-hash-witness')
   const exact = { schemaVersion: 1, outcome: 'PASS', harnessVersion: '0.1.0-rc.6', packageName: '@knight/dsh-pm-workbench-storage-gate', packageVersion: '0.0.0-stage3a', smallBytes: 512, nearLimitBytes: 4194304, overLimitBytes: 4194305, overLimitBackendCalls: 0, phaseCount: 7, restartCount: 6, freshBrowserProfiles: 7, spawnWitnessCount: 14, listenerWitnessCount: 14, externalAttempts: 0, port3080Touched: false, allLoopback: true, childCountAfterCleanup: 0, listenerCountAfterCleanup: 0, runRootExistsAfterCleanup: false, tombstoneUpdated: true, tombstoneHiddenAfterRestart: true, overLimitRejected: true, cleanupRenamed: true, cleanupRevalidated: true, cleanupRemoved: true, failure: null }
   for (const [key, expected] of Object.entries(exact)) if (value[key] !== expected) throw Error('incomplete-storage-witness')
   if (JSON.stringify(value.packageFiles) !== JSON.stringify(STORAGE_PACKAGE_FILES)) throw Error('package-inventory-mismatch')

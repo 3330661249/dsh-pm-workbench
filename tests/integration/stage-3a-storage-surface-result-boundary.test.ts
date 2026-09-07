@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { verifyStage3aStorageSurfaceResult, renderStorageGateMarkdown } from '../../scripts/verify-stage-3a-storage-surface-result.mjs'
 
 describe('closed storage gate evidence', () => {
+  it.each(['packageSha256', 'hostMetafileSha256', 'clientMetafileSha256', 'smallHashBeforeRestart', 'smallHashAfterRestart', 'nearLimitHashBeforeRestart', 'nearLimitHashAfterRestart'])('rejects coercible non-string values in %s', key => {
+    for (const value of [['a'.repeat(64)], new String('a'.repeat(64)), { toString: () => 'a'.repeat(64) }]) {
+      const overrides: Record<string, unknown> = { [key]: value }
+      // Keep equality witnesses identical so only the string-type gate can reject.
+      if (key.startsWith('smallHash')) Object.assign(overrides, { smallHashBeforeRestart: value, smallHashAfterRestart: value })
+      if (key.startsWith('nearLimitHash')) Object.assign(overrides, { nearLimitHashBeforeRestart: value, nearLimitHashAfterRestart: value })
+      expect(() => verifyStage3aStorageSurfaceResult(makeStorageGateResult(overrides))).toThrow()
+    }
+  })
+
   it('requires every real table witness before PASS', () => {
     expect(() => verifyStage3aStorageSurfaceResult(makeStorageGateResult({ nearLimitHashAfterRestart: null })))
       .toThrowError('missing-near-limit-restart-witness')
