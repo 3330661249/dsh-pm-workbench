@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ProjectService } from '../../packages/workbench/src/application/project-service.js'
 import { TableProjectRepository } from '../../packages/workbench/src/application/project-repository.js'
+import { hashProjectCommandRequest } from '../../packages/workbench/src/application/receipts.js'
 import { nodeSha256Utf8 } from '../../packages/workbench/src/application/node-sha256.js'
 import { FixtureInsightEngine } from '../../packages/workbench/src/analysis/fixture-engine.js'
 import { BUILT_IN_SYNTHETIC_TEXT, FIXTURE_MANIFEST } from '../../packages/workbench/src/analysis/fixture-manifest.js'
@@ -176,6 +177,50 @@ describe('Stage 3A project command service', () => {
     expect((await service.command(request)).status).toBe('accepted')
     expect(record().baselines).toHaveLength(1)
     expect(record().prdRevisions).toHaveLength(1)
+  })
+
+  it.each(['retained baseline', 'baseline content version', 'project', 'source'] as const)
+  ('rejects renderer output bound to the wrong %s without advancing project state', async mismatch => {
+    const real = new DeterministicPrdRenderer(nodeSha256Utf8)
+    let renderCount = 0
+    const renderer: PrdRenderer = { render: request => {
+      renderCount += 1
+      const older = record().baselines[0]!
+      if (mismatch === 'retained baseline') {
+        // Return valid bytes for A using the new PRD identity requested for current B.
+        return real.render({ ...request, baseline: older, currentBaselineId: older.id,
+          currentContentVersion: older.contentVersion })
+      }
+      const prd = real.render(request)
+      if (mismatch === 'baseline content version') return { ...prd, baselineContentVersion: older.contentVersion }
+      if (mismatch === 'project') return { ...prd, projectId: OTHER_PROJECT_ID }
+      return { ...prd, sourceRevisionId: sourceRevisionIdSchema.parse(uuid(999)) }
+    } }
+    const { ready, run, input, service, record, table, clock } = setup({ renderer })
+    await ready()
+    await run({ kind: 'requirement.update', requirementId: record().requirementOrder[0]!, decision: 'include' })
+    await run({ kind: 'baseline.publish', confirmedContentVersion: 3 })
+    await run({ kind: 'requirement.update', requirementId: record().requirementOrder[0]!, humanReason: '第二次确认的理由' })
+    await run({ kind: 'baseline.publish', confirmedContentVersion: 4 })
+    expect(record().baselines.map(baseline => baseline.contentVersion)).toEqual([3, 4])
+    expect(record().currentBaselineId).toBe(record().baselines[1]!.id)
+    const before = record()
+    const writes = table.writeCount
+    clock.now.mockReturnValue('2026-09-08T08:00:00.000Z')
+    const request = input({ kind: 'prd.render', baselineId: before.currentBaselineId!, confirmedContentVersion: 4 })
+    const outcome = await service.command(request)
+    expect(outcome).toEqual({ status: 'rejected', projectId: SMALL_PROJECT_ID,
+      commandId: request.commandId, error: { code: 'invalid-evidence' } })
+    expect(record()).toEqual({ ...before, commandReceipts: [...before.commandReceipts, {
+      commandId: request.commandId, requestHash: hashProjectCommandRequest(request, nodeSha256Utf8),
+      outcome: { ok: false, code: 'invalid-evidence' },
+    }] })
+    expect(record().prdRevisions).toEqual([])
+    expect(record().header).toMatchObject({ projectVersion: 7, contentVersion: 4, updatedAt: at })
+    expect(table.writeCount).toBe(writes + 1)
+    expect(await service.command(request)).toEqual(outcome)
+    expect(renderCount).toBe(1)
+    expect(table.writeCount).toBe(writes + 1)
   })
 
   it('retains eight baselines and PRDs and rejects the first extra revision without a write', async () => {

@@ -333,7 +333,10 @@ export class TableProjectRepository implements ProjectRepository {
         const prd = this.#renderer.render({ baseline, prdRevisionId, createdAt: this.#clock.now(),
           currentBaselineId: record.currentBaselineId!, currentContentVersion: payload.confirmedContentVersion,
           existingPrdCount: record.prdRevisions.length })
-        if (prd.id !== prdRevisionId || prd.contentHash !== this.#dependencies.sha256Utf8(prd.markdown)) fail('invalid-evidence')
+        if (prd.id !== prdRevisionId || prd.baselineId !== baseline.id
+          || prd.baselineContentVersion !== baseline.contentVersion || prd.projectId !== record.header.id
+          || prd.sourceRevisionId !== record.source?.id
+          || prd.contentHash !== this.#dependencies.sha256Utf8(prd.markdown)) fail('invalid-evidence')
         candidate = { ...record, header: { ...record.header, reviewStarted: true }, prdRevisions: [...record.prdRevisions, prd] }
         identities = { baselineId: baseline.id, prdRevisionId: prd.id }
         break
