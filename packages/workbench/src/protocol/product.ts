@@ -4,7 +4,7 @@ import {
   prdRevisionIdSchema, projectIdSchema, requirementIdSchema, requirementRevisionIdSchema,
   sourceRevisionIdSchema,
 } from '../domain/ids.js'
-import { deepFreeze } from '../domain/model.js'
+import { deepFreeze, sourceDisplayNameSchema } from '../domain/model.js'
 import {
   MAX_ACTIVE_PROJECTS, MAX_REQUIREMENTS_PER_ANALYSIS, MAX_REQUIREMENT_TEXT_CODE_POINTS,
   MAX_REQUIREMENT_TEXT_UTF8_BYTES, MAX_PROJECT_NAME_CODE_POINTS, MAX_PROJECT_NAME_UTF8_BYTES,
@@ -68,7 +68,7 @@ export const productCommandPayloadSchema = z.discriminatedUnion('kind', [
     text: z.string().min(1).max(MAX_SOURCE_UTF16_CODE_UNITS).refine(value =>
       !hasUnpairedSurrogate(value) && !value.includes('\0') && value.trim().length > 0
       && utf8ByteLength(value) <= MAX_SOURCE_PERSISTED_UTF8_BYTES),
-    displayName: requirementText.refine(value => !/[\\/:\u0000-\u001f\u007f]/.test(value) && value !== '.' && value !== '..'),
+    displayName: sourceDisplayNameSchema,
     format: z.enum(['pasted', 'text/plain', 'text/markdown']), syntheticDataAttested: z.literal(true),
   }),
   z.strictObject({ kind: z.literal('analysis.runFixture'), sourceRevisionId: sourceRevisionIdSchema }),

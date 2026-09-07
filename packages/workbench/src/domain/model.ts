@@ -321,6 +321,10 @@ const requirementTextSchema = boundedText({
   utf8Bytes: MAX_REQUIREMENT_TEXT_UTF8_BYTES,
   nonEmpty: true,
 })
+export const sourceDisplayNameSchema = requirementTextSchema.refine(value =>
+  value.trim().length > 0 && !/[\\/:\u0000-\u001f\u007f]/.test(value) && value !== '.' && value !== '..',
+  'invalid-display-name',
+)
 const humanReasonSchema = boundedText({
   codePoints: MAX_HUMAN_REASON_CODE_POINTS,
   utf8Bytes: MAX_HUMAN_REASON_UTF8_BYTES,
@@ -346,7 +350,7 @@ export const sourceRevisionSchema: z.ZodType<SourceRevision> = z.strictObject({
   id: sourceRevisionIdSchema,
   projectId: projectIdSchema,
   revision: z.literal(1),
-  displayName: requirementTextSchema,
+  displayName: sourceDisplayNameSchema,
   format: z.enum(['pasted', 'text/plain', 'text/markdown']),
   text: boundedText({
     utf16CodeUnits: MAX_SOURCE_UTF16_CODE_UNITS,

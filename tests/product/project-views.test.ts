@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { projectSummaryOf, projectViewOf, sourceViewOf, markdownViewOf, projectViewSchema } from '../../packages/workbench/src/application/project-views.js'
-import { parseProductOutcome } from '../../packages/workbench/src/protocol/product.js'
+import { parseProductInput, parseProductOutcome } from '../../packages/workbench/src/protocol/product.js'
 import { canonicalEnvelopeUtf8Bytes } from '../../packages/workbench/src/protocol/canonical-json.js'
-import { storedProjectRecordSchema, type ActiveProjectRecord } from '../../packages/workbench/src/domain/model.js'
+import { sourceRevisionSchema, storedProjectRecordSchema, type ActiveProjectRecord } from '../../packages/workbench/src/domain/model.js'
 import { makeSmallActiveRecord } from './helpers/synthetic-records.js'
 import * as ids from '../../packages/workbench/src/domain/ids.js'
 import { utf8ByteLength } from '../../packages/workbench/src/domain/limits.js'
@@ -92,6 +92,69 @@ describe('bounded project projections', () => {
     expect(parseProductOutcome('artifacts.getMarkdown', { status: 'accepted', value: markdown })).toMatchObject({ status: 'accepted' })
     expect(() => sourceViewOf(project, ids.sourceRevisionIdSchema.parse(uuid(999)))).toThrowError('not-found')
     expect(() => markdownViewOf(project, ids.prdRevisionIdSchema.parse(uuid(999)))).toThrowError('not-found')
+  })
+
+
+  it.each([
+    { label: 'supplementary Unicode regression', displayName: '😀'.repeat(1500), codePoints: 1500, bytes: 6000 },
+    { label: 'exact code-point maximum', displayName: '😀'.repeat(2000), codePoints: 2000, bytes: 8000 },
+    { label: 'mixed Unicode maximum', displayName: '中' + '😀'.repeat(1999), codePoints: 2000, bytes: 7999 },
+  ])('round-trips $label across import, persistence, SourceView and ProjectView', ({ displayName, codePoints, bytes }) => {
+    const project = richProject()
+    const source = { ...project.source!, displayName }
+    const command = { apiVersion: 'pmwb-product-v1', projectId: project.header.id,
+      commandId: uuid(900), expectedVersion: 1,
+      payload: { kind: 'source.importText', text: source.text, displayName,
+        format: source.format, syntheticDataAttested: true } }
+    expect([...displayName]).toHaveLength(codePoints)
+    expect(utf8ByteLength(displayName)).toBe(bytes)
+    expect(parseProductInput('projects.command', command)).toEqual(command)
+    expect(sourceRevisionSchema.parse(source).displayName).toBe(displayName)
+    const stored = storedProjectRecordSchema.parse({ ...project, source })
+    if (stored.kind !== 'active') throw new Error('unexpected-tombstone')
+    const sourceView = sourceViewOf(stored, sourceId)
+    const projectView = projectViewOf(stored)
+    expect(sourceView.displayName).toBe(displayName)
+    expect(projectView.source?.displayName).toBe(displayName)
+    expect(parseProductOutcome('sources.get', { status: 'accepted', value: sourceView },
+      { apiVersion: 'pmwb-product-v1', projectId: project.header.id, sourceRevisionId: sourceId })).toMatchObject({ status: 'accepted' })
+    expect(parseProductOutcome('projects.get', { status: 'accepted', value: projectView },
+      { apiVersion: 'pmwb-product-v1', projectId: project.header.id })).toMatchObject({ status: 'accepted' })
+  })
+
+  it('rejects invalid display-name code-point and byte boundaries consistently', () => {
+    const project = richProject()
+    // With valid Unicode, 2000 code points can occupy at most 8000 UTF-8 bytes.
+    // Therefore 8192 and 8193 byte examples necessarily exceed the code-point cap too.
+    const cases = [
+      { displayName: '😀'.repeat(2000) + 'x', codePoints: 2001, bytes: 8001 },
+      { displayName: '😀'.repeat(2048), codePoints: 2048, bytes: 8192 },
+      { displayName: '😀'.repeat(2048) + 'x', codePoints: 2049, bytes: 8193 },
+    ]
+    for (const { displayName, codePoints, bytes } of cases) {
+      expect([...displayName]).toHaveLength(codePoints)
+      expect(utf8ByteLength(displayName)).toBe(bytes)
+      const source = { ...project.source!, displayName }
+      expect(sourceRevisionSchema.safeParse(source).success).toBe(false)
+      expect(storedProjectRecordSchema.safeParse({ ...project, source }).success).toBe(false)
+      expect(() => parseProductInput('projects.command', { apiVersion: 'pmwb-product-v1', projectId: project.header.id,
+        commandId: uuid(900), expectedVersion: 1, payload: { kind: 'source.importText', text: source.text,
+          displayName, format: source.format, syntheticDataAttested: true } })).toThrowError('invalid-request')
+      expect(() => sourceViewOf({ ...project, source }, sourceId)).toThrow()
+      expect(() => projectViewOf({ ...project, source })).toThrow()
+    }
+  })
+
+  it.each(['folder/name', 'folder\\name', 'blob:name', 'bad\nname', 'bad\u007fname', '.', '..', '   ', '\ud800'])
+  ('rejects unsafe display names at persistence and both projections as well as import', displayName => {
+    const project = richProject()
+    const source = { ...project.source!, displayName }
+    expect(sourceRevisionSchema.safeParse(source).success).toBe(false)
+    expect(() => parseProductInput('projects.command', { apiVersion: 'pmwb-product-v1', projectId: project.header.id,
+      commandId: uuid(900), expectedVersion: 1, payload: { kind: 'source.importText', text: source.text,
+        displayName, format: source.format, syntheticDataAttested: true } })).toThrowError('invalid-request')
+    expect(() => sourceViewOf({ ...project, source }, sourceId)).toThrow()
+    expect(() => projectViewOf({ ...project, source })).toThrow()
   })
 
   it('retains eight PRDs while bounding the largest readable current projection without truncation', () => {

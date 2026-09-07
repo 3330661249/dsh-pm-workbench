@@ -6,7 +6,7 @@ import {
 } from '../domain/ids.js'
 import {
   analysisRevisionSchema, deepFreeze, evidenceExcerptSchema, generatedRequirementDraftSchema,
-  humanDecisionSchema, humanRequirementRevisionSchema, projectHeaderSchema, sourceRevisionSchema,
+  humanDecisionSchema, humanRequirementRevisionSchema, projectHeaderSchema, sourceDisplayNameSchema, sourceRevisionSchema,
   prdRevisionSchema, requirementBaselineSchema, type ActiveProjectRecord, type ProjectHeader,
 } from '../domain/model.js'
 import {
@@ -25,12 +25,9 @@ const timestamp = z.string().refine(value => {
   const time = Date.parse(value)
   return Number.isFinite(time) && new Date(time).toISOString() === value
 })
-const displayName = z.string().min(1).max(2000).refine(value =>
-  !hasUnpairedSurrogate(value) && utf8ByteLength(value) <= 8192
-  && !/[\\/:\u0000-\u001f\u007f]/.test(value) && value !== '.' && value !== '..')
 const sourceMetadataShape = {
   projectId: projectIdSchema, sourceRevisionId: sourceRevisionIdSchema, revision: z.literal(1),
-  displayName, format: z.enum(['pasted', 'text/plain', 'text/markdown']),
+  displayName: sourceDisplayNameSchema, format: z.enum(['pasted', 'text/plain', 'text/markdown']),
   utf8Bytes: integer.max(MAX_SOURCE_PERSISTED_UTF8_BYTES), contentHash: sha256HexSchema,
   syntheticDataAttested: z.literal(true),
 }
