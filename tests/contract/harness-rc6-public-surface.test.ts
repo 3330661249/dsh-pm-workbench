@@ -146,6 +146,25 @@ function compactSyntax(node: ts.Node, sourceFile: ts.SourceFile): string {
   return tokens.join('')
 }
 
+function unwrapParentheses(expression: ts.Expression): ts.Expression {
+  let current = expression
+  while (ts.isParenthesizedExpression(current)) current = current.expression
+  return current
+}
+
+function moduleLoadRoot(expression: ts.Expression): ts.Expression {
+  let current = unwrapParentheses(expression)
+  while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+    current = unwrapParentheses(current.expression)
+  }
+  return current
+}
+
+function isCommonJsRequireCall(expression: ts.Expression): boolean {
+  const root = moduleLoadRoot(expression)
+  return ts.isIdentifier(root) && root.text === 'require'
+}
+
 function inspectSurfaceSyntax(source: string, fixturePath: string): SurfaceSyntax {
   const sourceFile = ts.createSourceFile(
     fixturePath,
@@ -177,11 +196,7 @@ function inspectSurfaceSyntax(source: string, fixturePath: string): SurfaceSynta
     if (ts.isCallExpression(node)) {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         syntax.unsupportedModuleLoads.push('dynamic import')
-      } else if (
-        (ts.isIdentifier(node.expression) && node.expression.text === 'require')
-        || (ts.isPropertyAccessExpression(node.expression)
-          && compactSyntax(node.expression, sourceFile).startsWith('require.'))
-      ) {
+      } else if (isCommonJsRequireCall(node.expression)) {
         syntax.unsupportedModuleLoads.push('CommonJS require')
       }
       syntax.calls.push({
@@ -435,6 +450,33 @@ describe('rc.6 public smoke surface', () => {
 
     expect(syntax.unsupportedModuleLoads).toContain(expectedKind)
     expect(() => assertClientProductSurface(mutated)).toThrow()
+  })
+
+  test('rejects a parenthesized CommonJS require in the Host fixture', async () => {
+    const source = await readFile(resolve(workspaceRoot, productSurfaceFixtures.host.path), 'utf8')
+    const mutated = `${source}\nvoid (require)('@deepseek-ai/dsh-storage-domain/private')\n`
+    const syntax = inspectSurfaceSyntax(mutated, productSurfaceFixtures.host.path)
+
+    expect(syntax.unsupportedModuleLoads).toContain('CommonJS require')
+    expect(() => assertHostProductSurface(mutated)).toThrow()
+  })
+
+  test.each([
+    [
+      'property access',
+      "void (require).resolve('@deepseek-ai/dsh-storage-domain/private')",
+    ],
+    [
+      'element access',
+      "void require['resolve']('@deepseek-ai/dsh-storage-domain/private')",
+    ],
+  ])('rejects CommonJS %s rooted at require', async (_label, moduleLoad) => {
+    const source = await readFile(resolve(workspaceRoot, productSurfaceFixtures.host.path), 'utf8')
+    const mutated = `${source}\n${moduleLoad}\n`
+    const syntax = inspectSurfaceSyntax(mutated, productSurfaceFixtures.host.path)
+
+    expect(syntax.unsupportedModuleLoads).toContain('CommonJS require')
+    expect(() => assertHostProductSurface(mutated)).toThrow()
   })
 
   test('rejects API markers that survive only in comments and inert strings', async () => {
