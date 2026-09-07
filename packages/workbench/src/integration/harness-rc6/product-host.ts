@@ -31,16 +31,19 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
       if (!accepting || inFlight.size >= PRODUCT_CAPABILITIES.maxHostInflightRequests) {
         return Promise.resolve(internalProductResult())
       }
-      // Reserve a slot before any service code can synchronously reenter the route.
-      const operation = Promise.resolve().then(async () => {
-        try {
-          return await handler(endpoint, payload, AbortSignal.any([signal, lifecycle.signal]))
-        } catch {
-          return internalProductResult()
-        }
-      })
+      // Track admission before service code can reenter, but parse the carrier payload
+      // synchronously so caller mutations after this call cannot change the request.
+      let settle!: (result: Awaited<ReturnType<ConnectionRpcHandler>>) => void
+      const operation = new Promise<Awaited<ReturnType<ConnectionRpcHandler>>>(resolve => { settle = resolve })
       inFlight.add(operation)
       void operation.then(() => inFlight.delete(operation), () => inFlight.delete(operation))
+      try {
+        void handler(endpoint, payload, AbortSignal.any([signal, lifecycle.signal])).then(
+          settle, () => settle(internalProductResult()),
+        )
+      } catch {
+        settle(internalProductResult())
+      }
       return operation
     }
     const disposeRoute = ctx.connection.rpc.handle(PRODUCT_RPC_CHANNEL, admittedHandler, { authority: 'loopback' })

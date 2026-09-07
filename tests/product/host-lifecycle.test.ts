@@ -8,7 +8,7 @@ import { TableProjectRepository } from '../../packages/workbench/src/application
 import type { ProjectId } from '../../packages/workbench/src/domain/ids.js'
 import type { StoredProjectRecord } from '../../packages/workbench/src/domain/model.js'
 import { createFakeDomainTable } from './helpers/fake-domain-table.js'
-import { SMALL_PROJECT_ID } from './helpers/synthetic-records.js'
+import { SMALL_PROJECT_ID, OTHER_PROJECT_ID } from './helpers/synthetic-records.js'
 
 const api = { apiVersion: 'pmwb-product-v1' }
 const command = { ...api, projectId: SMALL_PROJECT_ID, commandId: '10000000-0000-4000-8000-000000000001', expectedVersion: 0,
@@ -64,6 +64,64 @@ describe('Product Host ownership and lifecycle', () => {
     await dispose()
     expect(host.events).toEqual(['domain.open', 'route.handle', 'route.dispose', 'repository.close', 'domain.close'])
     expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('freezes the original command identity and nested payload before the registered route returns', async () => {
+    const host = makeHostContext()
+    const dispose = await apply(host.ctx)
+    try {
+      const input = { ...command, payload: { ...command.payload, name: 'Synthetic original A' } }
+      const request = host.call('projects.command', input)
+      input.projectId = OTHER_PROJECT_ID
+      input.commandId = '20000000-0000-4000-8000-000000000002'
+      input.payload.name = 'Synthetic replacement B'
+      expect(await request).toEqual({ ok: true, value: {
+        status: 'accepted', projectId: SMALL_PROJECT_ID, commandId: command.commandId,
+        value: { projectVersion: 1, contentVersion: 0 },
+      } })
+      expect(host.table.get(SMALL_PROJECT_ID)).toMatchObject({
+        kind: 'active', header: { id: SMALL_PROJECT_ID, name: 'Synthetic original A' },
+        commandReceipts: [{ commandId: command.commandId }],
+      })
+      expect(host.table.get(OTHER_PROJECT_ID)).toBeUndefined()
+      expect(host.table.size).toBe(1)
+      expect(host.table.writeCount).toBe(1)
+    } finally { await dispose() }
+  })
+
+  it('counts the originating request before synchronous service reentry can admit nested calls', async () => {
+    const host = makeHostContext()
+    const nested: ReturnType<ConnectionRpcHandler>[] = []
+    let entered = false
+    const dispatch = vi.spyOn(ProjectService.prototype, 'list').mockImplementation(async () => {
+      if (!entered) {
+        entered = true
+        for (let i = 0; i < 16; i++) nested.push(host.call('projects.list'))
+      }
+      return { status: 'accepted', value: [] }
+    })
+    const dispose = await apply(host.ctx)
+    try {
+      const original = host.call('projects.list')
+      // Execution and admission occur before the outer call returns.
+      expect(nested).toHaveLength(16)
+      expect(dispatch).toHaveBeenCalledTimes(16)
+      expect(await nested[15]).toEqual(internalProductResult())
+      const accepted = { ok: true, value: { status: 'accepted', value: [] } }
+      expect(await original).toEqual(accepted)
+      expect(await Promise.all(nested.slice(0, 15))).toEqual(Array.from({ length: 15 }, () => accepted))
+    } finally { await dispose() }
+  })
+
+  it('settles synchronous signal-composition failures safely and releases their admission slots', async () => {
+    const host = makeHostContext()
+    const dispose = await apply(host.ctx)
+    try {
+      vi.spyOn(AbortSignal, 'any').mockImplementationOnce(() => { throw new Error('synthetic private signal failure') })
+      expect(await host.call()).toEqual({ ok: false, error: { code: 'internal', message: 'Product request failed.', details: {} } })
+      const requests = await Promise.all(Array.from({ length: 16 }, () => host.call()))
+      expect(requests.every(result => result.ok)).toBe(true)
+    } finally { await dispose() }
   })
 
   it('does not register a route or close an unowned domain when open fails', async () => {
