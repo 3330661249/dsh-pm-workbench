@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-pm-workbench-storage-gate
+      name: '@knight/dsh-pm-workbench-storage-gate'

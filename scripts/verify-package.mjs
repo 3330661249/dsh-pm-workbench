@@ -31,6 +31,11 @@ export const WORKBENCH_PACKAGE_FILES = Object.freeze([
   'package.json',
 ])
 
+export function assertNoStorageGateDiagnostics(bytes) {
+  const text = bytes.toString('utf8')
+  if (['@knight/dsh-pm-workbench-storage-gate', 'dsh-pm-workbench-storage-gate', 'dsh_pm_workbench_storage_gate', '/dsh-pm-workbench-stage3a-storage-gate-v1'].some(value => text.includes(value))) throw new Error('diagnostic-storage-gate-forbidden')
+}
+
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex')
 }
@@ -166,6 +171,7 @@ export async function verifyBuiltWorkbenchPackage({
     if (file.bytes.includes(repositoryBytes)) {
       throw new Error(`absolute repository path leaked into package file: ${file.path}`)
     }
+    assertNoStorageGateDiagnostics(file.bytes)
     const text = file.bytes.toString('utf8')
     if (/(?:file:\/\/|\/Users\/[^\s'"`]+|\/private\/tmp\/[^\s'"`]+)/u.test(text)) {
       throw new Error(`absolute filesystem path leaked into package file: ${file.path}`)
