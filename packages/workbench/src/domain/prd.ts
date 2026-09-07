@@ -36,11 +36,13 @@ function failPrd(code = 'invalid-prd-input'): never {
 
 function escapeInline(value: string): string {
   return value
+    .replace(/\r\n|\r|\n/g, ' ')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/[\\`*_{}\[\]()#+.!|^~-]/g, '\\$&')
-    .replace(/[\r\n]+/g, ' ')
+    .replace(/[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, character =>
+      `⟦U+${character.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}⟧`)
 }
 
 function priorityLabel(value: RequirementBaselineItem['priority']): string {

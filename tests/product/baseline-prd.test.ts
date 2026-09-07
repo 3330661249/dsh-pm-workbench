@@ -245,6 +245,32 @@ describe('deterministic pmwb-prd-v1 renderer', () => {
     expect(markdown).toContain('\\[\\^fake\\]')
   })
 
+  it('replaces authored C0, DEL, and C1 controls with stable visible encodings', () => {
+    const baseline = structuredClone(publish())
+    Reflect.set(baseline, 'projectName', '项目\0名称')
+    Reflect.set(baseline, 'researchGoal', '目标\u001b结束')
+    Reflect.set(baseline.items[0]!, 'title', '标题\t制表')
+    Reflect.set(baseline.items[0]!, 'painPoint', '痛点\u007f删除')
+    Reflect.set(baseline.items[0]!, 'description', '描述\u0085换行')
+    Reflect.set(baseline.items[0]!, 'humanReason', '理由\u009f控制')
+    Reflect.set(baseline.items[0]!.evidence[0]!, 'quote', '证据\0\u001b\t\u007f\u0085\u009f')
+    Reflect.set(
+      baseline.items[0]!.evidence[0]!,
+      'quoteHash',
+      nodeSha256Utf8(baseline.items[0]!.evidence[0]!.quote),
+    )
+
+    const first = renderer.render({ baseline, prdRevisionId: PRD_ID, createdAt: CREATED_AT })
+    const second = renderer.render({ baseline, prdRevisionId: PRD_ID, createdAt: OTHER_TIME })
+    expect(first.markdown).toBe(second.markdown)
+    for (const raw of ['\0', '\u001b', '\t', '\u007f', '\u0085', '\u009f']) {
+      expect(first.markdown).not.toContain(raw)
+    }
+    for (const visible of ['⟦U+0000⟧', '⟦U+001B⟧', '⟦U+0009⟧', '⟦U+007F⟧', '⟦U+0085⟧', '⟦U+009F⟧']) {
+      expect(first.markdown).toContain(visible)
+    }
+  })
+
   it('marks unknown business facts and generated acceptance criteria without inventing scope or plans', () => {
     const markdown = renderer.render({ baseline: publish(), prdRevisionId: PRD_ID, createdAt: CREATED_AT }).markdown
     for (const label of ['市场规模', '用户数量', '排期', '收入', '研发成本', '成功指标', '技术方案']) {

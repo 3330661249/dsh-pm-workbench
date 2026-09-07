@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { nodeSha256Utf8 } from '../../packages/workbench/src/application/node-sha256.js'
 import {
   analysisRevisionIdSchema,
   evidenceIdSchema,
@@ -29,7 +30,15 @@ const DRAFT_A = generatedDraftIdSchema.parse('50000000-0000-4000-8000-0000000005
 const DRAFT_B = generatedDraftIdSchema.parse('50000000-0000-4000-8000-000000000502')
 const REVISION_A = requirementRevisionIdSchema.parse('60000000-0000-4000-8000-000000000501')
 const EVIDENCE_A = evidenceIdSchema.parse('30000000-0000-4000-8000-000000000501')
-const HASH = sha256HexSchema.parse('0'.repeat(64))
+const HASH = nodeSha256Utf8('支持证据')
+const VALIDATION_CONTEXT = { sha256Utf8: nodeSha256Utf8 }
+
+function update(
+  project: ActiveProjectRecord,
+  patch: Parameters<typeof applyRequirementUpdate>[1],
+): ActiveProjectRecord {
+  return applyRequirementUpdate(project, patch, VALIDATION_CONTEXT)
+}
 
 function reviewableProject(): ActiveProjectRecord {
   return {
@@ -79,7 +88,7 @@ function reviewableProject(): ActiveProjectRecord {
 describe('human requirement review', () => {
   it('creates a human revision without overwriting generated evidence or rationale', () => {
     const project = reviewableProject()
-    const next = applyRequirementUpdate(project, {
+    const next = update(project, {
       requirementId: REQUIREMENT_A,
       humanRevisionId: REVISION_A,
       title: '新的人工标题',
@@ -105,43 +114,43 @@ describe('human requirement review', () => {
     { patch: { humanReason: '人工理由' }, expected: { humanReason: '人工理由' } },
     { patch: { selectedText: { kind: 'generated' as const, draftId: DRAFT_A } }, expected: { selectedText: { kind: 'generated', draftId: DRAFT_A } } },
   ])('locks reanalysis for review action %#', ({ patch, expected }) => {
-    const next = applyRequirementUpdate(reviewableProject(), { requirementId: REQUIREMENT_A, ...patch })
+    const next = update(reviewableProject(), { requirementId: REQUIREMENT_A, ...patch })
     expect(next.header.reviewStarted).toBe(true)
     expect(next.humanDecisions[0]).toMatchObject(expected)
   })
 
   it.each(['high', 'medium', 'low'] as const)('accepts the exact priority %s', (priority) => {
-    expect(applyRequirementUpdate(reviewableProject(), { requirementId: REQUIREMENT_A, priority })
+    expect(update(reviewableProject(), { requirementId: REQUIREMENT_A, priority })
       .humanDecisions[0]?.priority).toBe(priority)
   })
 
   it.each(['pending', 'include', 'defer', 'reject'] as const)('accepts the exact decision %s', (decision) => {
-    expect(applyRequirementUpdate(reviewableProject(), { requirementId: REQUIREMENT_A, decision })
+    expect(update(reviewableProject(), { requirementId: REQUIREMENT_A, decision })
       .humanDecisions[0]?.decision).toBe(decision)
   })
 
   it('rejects invalid enums, human reason boundaries, duplicate revision ids, and stale selected text identities', () => {
     const project = reviewableProject()
-    expect(() => applyRequirementUpdate(project, { requirementId: REQUIREMENT_A, priority: 'urgent' as 'high' }))
+    expect(() => update(project, { requirementId: REQUIREMENT_A, priority: 'urgent' as 'high' }))
       .toThrowError('baseline-stale')
-    expect(() => applyRequirementUpdate(project, { requirementId: REQUIREMENT_A, decision: 'accept' as 'include' }))
+    expect(() => update(project, { requirementId: REQUIREMENT_A, decision: 'accept' as 'include' }))
       .toThrowError('baseline-stale')
-    expect(() => applyRequirementUpdate(project, {
+    expect(() => update(project, {
       requirementId: REQUIREMENT_A, humanReason: '理'.repeat(MAX_HUMAN_REASON_CODE_POINTS + 1),
     })).toThrowError('limit-exceeded')
-    expect(() => applyRequirementUpdate(project, {
+    expect(() => update(project, {
       requirementId: REQUIREMENT_A, humanReason: '😀'.repeat(Math.floor(MAX_HUMAN_REASON_UTF8_BYTES / 4) + 1),
     })).toThrowError('limit-exceeded')
-    expect(() => applyRequirementUpdate({
+    expect(() => update({
       ...project,
       humanRevisions: [{ id: REVISION_A, requirementId: REQUIREMENT_A, basedOnDraftId: DRAFT_A, title: '旧', painPoint: '旧', description: '旧' }],
     }, { requirementId: REQUIREMENT_A, humanRevisionId: REVISION_A, title: '重复' }))
       .toThrowError('baseline-stale')
-    expect(() => applyRequirementUpdate(project, {
+    expect(() => update(project, {
       requirementId: REQUIREMENT_A,
       selectedText: { kind: 'generated', draftId: DRAFT_B },
     })).toThrowError('baseline-stale')
-    expect(() => applyRequirementUpdate(project, {
+    expect(() => update(project, {
       requirementId: REQUIREMENT_A,
       selectedText: { kind: 'human-revision', revisionId: REVISION_A },
     })).toThrowError('baseline-stale')
@@ -149,22 +158,77 @@ describe('human requirement review', () => {
 
   it('rejects inclusion before review state is created when the current draft lacks support evidence', () => {
     const project = reviewableProject()
-    expect(() => applyRequirementUpdate({
+    expect(() => update({
       ...project,
       evidence: project.evidence.map(item => ({ ...item, role: 'context' as const })),
     }, { requirementId: REQUIREMENT_A, decision: 'include' })).toThrowError('invalid-evidence')
-    expect(() => applyRequirementUpdate({
+    expect(() => update({
       ...project,
       evidence: [],
     }, { requirementId: REQUIREMENT_A, decision: 'include' })).toThrowError('invalid-evidence')
     expect(project.header.reviewStarted).toBe(false)
   })
 
+  it.each([
+    {
+      name: 'wrong quote',
+      mutate: (project: ActiveProjectRecord): ActiveProjectRecord => ({
+        ...project,
+        evidence: project.evidence.map(item => ({ ...item, quote: '错误原话', quoteHash: nodeSha256Utf8('错误原话') })),
+      }),
+    },
+    {
+      name: 'wrong hash',
+      mutate: (project: ActiveProjectRecord): ActiveProjectRecord => ({
+        ...project,
+        evidence: project.evidence.map(item => ({ ...item, quoteHash: sha256HexSchema.parse('0'.repeat(64)) })),
+      }),
+    },
+    {
+      name: 'invalid offsets',
+      mutate: (project: ActiveProjectRecord): ActiveProjectRecord => ({
+        ...project,
+        evidence: project.evidence.map(item => ({ ...item, start: -1 })),
+      }),
+    },
+    {
+      name: 'surrogate-splitting offsets',
+      mutate: (project: ActiveProjectRecord): ActiveProjectRecord => ({
+        ...project,
+        source: {
+          ...project.source!, text: 'A😀B', utf8Bytes: 6, contentHash: nodeSha256Utf8('A😀B'),
+        },
+        evidence: project.evidence.map(item => ({
+          ...item, start: 1, end: 2, quote: '\ud83d', quoteHash: nodeSha256Utf8('\ud83d'),
+        })),
+      }),
+    },
+    {
+      name: 'source identity',
+      mutate: (project: ActiveProjectRecord): ActiveProjectRecord => ({
+        ...project,
+        evidence: project.evidence.map(item => ({
+          ...item,
+          sourceRevisionId: sourceRevisionIdSchema.parse('10000000-0000-4000-8000-000000000599'),
+        })),
+      }),
+    },
+  ])('rejects $name before accepting include', ({ mutate }) => {
+    const project = reviewableProject()
+    expect(() => applyRequirementUpdate(
+      mutate(project),
+      { requirementId: REQUIREMENT_A, decision: 'include' },
+      VALIDATION_CONTEXT,
+    )).toThrowError('invalid-evidence')
+    expect(project.header.reviewStarted).toBe(false)
+    expect(project.humanDecisions[0]?.decision).toBe('pending')
+  })
+
   it('requires a new revision id for text edits and validates all human text fields without partial output', () => {
     const project = reviewableProject()
-    expect(() => applyRequirementUpdate(project, { requirementId: REQUIREMENT_A, title: '缺少 ID' }))
+    expect(() => update(project, { requirementId: REQUIREMENT_A, title: '缺少 ID' }))
       .toThrowError('baseline-stale')
-    expect(() => applyRequirementUpdate(project, { requirementId: REQUIREMENT_A, humanRevisionId: REVISION_A, title: '' }))
+    expect(() => update(project, { requirementId: REQUIREMENT_A, humanRevisionId: REVISION_A, title: '' }))
       .toThrowError('baseline-stale')
     expect(project.humanRevisions).toEqual([])
   })

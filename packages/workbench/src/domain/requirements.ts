@@ -1,6 +1,8 @@
+import { validateEvidence } from './evidence.js'
 import type {
   RequirementId,
   RequirementRevisionId,
+  Sha256Hex,
 } from './ids.js'
 import {
   MAX_HUMAN_REASON_CODE_POINTS,
@@ -32,6 +34,10 @@ export interface RequirementUpdate {
   readonly priority?: HumanDecision['priority']
   readonly decision?: HumanDecision['decision']
   readonly humanReason?: string
+}
+
+export interface RequirementEvidenceValidationContext {
+  readonly sha256Utf8: (value: string) => Sha256Hex
 }
 
 function failUpdate(code = 'baseline-stale'): never {
@@ -98,6 +104,7 @@ function validateHumanReason(value: string): void {
 export function applyRequirementUpdate(
   project: ActiveProjectRecord,
   update: RequirementUpdate,
+  validation: RequirementEvidenceValidationContext,
 ): ActiveProjectRecord {
   const draft = findCurrentDraft(project, update.requirementId)
   const matchingDecisions = project.humanDecisions.filter(item => item.requirementId === update.requirementId)
@@ -156,8 +163,14 @@ export function applyRequirementUpdate(
     if (new Set(draft.evidenceIds).size !== draft.evidenceIds.length) failUpdate('invalid-evidence')
     const linkedEvidence = draft.evidenceIds.map(id => project.evidence.filter(item => item.id === id))
     if (linkedEvidence.some(matches => matches.length !== 1)
-      || linkedEvidence.flat().some(item => item.sourceRevisionId !== project.source!.id)
       || !linkedEvidence.flat().some(item => item.role === 'support')) failUpdate('invalid-evidence')
+    try {
+      for (const evidence of linkedEvidence.flat()) {
+        validateEvidence(project.source!, evidence, validation.sha256Utf8)
+      }
+    } catch {
+      failUpdate('invalid-evidence')
+    }
   }
 
   const nextDecisions = project.humanDecisions.filter(item => item.requirementId !== update.requirementId)
