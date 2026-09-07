@@ -51,6 +51,8 @@ const START_TIMEOUT_MS = 30_000
 const CDP_TIMEOUT_MS = 10_000
 const QUIET_PERIOD_MS = 750
 const ONBOARDING_POLL_MS = 50
+const MAX_ACTIVE_MODAL_NODES = 8
+const MAX_ACTIVE_BUTTON_NODES = 512
 const RC6_ONBOARDING_DIALOGS = Object.freeze([
   Object.freeze({ dialogName: '内测声明', actionName: '继续' }),
   Object.freeze({ dialogName: '添加一个 API Key 开始使用', actionName: '稍后配置' }),
@@ -2291,8 +2293,30 @@ function axPropertyIsTrue(node, name) {
   )
 }
 
-function inspectRc6OnboardingTree(response, mainFrameId) {
+function validatedActiveBackendNodeIds(value, maximum) {
+  if (
+    !Array.isArray(value)
+    || value.length > maximum
+    || value.some((backendNodeId) => positiveBackendNodeId(backendNodeId) === undefined)
+    || new Set(value).size !== value.length
+  ) fail('STAGE2_DOM_RESULT_INVALID')
+  return new Set(value)
+}
+
+function inspectRc6OnboardingTree(response, mainFrameId, activeDom, { allowWorkbenchOverlay = false } = {}) {
   if (!Array.isArray(response?.nodes)) fail('STAGE2_CDP_PROTOCOL_FAILED')
+  const activeModalBackendNodeIds = validatedActiveBackendNodeIds(
+    activeDom?.modalBackendNodeIds,
+    MAX_ACTIVE_MODAL_NODES,
+  )
+  const activeButtonBackendNodeIds = validatedActiveBackendNodeIds(
+    activeDom?.buttonBackendNodeIds,
+    MAX_ACTIVE_BUTTON_NODES,
+  )
+  const workbenchOverlayBackendNodeIds = validatedActiveBackendNodeIds(
+    activeDom?.workbenchOverlayBackendNodeIds,
+    1,
+  )
   const nodeById = new Map()
   for (const node of response.nodes) {
     if (
@@ -2311,20 +2335,67 @@ function inspectRc6OnboardingTree(response, mainFrameId) {
   }
   if (!response.nodes.some((node) => node.frameId === mainFrameId)) fail('STAGE2_CDP_PROTOCOL_FAILED')
 
+  if (activeModalBackendNodeIds.size > 1) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+  if (allowWorkbenchOverlay && workbenchOverlayBackendNodeIds.size === 1) {
+    const [overlayBackendNodeId] = workbenchOverlayBackendNodeIds
+    if (activeModalBackendNodeIds.size === 0) return undefined
+    if (!activeModalBackendNodeIds.has(overlayBackendNodeId)) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+    const overlayModalNodes = response.nodes.filter((node) => {
+      const role = axString(node, 'role')
+      return (role === 'dialog' || role === 'alertdialog')
+        && node.backendDOMNodeId === overlayBackendNodeId
+    })
+    if (overlayModalNodes.length > 1) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+    if (overlayModalNodes.length === 0) return undefined
+    const overlayModal = overlayModalNodes[0]
+    if (
+      overlayModal.ignored
+      || (overlayModal.frameId !== undefined && overlayModal.frameId !== mainFrameId)
+    ) return undefined
+    const seen = new Set([overlayModal.nodeId])
+    let parentId = overlayModal.parentId
+    let terminal = overlayModal
+    while (parentId !== undefined) {
+      if (seen.has(parentId)) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+      seen.add(parentId)
+      const parent = nodeById.get(parentId)
+      if (!parent) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+      terminal = parent
+      parentId = parent.parentId
+    }
+    if (axString(terminal, 'role') !== 'RootWebArea') fail('STAGE2_PAGE_NAVIGATION_FAILED')
+    return Object.freeze({
+      dialog: undefined,
+      interactionDialogBackendNodeId: overlayBackendNodeId,
+      nodeById,
+      nodes: response.nodes,
+      modalSignature: `workbench-overlay:${overlayModal.nodeId}:${overlayBackendNodeId}`,
+    })
+  }
+  if (workbenchOverlayBackendNodeIds.size > 0) return undefined
   const modalNodes = response.nodes.filter((node) => {
     const role = axString(node, 'role')
-    return role === 'dialog' || role === 'alertdialog'
+    return (role === 'dialog' || role === 'alertdialog')
+      && activeModalBackendNodeIds.has(node.backendDOMNodeId)
   })
-  if (modalNodes.length > 1) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+  if (modalNodes.length > activeModalBackendNodeIds.size) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+  if (modalNodes.length < activeModalBackendNodeIds.size) return undefined
 
   const modal = modalNodes[0]
   if (!modal) {
     const strayKnownAction = response.nodes.some((node) =>
       axString(node, 'role') === 'button'
-      && RC6_ONBOARDING_DIALOGS.some((entry) => entry.actionName === axString(node, 'name')),
+      && RC6_ONBOARDING_DIALOGS.some((entry) => entry.actionName === axString(node, 'name'))
+      && activeButtonBackendNodeIds.has(node.backendDOMNodeId),
     )
-    if (strayKnownAction) fail('STAGE2_PAGE_NAVIGATION_FAILED')
-    return Object.freeze({ dialog: undefined, nodeById, nodes: response.nodes, modalSignature: 'none' })
+    if (strayKnownAction) return undefined
+    return Object.freeze({
+      dialog: undefined,
+      interactionDialogBackendNodeId: undefined,
+      nodeById,
+      nodes: response.nodes,
+      modalSignature: 'none',
+    })
   }
 
   const dialogIndex = RC6_ONBOARDING_DIALOGS.findIndex((entry) =>
@@ -2340,14 +2411,16 @@ function inspectRc6OnboardingTree(response, mainFrameId) {
 
   const expected = RC6_ONBOARDING_DIALOGS[dialogIndex]
   const actions = response.nodes.filter((node) =>
-    axString(node, 'role') === 'button' && axString(node, 'name') === expected.actionName,
+    axString(node, 'role') === 'button'
+    && axString(node, 'name') === expected.actionName
+    && activeButtonBackendNodeIds.has(node.backendDOMNodeId),
   )
-  if (actions.length !== 1) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+  if (actions.length > 1) fail('STAGE2_PAGE_NAVIGATION_FAILED')
+  if (actions.length === 0) return undefined
   const action = actions[0]
   const actionBackendNodeId = positiveBackendNodeId(action.backendDOMNodeId)
   if (
     action.ignored
-    || axPropertyIsTrue(action, 'disabled')
     || actionBackendNodeId === undefined
     || (action.frameId !== undefined && action.frameId !== mainFrameId)
   ) fail('STAGE2_PAGE_NAVIGATION_FAILED')
@@ -2377,10 +2450,12 @@ function inspectRc6OnboardingTree(response, mainFrameId) {
       backendNodeId: dialogBackendNodeId,
       action,
       actionBackendNodeId,
+      actionEnabled: !axPropertyIsTrue(action, 'disabled'),
     }),
+    interactionDialogBackendNodeId: undefined,
     nodeById,
     nodes: response.nodes,
-    modalSignature: `${dialogIndex}:${modal.nodeId}:${dialogBackendNodeId}:${action.nodeId}:${actionBackendNodeId}`,
+    modalSignature: `${dialogIndex}:${modal.nodeId}:${dialogBackendNodeId}:${action.nodeId}:${actionBackendNodeId}:${axPropertyIsTrue(action, 'disabled') ? 0 : 1}`,
   })
 }
 
@@ -2512,7 +2587,119 @@ function assertReadinessBoundary(guard, clock) {
   assertPageObservationSafe(guard, clock)
 }
 
-async function readOnboardingState(peer, sessionId, mainFrameId, guard, clock) {
+function collectAttachedBackendNodeIds(root, mainFrameId) {
+  if (!isPlainObject(root)) fail('STAGE2_DOM_RESULT_INVALID')
+  if (root.frameId !== undefined && root.frameId !== mainFrameId) fail('STAGE2_DOM_RESULT_INVALID')
+  const nodeIds = new Set()
+  const backendNodeIds = new Set()
+  const pending = [root]
+  while (pending.length > 0) {
+    if (nodeIds.size >= MAX_TREE_ENTRIES) fail('STAGE2_DOM_RESULT_INVALID')
+    const node = pending.pop()
+    if (
+      !isPlainObject(node)
+      || !Number.isSafeInteger(node.nodeId)
+      || node.nodeId < 1
+      || positiveBackendNodeId(node.backendNodeId) === undefined
+      || nodeIds.has(node.nodeId)
+      || backendNodeIds.has(node.backendNodeId)
+    ) fail('STAGE2_DOM_RESULT_INVALID')
+    nodeIds.add(node.nodeId)
+    backendNodeIds.add(node.backendNodeId)
+    for (const field of ['children', 'shadowRoots', 'pseudoElements']) {
+      const children = node[field]
+      if (children === undefined) continue
+      if (!Array.isArray(children)) fail('STAGE2_DOM_RESULT_INVALID')
+      for (let index = children.length - 1; index >= 0; index -= 1) pending.push(children[index])
+    }
+  }
+  return backendNodeIds
+}
+
+async function querySnapshotMarkerBackendNodeIds(
+  peer,
+  sessionId,
+  rootNodeId,
+  marker,
+  guard,
+  clock,
+) {
+  if (!Object.hasOwn(PLUGIN_MARKERS, marker)) fail('STAGE2_MARKER_INVALID', 'SAFETY_ABORT')
+  const queried = await awaitPageBoundary(
+    () => peer.send('DOM.querySelectorAll', {
+      nodeId: rootNodeId,
+      selector: PLUGIN_MARKERS[marker],
+    }, sessionId),
+    guard,
+    clock,
+  )
+  if (
+    !Array.isArray(queried?.nodeIds)
+    || queried.nodeIds.length > 1
+    || queried.nodeIds.some((nodeId) => !Number.isSafeInteger(nodeId) || nodeId < 1)
+    || new Set(queried.nodeIds).size !== queried.nodeIds.length
+  ) fail('STAGE2_DOM_RESULT_INVALID')
+
+  const backendNodeIds = []
+  for (const nodeId of queried.nodeIds) {
+    const described = await awaitPageBoundary(
+      () => peer.send('DOM.describeNode', { nodeId }, sessionId),
+      guard,
+      clock,
+    )
+    if (described?.node?.nodeId !== nodeId) fail('STAGE2_DOM_RESULT_INVALID')
+    const backendNodeId = positiveBackendNodeId(described?.node?.backendNodeId)
+    if (backendNodeId === undefined || backendNodeIds.includes(backendNodeId)) {
+      fail('STAGE2_DOM_RESULT_INVALID')
+    }
+    backendNodeIds.push(backendNodeId)
+  }
+  return Object.freeze(backendNodeIds)
+}
+
+async function readActiveOnboardingDom(
+  peer,
+  sessionId,
+  mainFrameId,
+  guard,
+  clock,
+  { includeWorkbenchOverlay = false } = {},
+) {
+  const document = await awaitPageBoundary(
+    () => peer.send('DOM.getDocument', { depth: -1, pierce: true }, sessionId),
+    guard,
+    clock,
+  )
+  const rootNodeId = document?.root?.nodeId
+  if (!Number.isSafeInteger(rootNodeId) || rootNodeId < 1) fail('STAGE2_DOM_RESULT_INVALID')
+  const attachedBackendNodeIds = collectAttachedBackendNodeIds(document.root, mainFrameId)
+  const workbenchOverlayBackendNodeIds = includeWorkbenchOverlay
+    ? await querySnapshotMarkerBackendNodeIds(
+        peer,
+        sessionId,
+        rootNodeId,
+        'overlay',
+        guard,
+        clock,
+      )
+    : Object.freeze([])
+  return Object.freeze({
+    attachedBackendNodeIds,
+    workbenchOverlayBackendNodeIds,
+    selfConsistent: workbenchOverlayBackendNodeIds.every((backendNodeId) =>
+      attachedBackendNodeIds.has(backendNodeId),
+    ),
+  })
+}
+
+async function readOnboardingState(
+  peer,
+  sessionId,
+  mainFrameId,
+  guard,
+  clock,
+  { allowWorkbenchOverlay = false } = {},
+) {
   const response = await awaitPageBoundary(
     () => peer.send(
       'Accessibility.getFullAXTree',
@@ -2522,7 +2709,59 @@ async function readOnboardingState(peer, sessionId, mainFrameId, guard, clock) {
     guard,
     clock,
   )
-  return inspectRc6OnboardingTree(response, mainFrameId)
+  if (!Array.isArray(response?.nodes)) fail('STAGE2_CDP_PROTOCOL_FAILED')
+  const inventoryOptions = { includeWorkbenchOverlay: allowWorkbenchOverlay }
+  const firstActiveDom = await readActiveOnboardingDom(
+    peer, sessionId, mainFrameId, guard, clock, inventoryOptions,
+  )
+  const secondActiveDom = await readActiveOnboardingDom(
+    peer, sessionId, mainFrameId, guard, clock, inventoryOptions,
+  )
+  const trackedBackendNodeIds = new Set()
+  let unboundRelevantAxNode = false
+  if (Array.isArray(response?.nodes)) {
+    for (const node of response.nodes) {
+      const role = axString(node, 'role')
+      const relevant = role === 'dialog'
+        || role === 'alertdialog'
+        || (role === 'button'
+          && RC6_ONBOARDING_DIALOGS.some((entry) => entry.actionName === axString(node, 'name')))
+      if (!relevant) continue
+      const backendNodeId = positiveBackendNodeId(node?.backendDOMNodeId)
+      if (backendNodeId === undefined) unboundRelevantAxNode = true
+      else trackedBackendNodeIds.add(backendNodeId)
+    }
+  }
+  const stable = firstActiveDom.selfConsistent
+    && secondActiveDom.selfConsistent
+    && !unboundRelevantAxNode
+    && firstActiveDom.workbenchOverlayBackendNodeIds.length
+      === secondActiveDom.workbenchOverlayBackendNodeIds.length
+    && firstActiveDom.workbenchOverlayBackendNodeIds.every((backendNodeId) =>
+      secondActiveDom.workbenchOverlayBackendNodeIds.includes(backendNodeId),
+    )
+    && [...trackedBackendNodeIds].every((backendNodeId) =>
+      firstActiveDom.attachedBackendNodeIds.has(backendNodeId)
+        === secondActiveDom.attachedBackendNodeIds.has(backendNodeId),
+    )
+  if (!stable) return undefined
+  const modalBackendNodeIds = [...new Set(response.nodes
+    .filter((node) => {
+      const role = axString(node, 'role')
+      return (role === 'dialog' || role === 'alertdialog')
+        && secondActiveDom.attachedBackendNodeIds.has(node.backendDOMNodeId)
+    })
+    .map((node) => node.backendDOMNodeId))]
+  const buttonBackendNodeIds = [...new Set(response.nodes
+    .filter((node) => axString(node, 'role') === 'button'
+      && RC6_ONBOARDING_DIALOGS.some((entry) => entry.actionName === axString(node, 'name'))
+      && secondActiveDom.attachedBackendNodeIds.has(node.backendDOMNodeId))
+    .map((node) => node.backendDOMNodeId))]
+  return inspectRc6OnboardingTree(response, mainFrameId, {
+    modalBackendNodeIds,
+    buttonBackendNodeIds,
+    workbenchOverlayBackendNodeIds: secondActiveDom.workbenchOverlayBackendNodeIds,
+  }, { allowWorkbenchOverlay })
 }
 
 function validateHitAxChain(response, targetBackendNodeId, dialogBackendNodeId, mainFrameId) {
@@ -2563,6 +2802,7 @@ async function captureReadyTarget(peer, sessionId, mainFrameId, onboarding, {
   let dialogIndex
 
   if (dialog) {
+    if (!dialog.actionEnabled) return undefined
     kind = 'dialog'
     dialogIndex = dialog.index
     targetBackendNodeId = dialog.actionBackendNodeId
@@ -2570,6 +2810,7 @@ async function captureReadyTarget(peer, sessionId, mainFrameId, onboarding, {
   } else {
     if (typeof marker !== 'string') fail('STAGE2_CDP_PROTOCOL_FAILED')
     kind = 'marker'
+    dialogBackendNodeId = onboarding.interactionDialogBackendNodeId
     nodeId = await queryMarker(peer, sessionId, marker, guard, clock)
     assertReadinessBoundary(guard, clock)
     if (nodeId === 0) return undefined
@@ -2737,10 +2978,24 @@ export async function prepareRc6PageForPluginInteraction(peer, sessionId, {
       clock.assertBeforeDeadline()
       const onboarding = await readOnboardingState(peer, sessionId, mainFrameId, guard, clock)
       assertReadinessBoundary(guard, clock)
+      if (!onboarding) {
+        stableSignature = undefined
+        stableSince = undefined
+        await clock.pause()
+        continue
+      }
 
       if (waitingForDialog !== undefined) {
         if (onboarding.dialog?.index === waitingForDialog.index) {
           if (onboarding.dialog.backendNodeId !== waitingForDialog.backendNodeId) {
+            fail('STAGE2_PAGE_NAVIGATION_FAILED')
+          }
+          if (onboarding.dialog.actionBackendNodeId !== waitingForDialog.actionBackendNodeId) {
+            fail('STAGE2_PAGE_NAVIGATION_FAILED')
+          }
+          if (!onboarding.dialog.actionEnabled) {
+            waitingForDialog = Object.freeze({ ...waitingForDialog, sawDisabled: true })
+          } else if (waitingForDialog.sawDisabled) {
             fail('STAGE2_PAGE_NAVIGATION_FAILED')
           }
           stableSignature = undefined
@@ -2752,6 +3007,9 @@ export async function prepareRc6PageForPluginInteraction(peer, sessionId, {
       }
 
       if (onboarding.dialog && onboarding.dialog.index <= highestHandledDialog) {
+        fail('STAGE2_PAGE_NAVIGATION_FAILED')
+      }
+      if (onboarding.dialog && !onboarding.dialog.actionEnabled) {
         fail('STAGE2_PAGE_NAVIGATION_FAILED')
       }
 
@@ -2772,7 +3030,7 @@ export async function prepareRc6PageForPluginInteraction(peer, sessionId, {
         if (snapshot.kind === 'marker') return
         await dispatchVerifiedPointerClick(peer, sessionId, guard, clock, snapshot, async () => {
           const freshOnboarding = await readOnboardingState(peer, sessionId, mainFrameId, guard, clock)
-          if (freshOnboarding.dialog?.index !== snapshot.dialogIndex) return undefined
+          if (!freshOnboarding || freshOnboarding.dialog?.index !== snapshot.dialogIndex) return undefined
           return captureReadyTarget(peer, sessionId, mainFrameId, freshOnboarding, {
             marker: 'launcher',
             guard,
@@ -2783,6 +3041,8 @@ export async function prepareRc6PageForPluginInteraction(peer, sessionId, {
         waitingForDialog = Object.freeze({
           index: snapshot.dialogIndex,
           backendNodeId: snapshot.dialogBackendNodeId,
+          actionBackendNodeId: snapshot.targetBackendNodeId,
+          sawDisabled: false,
         })
         stableSignature = undefined
         stableSince = undefined
@@ -2830,13 +3090,33 @@ export async function clickMarker(peer, sessionId, marker, {
   const clock = createReadinessClock({ quietMs, timeoutMs, sleep, now })
   const ownGuard = windowGuard === undefined
   const guard = windowGuard ?? createPageWindowOpenGuard(peer, sessionId)
+  const allowWorkbenchOverlay = marker === 'increment' || marker === 'close'
   let stableSignature
   let stableSince
   try {
     while (true) {
       guard.assertSafe()
       clock.assertBeforeDeadline()
-      const onboarding = await readOnboardingState(peer, sessionId, mainFrameId, guard, clock)
+      const onboarding = await readOnboardingState(
+        peer,
+        sessionId,
+        mainFrameId,
+        guard,
+        clock,
+        { allowWorkbenchOverlay },
+      )
+      if (!onboarding) {
+        stableSignature = undefined
+        stableSince = undefined
+        await clock.pause()
+        continue
+      }
+      if (allowWorkbenchOverlay && onboarding.interactionDialogBackendNodeId === undefined) {
+        stableSignature = undefined
+        stableSince = undefined
+        await clock.pause()
+        continue
+      }
       if (onboarding.dialog) fail('STAGE2_PAGE_NAVIGATION_FAILED')
       const snapshot = await captureReadyTarget(peer, sessionId, mainFrameId, onboarding, {
         marker,
@@ -2854,8 +3134,20 @@ export async function clickMarker(peer, sessionId, marker, {
         stableSince = observedAt
       } else if (observedAt - stableSince >= clock.quietMs) {
         await dispatchVerifiedPointerClick(peer, sessionId, guard, clock, snapshot, async () => {
-          const freshOnboarding = await readOnboardingState(peer, sessionId, mainFrameId, guard, clock)
-          if (freshOnboarding.dialog) return undefined
+          const freshOnboarding = await readOnboardingState(
+            peer,
+            sessionId,
+            mainFrameId,
+            guard,
+            clock,
+            { allowWorkbenchOverlay },
+          )
+          if (
+            !freshOnboarding
+            || freshOnboarding.dialog
+            || (allowWorkbenchOverlay
+              && freshOnboarding.interactionDialogBackendNodeId === undefined)
+          ) return undefined
           return captureReadyTarget(peer, sessionId, mainFrameId, freshOnboarding, {
             marker,
             requireEnabled,

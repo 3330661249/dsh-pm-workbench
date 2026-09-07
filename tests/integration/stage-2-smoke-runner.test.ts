@@ -387,6 +387,7 @@ describe('Stage 2 browser and listener guards', () => {
     buttonParentId?: string
     backendDOMNodeId?: number
     role?: 'dialog' | 'alertdialog'
+    disabled?: boolean
   } = {}) {
     const dialogId = options.dialogId ?? 'beta-dialog'
     const buttonId = options.buttonId ?? 'continue-button'
@@ -395,7 +396,11 @@ describe('Stage 2 browser and listener guards', () => {
     const role = options.role ?? 'dialog'
     return [
       axNode(dialogId, role, '内测声明', { parentId: 'root', backendDOMNodeId: 200 }),
-      axNode(buttonId, 'button', '继续', { parentId: buttonParentId, backendDOMNodeId }),
+      axNode(buttonId, 'button', '继续', {
+        parentId: buttonParentId,
+        backendDOMNodeId,
+        disabled: options.disabled,
+      }),
     ]
   }
 
@@ -404,6 +409,7 @@ describe('Stage 2 browser and listener guards', () => {
     buttonId?: string
     buttonParentId?: string
     backendDOMNodeId?: number
+    disabled?: boolean
   } = {}) {
     const dialogId = options.dialogId ?? 'api-dialog'
     const buttonId = options.buttonId ?? 'later-button'
@@ -411,12 +417,17 @@ describe('Stage 2 browser and listener guards', () => {
     const backendDOMNodeId = options.backendDOMNodeId ?? 202
     return [
       axNode(dialogId, 'dialog', '添加一个 API Key 开始使用', { parentId: 'root', backendDOMNodeId: 210 }),
-      axNode(buttonId, 'button', '稍后配置', { parentId: buttonParentId, backendDOMNodeId }),
+      axNode(buttonId, 'button', '稍后配置', {
+        parentId: buttonParentId,
+        backendDOMNodeId,
+        disabled: options.disabled,
+      }),
     ]
   }
 
   function onboardingFixture({
     readAx,
+    activeDom,
     topmost,
     hitAncestors,
     markerNodeIds = () => [10],
@@ -429,6 +440,14 @@ describe('Stage 2 browser and listener guards', () => {
     onRelease = () => undefined,
   }: {
     readAx: (context: { clock: number; readCount: number }) => AxNodeFixture[]
+    activeDom?: (context: {
+      clock: number
+      readCount: number
+      nodes: AxNodeFixture[]
+    }) => {
+      modalBackendDOMNodeIds: number[]
+      buttonBackendDOMNodeIds: number[]
+    }
     topmost?: (context: {
       clock: number
       targetBackendDOMNodeId: number | undefined
@@ -439,7 +458,7 @@ describe('Stage 2 browser and listener guards', () => {
       targetBackendDOMNodeId: number | undefined
       nodes: AxNodeFixture[]
     }) => AxNodeFixture[]
-    markerNodeIds?: (context: { clock: number }) => number[]
+    markerNodeIds?: (context: { clock: number; selector: unknown }) => number[]
     markerBackendDOMNodeId?: (nodeId: number) => number
     boxModel?: (context: {
       backendDOMNodeId: number | undefined
@@ -464,6 +483,10 @@ describe('Stage 2 browser and listener guards', () => {
     let readCount = 0
     let targetBackendDOMNodeId: number | undefined
     let lastNodes = axTree()
+    let activeDomSnapshot = {
+      modalBackendDOMNodeIds: [] as number[],
+      buttonBackendDOMNodeIds: [] as number[],
+    }
     let eventHandler: ((event: { method: string; params: Record<string, unknown>; sessionId: string }) => void) | undefined
     const resolveTopmost = topmost ?? (({ targetBackendDOMNodeId }: {
       targetBackendDOMNodeId: number | undefined
@@ -521,9 +544,35 @@ describe('Stage 2 browser and listener guards', () => {
           ],
         }
       }
-      if (method === 'DOM.getDocument') return { root: { nodeId: 1 } }
+      if (method === 'DOM.getDocument') {
+        activeDomSnapshot = activeDom?.({ clock, readCount, nodes: lastNodes }) ?? {
+          modalBackendDOMNodeIds: [...new Set(lastNodes
+            .filter((node) => ['dialog', 'alertdialog'].includes(node.role?.value ?? ''))
+            .flatMap((node) => typeof node.backendDOMNodeId === 'number' ? [node.backendDOMNodeId] : []))],
+          buttonBackendDOMNodeIds: [...new Set(lastNodes
+            .filter((node) => node.role?.value === 'button')
+            .flatMap((node) => typeof node.backendDOMNodeId === 'number' ? [node.backendDOMNodeId] : []))],
+        }
+        const attachedBackendNodeIds = [...new Set([
+          ...activeDomSnapshot.modalBackendDOMNodeIds,
+          ...activeDomSnapshot.buttonBackendDOMNodeIds,
+        ])].filter((backendNodeId) => backendNodeId !== 1)
+        return {
+          root: {
+            nodeId: 1,
+            backendNodeId: 1,
+            frameId: 'main-frame',
+            children: attachedBackendNodeIds.map((backendNodeId, index) => ({
+              nodeId: 30_000 + index,
+              backendNodeId,
+            })),
+          },
+        }
+      }
       if (method === 'DOM.querySelector') return { nodeId: 10 }
-      if (method === 'DOM.querySelectorAll') return { nodeIds: markerNodeIds({ clock }) }
+      if (method === 'DOM.querySelectorAll') return {
+        nodeIds: markerNodeIds({ clock, selector: params.selector }),
+      }
       if (method === 'DOM.describeNode') {
         const nodeId = typeof params.nodeId === 'number' ? params.nodeId : 10
         const backendNodeId = markerBackendDOMNodeId(nodeId)
@@ -1280,6 +1329,92 @@ describe('Stage 2 browser and listener guards', () => {
       .every(([, params]) => params?.frameId === 'main-frame')).toBe(true)
   })
 
+  it('ignores detached stale AX dialogs and clicks only the modal still present in the active DOM', async () => {
+    let stage = 0
+    const fixture = onboardingFixture({
+      readAx: () => {
+        if (stage === 0) return axTree(...betaDialog())
+        if (stage === 1) {
+          return axTree(
+            ...betaDialog({ disabled: true }),
+            ...apiDialog(),
+          )
+        }
+        return axTree(...apiDialog({ disabled: true }))
+      },
+      activeDom: () => {
+        if (stage === 0) {
+          return { modalBackendDOMNodeIds: [200], buttonBackendDOMNodeIds: [201] }
+        }
+        if (stage === 1) {
+          return { modalBackendDOMNodeIds: [210], buttonBackendDOMNodeIds: [202] }
+        }
+        return { modalBackendDOMNodeIds: [], buttonBackendDOMNodeIds: [] }
+      },
+      onRelease: (backendDOMNodeId) => {
+        if (backendDOMNodeId === 201 && stage === 0) stage = 1
+        else if (backendDOMNodeId === 202 && stage === 1) stage = 2
+      },
+    })
+
+    await prepareOnboarding(fixture)
+
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')
+      .map(([, params]) => [params?.x, params?.y])).toEqual([[30, 30], [50, 50]])
+  })
+
+  it('ignores a known stale AX action when neither it nor its modal remains in the active DOM', async () => {
+    const fixture = onboardingFixture({
+      readAx: () => axTree(...apiDialog({ disabled: true })),
+      activeDom: () => ({ modalBackendDOMNodeIds: [], buttonBackendDOMNodeIds: [] }),
+    })
+
+    await prepareOnboarding(fixture)
+
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
+  })
+
+  it('retries without input when the active DOM changes between two inventory reads', async () => {
+    let dismissed = false
+    let inventoryReads = 0
+    let readsBeforePress = 0
+    const fixture = onboardingFixture({
+      readAx: () => dismissed ? axTree() : axTree(...betaDialog()),
+      activeDom: () => {
+        inventoryReads += 1
+        if (dismissed || inventoryReads === 2) {
+          return { modalBackendDOMNodeIds: [], buttonBackendDOMNodeIds: [] }
+        }
+        return { modalBackendDOMNodeIds: [200], buttonBackendDOMNodeIds: [201] }
+      },
+      onPress: () => { readsBeforePress = inventoryReads },
+      onRelease: () => { dismissed = true },
+    })
+
+    await prepareOnboarding(fixture)
+
+    expect(readsBeforePress).toBeGreaterThanOrEqual(8)
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(1)
+  })
+
+  it('fails closed when an active DOM modal has no matching modal in the AX tree', async () => {
+    const fixture = onboardingFixture({
+      readAx: () => axTree(...betaDialog()),
+      activeDom: () => ({ modalBackendDOMNodeIds: [999], buttonBackendDOMNodeIds: [201] }),
+    })
+
+    await expect(prepareOnboarding(fixture)).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
+  })
+
   it('handles a fresh Chrome profile that shows only the API Key dialog', async () => {
     let dismissed = false
     const fixture = onboardingFixture({
@@ -1587,6 +1722,29 @@ describe('Stage 2 browser and listener guards', () => {
       .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
   })
 
+  it('stops the attachment snapshot immediately when Page.windowOpen fires during DOM.getDocument', async () => {
+    let emitted = false
+    const fixture = onboardingFixture({
+      readAx: () => axTree(...apiDialog()),
+      onCommand: ({ method, params, emit }) => {
+        if (!emitted && method === 'DOM.getDocument') {
+          emitted = true
+          emit('Page.windowOpen', { url: 'about:blank' })
+        }
+      },
+    })
+
+    await expect(prepareOnboarding(fixture)).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    const methods = fixture.send.mock.calls.map(([method]) => method)
+    const documentIndex = methods.indexOf('DOM.getDocument')
+    expect(documentIndex).toBeGreaterThanOrEqual(0)
+    expect(methods.slice(documentIndex + 1)).not.toContain('DOM.querySelectorAll')
+    expect(methods.slice(documentIndex + 1)).not.toContain('DOM.describeNode')
+    expect(methods.slice(documentIndex + 1)).not.toContain('Input.dispatchMouseEvent')
+  })
+
   it('does not accept a marker whose DOM read completes after the polling deadline', async () => {
     let expired = false
     const clock = {
@@ -1715,6 +1873,164 @@ describe('Stage 2 browser and listener guards', () => {
     expect(neverDisappears.send.mock.calls
       .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
         && params?.type === 'mousePressed')).toHaveLength(1)
+  })
+
+  it('waits without retrying while the clicked active dialog action is transiently disabled', async () => {
+    let clicked = false
+    const fixture = onboardingFixture({
+      readAx: () => axTree(...apiDialog({ disabled: clicked })),
+      onRelease: () => { clicked = true },
+    })
+
+    await expect(prepareOnboarding(fixture, { timeoutMs: 250 })).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(1)
+  })
+
+  it('continues after one click when the active action disables and its dialog then detaches despite stale AX', async () => {
+    let stage = 0
+    let postClickAttachmentReads = 0
+    const fixture = onboardingFixture({
+      readAx: () => stage === 0
+        ? axTree(...apiDialog())
+        : axTree(...apiDialog({ disabled: true })),
+      activeDom: () => {
+        if (stage === 0) {
+          return { modalBackendDOMNodeIds: [210], buttonBackendDOMNodeIds: [202] }
+        }
+        if (stage === 1) {
+          postClickAttachmentReads += 1
+          const attached = { modalBackendDOMNodeIds: [210], buttonBackendDOMNodeIds: [202] }
+          if (postClickAttachmentReads === 2) stage = 2
+          return attached
+        }
+        return { modalBackendDOMNodeIds: [], buttonBackendDOMNodeIds: [] }
+      },
+      onRelease: () => { stage = 1 },
+    })
+
+    await prepareOnboarding(fixture)
+
+    expect(stage).toBe(2)
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(1)
+  })
+
+  it('fails without retrying when a clicked action becomes enabled again after a disabled state', async () => {
+    let clicked = false
+    let postClickReads = 0
+    const fixture = onboardingFixture({
+      readAx: () => {
+        if (!clicked) return axTree(...apiDialog())
+        postClickReads += 1
+        return axTree(...apiDialog({ disabled: postClickReads === 1 }))
+      },
+      onRelease: () => { clicked = true },
+    })
+
+    await expect(prepareOnboarding(fixture)).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(1)
+  })
+
+  it('fails without retrying when the clicked dialog replaces its exact action backend', async () => {
+    let clicked = false
+    const fixture = onboardingFixture({
+      readAx: () => axTree(...apiDialog({
+        backendDOMNodeId: clicked ? 203 : 202,
+        disabled: clicked,
+      })),
+      onRelease: () => { clicked = true },
+    })
+
+    await expect(prepareOnboarding(fixture)).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(1)
+  })
+
+  it.each([
+    ['increment', 101],
+    ['close', 102],
+  ])('allows the %s marker only inside the uniquely marked workbench dialog', async (marker, backendNodeId) => {
+    const fixture = onboardingFixture({
+      readAx: () => axTree(
+        axNode('workbench-dialog', 'dialog', 'PM Workbench 探针', {
+          parentId: 'root', backendDOMNodeId: 300,
+        }),
+        axNode('increment-button', 'button', '写入 +1', {
+          parentId: 'workbench-dialog', backendDOMNodeId: 101,
+        }),
+        axNode('close-button', 'button', '关闭探针', {
+          parentId: 'workbench-dialog', backendDOMNodeId: 102,
+        }),
+      ),
+      markerNodeIds: ({ selector }) => {
+        if (selector === '[data-dsh-pm-workbench="overlay"]') return [30]
+        if (selector === '[data-dsh-pm-workbench="increment"]') return [11]
+        if (selector === '[data-dsh-pm-workbench="close"]') return [12]
+        return []
+      },
+      markerBackendDOMNodeId: (nodeId) => ({ 30: 300, 11: 101, 12: 102 })[nodeId] ?? 999,
+    })
+
+    await clickMarkerSafely(fixture, marker)
+
+    expect(fixture.send.mock.calls
+      .filter(([method, params]) => method === 'Input.dispatchMouseEvent'
+        && params?.type === 'mousePressed')).toHaveLength(1)
+    expect(fixture.send.mock.calls.some(([method, params]) =>
+      method === 'DOM.querySelectorAll'
+      && params?.selector === '[data-dsh-pm-workbench="overlay"]')).toBe(true)
+    expect(fixture.send.mock.calls.some(([method, params]) =>
+      method === 'DOM.getBoxModel' && params?.backendNodeId === backendNodeId)).toBe(true)
+  })
+
+  it('rejects an unknown active modal beside the marked workbench dialog before pointer input', async () => {
+    const fixture = onboardingFixture({
+      readAx: () => axTree(
+        axNode('workbench-dialog', 'dialog', 'PM Workbench 探针', {
+          parentId: 'root', backendDOMNodeId: 300,
+        }),
+        axNode('increment-button', 'button', '写入 +1', {
+          parentId: 'workbench-dialog', backendDOMNodeId: 101,
+        }),
+        axNode('unknown-dialog', 'dialog', '未知提示', {
+          parentId: 'root', backendDOMNodeId: 400,
+        }),
+      ),
+      markerNodeIds: ({ selector }) => selector === '[data-dsh-pm-workbench="overlay"]' ? [30] : [11],
+      markerBackendDOMNodeId: (nodeId) => nodeId === 30 ? 300 : 101,
+    })
+
+    await expect(clickMarkerSafely(fixture, 'increment')).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
+  })
+
+  it('does not click increment or close when the uniquely marked workbench dialog is absent', async () => {
+    const fixture = onboardingFixture({
+      readAx: () => axTree(),
+      markerNodeIds: ({ selector }) => selector === '[data-dsh-pm-workbench="overlay"]' ? [] : [11],
+      markerBackendDOMNodeId: () => 101,
+    })
+
+    await expect(clickMarkerSafely(fixture, 'increment', { timeoutMs: 250 })).rejects.toMatchObject({
+      stage2Code: 'STAGE2_PAGE_NAVIGATION_FAILED',
+    })
+    expect(fixture.send.mock.calls
+      .filter(([method]) => method === 'Input.dispatchMouseEvent')).toHaveLength(0)
   })
 
   it('clicks a unique plugin marker through a topmost icon descendant after a fresh post-move check', async () => {
@@ -1873,6 +2189,13 @@ describe('Stage 2 browser and listener guards', () => {
     expect(methods).not.toContain('DOM.querySelector')
     expect(methods).not.toContain('Runtime.evaluate')
     expect(methods).not.toContain('DOM.performSearch')
+    const selectors = fixture.send.mock.calls
+      .filter(([method]) => method === 'DOM.querySelectorAll')
+      .map(([, params]) => params?.selector)
+    expect(selectors).toContain('[data-dsh-pm-workbench="launcher"]')
+    expect(selectors.every((selector) => typeof selector === 'string' && [
+      '[data-dsh-pm-workbench="launcher"]',
+    ].includes(selector))).toBe(true)
   })
 
   function fakePageNetworkPeer() {
