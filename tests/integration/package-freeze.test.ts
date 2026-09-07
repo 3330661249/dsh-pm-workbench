@@ -1118,6 +1118,74 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each([
   } finally { await rm(f.temp, { recursive: true, force: true }) }
 }, 60_000)
 
+test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each([
+  { variant: 'reader', delay: 0 },
+  { variant: 'consumer', delay: 4 },
+  { variant: 'consumer', delay: 5 },
+] as const)('rejects identical-tree HEAD ancestry loss at the final promise handoff: $variant/$delay', async ({ variant, delay }) => {
+  const f = await releaseFixture()
+  try {
+    const summary = await f.module.createWorkbenchRelease(f.releaseRoot)
+    const tree = await f.git(['rev-parse', 'HEAD^{tree}'])
+    const unrelatedCommit = await f.git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit-tree', tree, '-m', 'unrelated identical snapshot'])
+    const script = `
+      import fs from 'node:fs/promises'
+      import { readFileSync, lstatSync, readdirSync } from 'node:fs'
+      import { execFileSync, spawnSync } from 'node:child_process'
+      import { createHash } from 'node:crypto'
+      import { syncBuiltinESMExports } from 'node:module'
+      const root = ${JSON.stringify(f.releaseRoot)}
+      const gitOptions = { cwd: ${JSON.stringify(f.root)}, env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }, encoding: 'utf8', timeout: 10_000, maxBuffer: 1024 * 1024 }
+      const originalRoot = lstatSync(root)
+      const retained = readdirSync(root).map(name => ({ name, stat: lstatSync(root + '/' + name), bytes: readFileSync(root + '/' + name) }))
+      const receipt = JSON.parse(readFileSync(root + '/receipt.json', 'utf8'))
+      const originalOpen = fs.open
+      let armed = false; let injected = false; let selected = false
+      const afterMicrotasks = remaining => {
+        if (remaining === 0) { execFileSync('git', ['update-ref', 'HEAD', ${JSON.stringify(unrelatedCommit)}], gitOptions); injected = true }
+        else Promise.resolve().then(() => afterMicrotasks(remaining - 1))
+      }
+      fs.open = async function(file, ...args) {
+        const handle = await originalOpen.call(this, file, ...args)
+        if (armed && !selected && String(file) === root) {
+          selected = true
+          const close = handle.close.bind(handle)
+          handle.close = async function(...args) {
+            const result = await close(...args)
+            if (!injected) afterMicrotasks(${delay})
+            return result
+          }
+        }
+        return handle
+      }
+      syncBuiltinESMExports()
+      const api = await import(${JSON.stringify(pathToFileURL(path.join(f.root, 'scripts/verify-package.mjs')).href)})
+      const options = { releaseRoot: root, sourceCommit: ${JSON.stringify(summary.sourceCommit)}, receiptSha256: ${JSON.stringify(summary.receiptSha256)} }
+      const capability = ${JSON.stringify(variant)} === 'consumer' ? await api.readWorkbenchRelease(options) : undefined
+      armed = true
+      let rejected = false; let callbackCount = 0; let capabilityGranted = false
+      try {
+        if (${JSON.stringify(variant)} === 'reader') { await api.readWorkbenchRelease(options); capabilityGranted = true }
+        else await api.withWorkbenchReleaseTgz(capability, () => { callbackCount++ })
+      } catch { rejected = true }
+      const finalRoot = lstatSync(root)
+      process.stdout.write(JSON.stringify({ injected, rejected, callbackCount, capabilityGranted,
+        ancestryLost: spawnSync('git', ['merge-base', '--is-ancestor', options.sourceCommit, 'HEAD'], gitOptions).status === 1,
+        identicalTree: execFileSync('git', ['rev-parse', 'HEAD^{tree}'], gitOptions).trim() === ${JSON.stringify(tree)},
+        allSourceBytesUnchanged: receipt.sources.every(source => {
+          const bytes = readFileSync(${JSON.stringify(f.root + '/')} + source.path)
+          return bytes.length === source.bytes && createHash('sha256').update(bytes).digest('hex') === source.sha256
+        }),
+        generationPreserved: finalRoot.dev === originalRoot.dev && finalRoot.ino === originalRoot.ino && retained.every(file => {
+          const current = lstatSync(root + '/' + file.name)
+          return current.dev === file.stat.dev && current.ino === file.stat.ino && readFileSync(root + '/' + file.name).equals(file.bytes)
+        }) }))
+    `
+    const observed = await execFile(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', script], { cwd: f.root, timeout: 30_000 })
+    expect(JSON.parse(observed.stdout)).toEqual({ injected: true, rejected: true, callbackCount: 0, capabilityGranted: false, ancestryLost: true, identicalTree: true, allSourceBytesUnchanged: true, generationPreserved: true })
+  } finally { await rm(f.temp, { recursive: true, force: true }) }
+}, 60_000)
+
 test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1')('rejects an unrelated root created during cleanup final async close and preserves it', async () => {
   const f = await releaseFixture()
   try {

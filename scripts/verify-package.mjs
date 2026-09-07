@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeSync } from 'node:fs'
 import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm } from 'node:fs/promises'
 import path from 'node:path'
-import { execFile as execFileCallback } from 'node:child_process'
+import { execFile as execFileCallback, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
 import { gunzipSync } from 'node:zlib'
 import { pathToFileURL } from 'node:url'
@@ -624,12 +624,15 @@ function validateReceiptArchive(receipt, tgz) {
   return members
 }
 
+function gitInvocation(args) {
+  return ['git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', ...args], {
+    cwd: defaultRepositoryRoot, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' },
+    encoding: 'buffer', timeout: 10_000, maxBuffer: 3 * 1024 * 1024, stdio: 'pipe',
+  }]
+}
 async function gitRead(args, guard) {
   await guard?.()
-  const result = await execFile('git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', ...args], {
-    cwd: defaultRepositoryRoot, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' },
-    encoding: 'buffer', timeout: 10_000, maxBuffer: 3 * 1024 * 1024,
-  })
+  const result = await execFile(...gitInvocation(args))
   await guard?.()
   return Buffer.from(result.stdout)
 }
@@ -664,11 +667,14 @@ async function absent(target) {
   try { await lstat(target); failRelease() } catch (error) { if (error.code !== 'ENOENT') throw error }
 }
 // Promise continuations can run after an async reader's final seal. Recheck the
-// original generation and bound source bytes at each public consumer handoff.
+// original generation, source bytes and current ancestry at each public handoff.
 function sealReleaseGenerationSync(data, checkSources = true) {
   const reopened = reopenDirectoriesSync(data.ancestors)
   const sourceParents = new Map()
   try {
+    // HEAD can change without changing a source byte. Keep this bounded read-only
+    // Git predicate in the same non-yielding seal, including cleanup capabilities.
+    execFileSync(...gitInvocation(['merge-base', '--is-ancestor', data.sourceCommit, 'HEAD']))
     if (!exact(readdirSync(data.releaseRoot).sort(comparePath), [packageFilename, 'receipt.json'])) failRelease()
     for (const [name, file, bound] of [['receipt.json', data.receiptFile, MAX_RECEIPT_BYTES], [packageFilename, data.tgzFile, MAX_PACKED_ARTIFACT_BYTES]]) {
       const current = readCheckedFileSync(path.join(data.releaseRoot, name), bound, 0o600)
