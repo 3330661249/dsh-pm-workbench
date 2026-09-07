@@ -997,7 +997,10 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each(['post-pac
   } finally { await rm(f.temp, { recursive: true, force: true }) }
 }, 60_000)
 
-test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each(['reader', 'consumer'] as const)('rejects a retained tgz swap during the reader final async close before granting consumption: %s', async variant => {
+test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each([
+  { variant: 'reader', delay: 0 }, { variant: 'consumer', delay: 0 },
+  { variant: 'consumer', delay: 4 }, { variant: 'consumer', delay: 5 },
+] as const)('rejects a retained tgz swap during the reader final async close before granting consumption: $variant/$delay', async ({ variant, delay }) => {
   const f = await releaseFixture()
   try {
     const summary = await f.module.createWorkbenchRelease(f.releaseRoot)
@@ -1008,8 +1011,18 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each(['reader',
       const root = ${JSON.stringify(f.releaseRoot)}
       const target = root + '/knight-dsh-pm-workbench-0.1.0.tgz'
       const originalBytes = readFileSync(target)
+      const originalRoot = lstatSync(root)
       const originalOpen = fs.open
       let armed = false; let injected = false; let selected = false; let replacementIdentity
+      const substitute = () => {
+        renameSync(target, ${JSON.stringify(path.join(f.temp, 'saved-reader-tgz'))})
+        writeFileSync(target, originalBytes, { mode: 0o600, flag: 'wx' })
+        const stat = lstatSync(target); replacementIdentity = { dev: stat.dev, ino: stat.ino }; injected = true
+      }
+      const afterMicrotasks = remaining => {
+        if (remaining === 0) substitute()
+        else Promise.resolve().then(() => afterMicrotasks(remaining - 1))
+      }
       fs.open = async function(file, ...args) {
         const handle = await originalOpen.call(this, file, ...args)
         if (armed && !selected && String(file) === root) {
@@ -1017,11 +1030,7 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each(['reader',
           const close = handle.close.bind(handle)
           handle.close = async function(...args) {
             const result = await close(...args)
-            if (!injected) {
-              renameSync(target, ${JSON.stringify(path.join(f.temp, 'saved-reader-tgz'))})
-              writeFileSync(target, originalBytes, { mode: 0o600, flag: 'wx' })
-              const stat = lstatSync(target); replacementIdentity = { dev: stat.dev, ino: stat.ino }; injected = true
-            }
+            if (!injected) afterMicrotasks(${delay})
             return result
           }
         }
@@ -1033,17 +1042,61 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1').each(['reader',
       const variant = ${JSON.stringify(variant)}
       const capability = variant === 'consumer' ? await api.readWorkbenchRelease(options) : undefined
       armed = true
-      let rejected = false; let callbackRan = false
+      let rejected = false; let callbackRan = false; let injectedAtCallback = false
       try {
         if (variant === 'reader') await api.readWorkbenchRelease(options)
-        else await api.withWorkbenchReleaseTgz(capability, () => { callbackRan = true })
+        else await api.withWorkbenchReleaseTgz(capability, () => { callbackRan = true; injectedAtCallback = injected })
       } catch { rejected = true }
       const stat = existsSync(target) ? lstatSync(target) : undefined
-      process.stdout.write(JSON.stringify({ injected, rejected, callbackRan,
+      const finalRoot = existsSync(root) ? lstatSync(root) : undefined
+      process.stdout.write(JSON.stringify({ injected, rejected, callbackRan, injectedAtCallback,
+        generationPreserved: finalRoot?.dev === originalRoot.dev && finalRoot?.ino === originalRoot.ino,
         replacementPreserved: stat?.dev === replacementIdentity?.dev && stat?.ino === replacementIdentity?.ino && existsSync(target) && readFileSync(target).equals(originalBytes) }))
     `
     const observed = await execFile(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', script], { cwd: f.root, timeout: 30_000 })
-    expect(JSON.parse(observed.stdout)).toEqual({ injected: true, rejected: true, callbackRan: false, replacementPreserved: true })
+    expect(JSON.parse(observed.stdout)).toEqual({ injected: true, rejected: true, callbackRan: false, injectedAtCallback: false, generationPreserved: true, replacementPreserved: true })
+  } finally { await rm(f.temp, { recursive: true, force: true }) }
+}, 60_000)
+
+test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1')('rejects an unrelated root created during cleanup final async close and preserves it', async () => {
+  const f = await releaseFixture()
+  try {
+    const summary = await f.module.createWorkbenchRelease(f.releaseRoot)
+    const script = `
+      import fs from 'node:fs/promises'
+      import { existsSync, mkdirSync, lstatSync, readdirSync } from 'node:fs'
+      import { syncBuiltinESMExports } from 'node:module'
+      const root = ${JSON.stringify(f.releaseRoot)}
+      const quarantine = root + '.cleanup-' + ${JSON.stringify(summary.releaseId)}
+      const originalOpen = fs.open
+      let armed = false; let injected = false; let replacementIdentity
+      fs.open = async function(file, ...args) {
+        const handle = await originalOpen.call(this, file, ...args)
+        if (armed && String(file) === root) {
+          const close = handle.close.bind(handle)
+          handle.close = async function(...args) {
+            const result = await close(...args)
+            if (!injected && !existsSync(root) && !existsSync(quarantine)) {
+              mkdirSync(root, { mode: 0o700 })
+              const stat = lstatSync(root); replacementIdentity = { dev: stat.dev, ino: stat.ino }; injected = true
+            }
+            return result
+          }
+        }
+        return handle
+      }
+      syncBuiltinESMExports()
+      const api = await import(${JSON.stringify(pathToFileURL(path.join(f.root, 'scripts/verify-package.mjs')).href)})
+      const capability = await api.readWorkbenchRelease({ releaseRoot: root, sourceCommit: ${JSON.stringify(summary.sourceCommit)}, receiptSha256: ${JSON.stringify(summary.receiptSha256)} })
+      armed = true
+      let rejected = false
+      try { await api.cleanupWorkbenchRelease(capability) } catch { rejected = true }
+      const stat = existsSync(root) ? lstatSync(root) : undefined
+      process.stdout.write(JSON.stringify({ injected, rejected, quarantineAbsent: !existsSync(quarantine),
+        unrelatedRootPreserved: stat?.dev === replacementIdentity?.dev && stat?.ino === replacementIdentity?.ino && readdirSync(root).length === 0 }))
+    `
+    const observed = await execFile(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', script], { cwd: f.root, timeout: 30_000 })
+    expect(JSON.parse(observed.stdout)).toEqual({ injected: true, rejected: true, quarantineAbsent: true, unrelatedRootPreserved: true })
   } finally { await rm(f.temp, { recursive: true, force: true }) }
 }, 60_000)
 
