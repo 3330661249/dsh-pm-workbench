@@ -19,17 +19,24 @@ function serialize(value: unknown, ancestors: Set<object>): string {
 
   if (ancestors.has(value)) throw new Error('non-json-value')
   const prototype = Object.getPrototypeOf(value)
-  if (prototype !== Object.prototype && prototype !== null && !Array.isArray(value)) {
+  const isArray = Array.isArray(value)
+  if (isArray ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) {
     throw new Error('non-json-value')
   }
 
   ancestors.add(value)
   try {
-    if (Array.isArray(value)) {
+    if (isArray) {
+      if (Object.getOwnPropertySymbols(value).length > 0) throw new Error('non-json-value')
+      const propertyNames = Object.getOwnPropertyNames(value)
+      if (propertyNames.length !== value.length + 1 || !propertyNames.includes('length')) {
+        throw new Error('non-json-value')
+      }
       const items: string[] = []
       for (let index = 0; index < value.length; index += 1) {
-        if (!Object.hasOwn(value, index)) throw new Error('non-json-value')
-        items.push(serialize(value[index], ancestors))
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+        if (!descriptor || !('value' in descriptor)) throw new Error('non-json-value')
+        items.push(serialize(descriptor.value, ancestors))
       }
       return `[${items.join(',')}]`
     }

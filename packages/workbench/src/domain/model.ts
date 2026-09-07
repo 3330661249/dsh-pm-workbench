@@ -547,7 +547,7 @@ const storedProjectRecordDefinition = z.discriminatedUnion('kind', [
   }
 })
 
-export const storedProjectRecordSchema = storedProjectRecordDefinition satisfies z.ZodType<StoredProjectRecord>
+export const storedProjectRecordSchema: z.ZodType<StoredProjectRecord> = storedProjectRecordDefinition
 
 export function assertStoredRecordBudget(value: unknown): asserts value is StoredProjectRecord {
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {

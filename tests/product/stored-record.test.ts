@@ -27,6 +27,19 @@ import {
   makeTombstone,
 } from './helpers/synthetic-records.js'
 
+function compileOnlyParsedRecordReadonlyGuards(): void {
+  const parsed = storedProjectRecordSchema.parse(makeSmallActiveRecord())
+  if (parsed.kind !== 'active') return
+  // @ts-expect-error Parsed stored records expose readonly properties.
+  parsed.source = null
+  // @ts-expect-error Parsed stored record arrays do not expose mutating methods.
+  parsed.analyses.splice(0)
+  // @ts-expect-error Nested parsed record properties are readonly.
+  parsed.header.name = 'changed'
+}
+
+void compileOnlyParsedRecordReadonlyGuards
+
 describe('stored project record boundary', () => {
   it('accepts a schema-valid synthetic active record', () => {
     expect(storedProjectRecordSchema.parse(makeSmallActiveRecord()).kind).toBe('active')
@@ -139,6 +152,45 @@ describe('canonical JSON', () => {
   it('rejects unpaired surrogates in keys and values', () => {
     expect(() => canonicalJson('\ud800')).toThrowError('unpaired-surrogate')
     expect(() => canonicalJson({ ['bad\udc00']: 'value' })).toThrowError('unpaired-surrogate')
+  })
+
+  it('rejects arrays with symbol values, symbol properties, or extra string properties', () => {
+    const symbolProperty = ['value']
+    Object.defineProperty(symbolProperty, Symbol('metadata'), { value: 'distinct' })
+    const extraProperty = ['value']
+    Object.defineProperty(extraProperty, 'metadata', { enumerable: true, value: 'distinct' })
+
+    expect(() => canonicalJson([Symbol('value')])).toThrowError('non-json-value')
+    expect(() => canonicalJson(symbolProperty)).toThrowError('non-json-value')
+    expect(() => canonicalJson(extraProperty)).toThrowError('non-json-value')
+  })
+
+  it('rejects indexed array accessors without invoking their getters', () => {
+    let getterCalls = 0
+    const accessor = new Array<unknown>(1)
+    Object.defineProperty(accessor, '0', {
+      enumerable: true,
+      get: () => {
+        getterCalls += 1
+        return 'value'
+      },
+    })
+
+    expect(() => canonicalJson(accessor)).toThrowError('non-json-value')
+    expect(getterCalls).toBe(0)
+  })
+
+  it('rejects array subclasses, sparse arrays, and cyclic arrays', () => {
+    class ArraySubclass extends Array<unknown> {}
+    const subclass = new ArraySubclass()
+    subclass.push('value')
+    const sparse = new Array<unknown>(1)
+    const cyclic: unknown[] = []
+    cyclic.push(cyclic)
+
+    expect(() => canonicalJson(subclass)).toThrowError('non-json-value')
+    expect(() => canonicalJson(sparse)).toThrowError('non-json-value')
+    expect(() => canonicalJson(cyclic)).toThrowError('non-json-value')
   })
 
   it('measures canonical UTF-8 bytes and provides Host-only SHA-256', () => {
