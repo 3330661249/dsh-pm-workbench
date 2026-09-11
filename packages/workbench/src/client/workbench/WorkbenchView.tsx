@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { PRODUCT_API_VERSION, PRODUCT_ERROR_CODES, parseProductInput } from '../../protocol/product.js'
 import type { ProjectId, PrdRevisionId } from '../../domain/ids.js'
 import type { Stage3aProjectCommand } from './transport.js'
-import type { ConfirmationSnapshot, StoreErrorCode, StoreResult, WorkbenchStore } from './store.js'
+import type { ConfirmationSnapshot, StoreErrorCode, StoreResult, WorkbenchState, WorkbenchStore } from './store.js'
 import { CreateProjectDialog, NativeDialog, ProjectList, type FocusTarget } from './ProjectList.js'
 import { MaterialPane } from './MaterialPane.js'
 import { ReviewWorkspace } from './RequirementsPane.js'
@@ -34,6 +34,14 @@ type ActionResult = { readonly ok: true } | { readonly ok: false; readonly code:
 const done = { ok: true } as const
 const cancelled = { ok: false, code: 'cancelled' } as const
 
+function naturalStage(state: WorkbenchState): 0 | 1 | 2 {
+  const project = state.selectedProject
+  if (!project?.analysis) return 0
+  const currentBaseline = project.currentBaseline
+  const baselineStillCurrent = !!currentBaseline && currentBaseline.contentVersion === project.header.contentVersion
+  return state.baselineChain || baselineStillCurrent || project.prdSummaries.length > 0 ? 2 : 1
+}
+
 function PrismMark({ marker, className = 'dsh-pm-launcher-icon', variant = false }: { marker?: string; className?: string; variant?: boolean }) {
   return <svg className={className} data-dsh-pm-workbench={marker} data-icon-variant={variant ? 'validation-prism' : undefined} viewBox="0 0 64 64" role="presentation" focusable="false">
     <path className="dsh-pm-launcher-prism-blade dsh-pm-launcher-prism-blade--top" d="M32 5C38 14 40 23 38 29L32 25 26 29C24 23 26 14 32 5Z" />
@@ -61,8 +69,7 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
     saved: state.savedDraftRevision, generation: 0 }))
   const [error, setError] = useState<string>(), [pending, setPending] = useState(0)
   const [materialReading, setMaterialReading] = useState(false)
-  const [activeStage, setActiveStage] = useState<0 | 1 | 2>(() => !state.selectedProject?.analysis ? 0
-    : state.selectedProject.currentBaseline || state.selectedProject.prdSummaries.length > 0 ? 2 : 1)
+  const [activeStage, setActiveStage] = useState<0 | 1 | 2>(() => naturalStage(state))
   const [createDialog, setCreateDialog] = useState(false), [deleteDialog, setDeleteDialog] = useState(false), [discardDialog, setDiscardDialog] = useState(false)
   const actionLatch = useRef(false), activeActions = useRef(0), prdRequest = useRef(0), recoveryRequest = useRef(0), exportRequest = useRef(0)
   const errorOwner = useRef(0)
@@ -102,6 +109,11 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
     const captured = selection.current, request = prdRequest.current
     return () => selectedStill(captured.id) && selection.current.generation === captured.generation && request === prdRequest.current
   }
+  async function selectAndShowPrd(id: PrdRevisionId, current: () => boolean): Promise<ActionResult> {
+    const result = await store.selectPrd(id)
+    if (result.ok && current()) setActiveStage(2)
+    return result
+  }
   async function loadDetails(current = capturePrdSelection()): Promise<ActionResult> {
     if (!current()) return cancelled
     const selected = store.getSnapshot()
@@ -134,7 +146,7 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
     return () => { active = false }
   }, [state.isOpen, state.selectedProjectId])
 
-  function localCommand(kind: 'project.delete' | 'analysis.runFixture'): Promise<StoreResult<unknown>> {
+  function localCommand(kind: 'project.delete' | 'analysis.runHarnessModel'): Promise<StoreResult<unknown>> {
     const project = store.getSnapshot().selectedProject
     if (!project) return Promise.resolve({ ok: false, code: 'not-found' })
     try {
@@ -150,13 +162,13 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
     if (before.pendingRetry) return { ok: false, code: 'uncertain' }
     const acceptedPrd = before.acceptedReceipt?.value.prdRevisionId
     if (acceptedPrd && before.selectedProject?.prdSummaries.some(item => item.prdRevisionId === acceptedPrd && item.baselineId === before.baselineChain?.baselineId)) {
-      return store.selectPrd(acceptedPrd)
+      return selectAndShowPrd(acceptedPrd, current)
     }
     if (!before.baselineChain) return loadDetails(current)
     const rendered = await store.renderPublishedBaseline()
     if (!rendered.ok) return rendered
     if (!current()) return cancelled
-    return store.selectPrd(rendered.prdRevisionId)
+    return selectAndShowPrd(rendered.prdRevisionId, current)
   }
   function recover(retry = false) {
     if (actionLatch.current) return
@@ -175,7 +187,7 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
       if (!result.ok) return result
       if (intent?.payload.kind === 'prd.render') {
         const id = store.getSnapshot().acceptedReceipt?.value.prdRevisionId
-        return id ? store.selectPrd(id) : { ok: false, code: 'refresh-required' }
+        return id ? selectAndShowPrd(id, current) : { ok: false, code: 'refresh-required' }
       }
       return continueBaseline(current)
     }, current)
@@ -201,7 +213,7 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
       const rendered = await store.renderPublishedBaseline()
       if (!rendered.ok) return rendered
       if (!selectedStill(displayed.project.header.id)) return cancelled
-      return store.selectPrd(rendered.prdRevisionId)
+      return selectAndShowPrd(rendered.prdRevisionId, () => selectedStill(displayed.project.header.id))
     })
   }
   function selectPrd(id: PrdRevisionId) {
@@ -228,8 +240,7 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
   const recovery = !!state.baselineChain && !hasAcceptedPrd
   const visibleError = state.error === 'transport-internal' || state.error === 'host-unavailable'
     ? storeErrorText(state.error) : error ?? (state.error ? storeErrorText(state.error) : undefined)
-  const currentStep: 0 | 1 | 2 = !state.selectedProject?.analysis ? 0
-    : state.selectedProject.currentBaseline || state.selectedProject.prdSummaries.length > 0 ? 2 : 1
+  const currentStep = naturalStage(state)
   const steps = ['导入材料', '确认优先级', '生成 PRD'] as const
   useEffect(() => { setActiveStage(currentStep) }, [state.selectedProjectId, currentStep])
   if (!state.isOpen) return null
@@ -274,7 +285,7 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
                   onReadError: () => update('材料读取失败，请检查 TXT 或 Markdown 文件及 UTF-8 编码后重试'),
                 } }}
                 onSave={() => mutate(async () => { const result = await store.importMaterial(); if (!result.ok) return result; return store.loadSource() })}
-                onAnalyse={() => mutate(() => localCommand('analysis.runFixture'))} />
+                onAnalyse={() => mutate(() => localCommand('analysis.runHarnessModel'))} />
           </section>}
           {activeStage === 1 && <ReviewWorkspace store={store} state={state} confirmation={confirmation} pending={pending > 0}
             onResult={report} onSave={saveRequirements} onEvidence={() => { void run(() => store.loadSource()) }}
@@ -313,7 +324,11 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
       <button type="button" onClick={() => setDiscardDialog(false)}>取消放弃</button>
       <button type="button" data-dsh-pm-workbench="confirm-discard" disabled={!canDiscard} onClick={() => {
         if (!canDiscard) return
-        const result = store.discardDrafts(); report(result); if (result.ok) setDiscardDialog(false)
+        const result = store.discardDrafts(); report(result)
+        if (result.ok) {
+          displayConfirmation({ ok: false, reason: 'unsaved' })
+          setDiscardDialog(false)
+        }
       }}>确认放弃</button>
     </NativeDialog>}
   </NativeDialog>

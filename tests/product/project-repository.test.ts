@@ -295,12 +295,13 @@ describe('durable project repository', () => {
     await started.promise
     const deletion = service.command(command(103, 3, { kind: 'project.delete' }))
     const creation = service.command(create(3))
-    const ordinary = service.command(command(104, 1, { kind: 'analysis.runHarnessModel', sourceRevisionId: sourced.source.id }, otherId))
+    const ordinary = service.command(command(104, 1, { kind: 'source.importText', text: BUILT_IN_SYNTHETIC_TEXT,
+      displayName: 'other-synthetic.txt', format: 'pasted', syntheticDataAttested: true }, otherId))
     let ordinaryCompleted = false
     void ordinary.then(() => { ordinaryCompleted = true })
     try { await vi.waitFor(() => expect(ordinaryCompleted).toBe(true), { timeout: 1000 }) }
     finally { gate.resolve() }
-    expect(await ordinary).toMatchObject({ status: 'rejected', error: { code: 'stage-unavailable' } })
+    expect(await ordinary).toMatchObject({ status: 'accepted' })
     expect((await analysis).status).toBe('accepted')
     expect((await deletion).status).toBe('accepted')
     expect((await creation).status).toBe('accepted')

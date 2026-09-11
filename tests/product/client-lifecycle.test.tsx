@@ -12,6 +12,7 @@ import { ProjectService } from '../../packages/workbench/src/application/project
 import { TableProjectRepository } from '../../packages/workbench/src/application/project-repository.js'
 import { nodeSha256Utf8 } from '../../packages/workbench/src/application/node-sha256.js'
 import { FixtureInsightEngine } from '../../packages/workbench/src/analysis/fixture-engine.js'
+import { HybridInsightEngine, type InsightEngine } from '../../packages/workbench/src/analysis/types.js'
 import { BUILT_IN_SYNTHETIC_TEXT, FIXTURE_MANIFEST } from '../../packages/workbench/src/analysis/fixture-manifest.js'
 import { PRODUCT_API_VERSION, PRODUCT_CAPABILITIES, type StrictProjectCommandPayload } from '../../packages/workbench/src/protocol/product.js'
 import type { ActiveProjectRecord, StoredProjectRecord } from '../../packages/workbench/src/domain/model.js'
@@ -116,6 +117,7 @@ class ComponentHarness {
   }
   click(marker: string) { return this.fire(marker, 'onClick') }
   clickText(text: string) { const node = this.nodes().find(node => node.type === 'button' && this.text(node) === text); expect(node, text).toBeDefined(); node!.host.focus(); return node!.props.onClick?.({ currentTarget: node!.host }) }
+  clickTextStartingWith(text: string) { const node = this.nodes().find(node => node.type === 'button' && this.text(node).startsWith(text)); expect(node, text).toBeDefined(); node!.host.focus(); return node!.props.onClick?.({ currentTarget: node!.host }) }
   async settle(condition?: () => boolean) {
     await vi.waitFor(() => {
       this.render()
@@ -134,7 +136,13 @@ function deferred<T = void>() { let resolve!: (value: T) => void; const promise 
 async function setup(options: { empty?: boolean; included?: boolean; browser?: Partial<WorkbenchBrowserDependencies> } = {}) {
   const table = createFakeDomainTable<ProjectId, StoredProjectRecord>([[SMALL_PROJECT_ID, makeSmallActiveRecord({ name: '合成研究一' })], [OTHER_PROJECT_ID, makeSmallActiveRecord({ projectId: OTHER_PROJECT_ID, name: '合成研究二' })]])
   let hostId = 1000, clientId = 3000
-  const service = new ProjectService(new TableProjectRepository(table, { engine: new FixtureInsightEngine(FIXTURE_MANIFEST, nodeSha256Utf8),
+  const fixture = new FixtureInsightEngine(FIXTURE_MANIFEST, nodeSha256Utf8)
+  const model: InsightEngine = { analyse: async (input, signal) => {
+    const candidate = await fixture.analyse({ ...input, mode: 'fixture' }, signal)
+    return { ...candidate, analysis: { ...candidate.analysis, kind: 'harness-model', provider: 'test-provider', model: 'test-model' },
+      generatedRequirements: candidate.generatedRequirements.map(draft => ({ ...draft, producer: 'ai' })) }
+  } }
+  const service = new ProjectService(new TableProjectRepository(table, { engine: new HybridInsightEngine(fixture, model),
     sha256Utf8: nodeSha256Utf8, clock: { now: () => '2026-09-07T08:00:00.000Z' }, newId: () => uuid(hostId++) }))
   const record = () => table.get(SMALL_PROJECT_ID) as ActiveProjectRecord
   const external = (payload: StrictProjectCommandPayload) => service.command({ apiVersion: PRODUCT_API_VERSION, projectId: SMALL_PROJECT_ID, expectedVersion: record().header.projectVersion, commandId: uuid(clientId++), payload })
@@ -172,8 +180,9 @@ function context(events: string[], failure?: string) {
 async function withPrdHistory(browser?: Partial<WorkbenchBrowserDependencies>) {
   const h = await setup({ included: true, browser }); const ui = h.ui(); await ui.settle()
   ui.click('confirm-scope'); await ui.settle()
+  ui.click('step-1'); ui.render()
   ui.fire('human-reason', 'onChange', { value: '第二次确认的合成研究理由' }); ui.render(); ui.click('save-requirements'); await ui.settle()
-  ui.clickText('重新核对确认摘要'); ui.render(); ui.click('confirm-scope'); await ui.settle()
+  ui.clickText('核对本期范围'); ui.render(); ui.click('confirm-scope'); await ui.settle()
   return { ...h, ui, first: h.record().prdRevisions[0]!, second: h.record().prdRevisions[1]! }
 }
 
@@ -203,6 +212,7 @@ describe('Product lifecycle and real store handlers', () => {
     expect(ui.document.activeElement).toBe(ui.one('launcher').host)
     ui.click('launcher'); await ui.settle()
     expect(ui.one('requirement-title').props.value).toBe('关闭后还在的草稿')
+    ui.click('step-0'); ui.render()
     expect(ui.one('source-text')).toBeDefined(); expect(live.size).toBe(2); expect(listeners).toBe(1)
     ui.unmount(); expect(listeners).toBe(0); dispose()
   })
@@ -228,9 +238,9 @@ describe('Product lifecycle and real store handlers', () => {
     ui.fire('synthetic-attestation', 'onChange', { checked: true }); ui.render(); ui.click('save-material'); await ui.settle()
     expect(h.commands.map(command => command.payload.kind)).toEqual(['source.importText'])
     expect(ui.text(ui.one('source-text'))).toBe(BUILT_IN_SYNTHETIC_TEXT)
-    ui.click('analyse-fixture'); await ui.settle()
+    ui.click('analyse-model'); await ui.settle()
     expect(h.commands[1]).toMatchObject({ apiVersion: PRODUCT_API_VERSION, projectId: SMALL_PROJECT_ID, expectedVersion: 2,
-      payload: { kind: 'analysis.runFixture', sourceRevisionId: h.record().source!.id } })
+      payload: { kind: 'analysis.runHarnessModel', sourceRevisionId: h.record().source!.id } })
     expect(ui.all('requirement-card')).toHaveLength(1)
   })
   it('retains the exact verified material object and existing form after failed and raced file reads', async () => {
@@ -246,24 +256,26 @@ describe('Product lifecycle and real store handlers', () => {
   })
   it('opens source context from evidence and binds human controls to explicit requirement save', async () => {
     const h = await setup(); const ui = h.ui(); await ui.settle()
-    const evidence = ui.all('evidence')[0]!; const open = ui.nodes().find(node => node.type === 'button' && ui.text(node) === '查看原文')!
-    open.props.onClick(); await ui.settle(); expect(ui.text(evidence)).toContain(h.record().evidence[0]!.quote)
+    const open = ui.nodes().find(node => node.type === 'button' && ui.text(node) === '来自访谈')!
+    open.props.onClick(); await ui.settle(); expect(ui.text(ui.all('evidence')[0]!)).toContain(h.record().evidence[0]!.quote)
     ui.fire('requirement-title', 'onChange', { value: '新的标题' }); ui.render()
     ui.fire('requirement-pain-point', 'onChange', { value: '新的痛点' }); ui.render()
     ui.fire('requirement-description', 'onChange', { value: '新的描述' }); ui.render()
-    ui.fire('priority', 'onChange', { value: 'low' }); ui.render()
-    ui.fire('decision', 'onChange', { value: 'include' }); ui.render()
+    ui.clickTextStartingWith('P2'); ui.render()
+    ui.clickTextStartingWith('纳入本期'); ui.render()
     ui.fire('human-reason', 'onChange', { value: '人工理由' }); ui.render()
     ui.fire('requirement-order', 'onChange', { value: '1' }); ui.render()
-    expect(h.commands).toHaveLength(0); expect(ui.one('confirm-scope').props.disabled).toBe(true)
+    expect(h.commands).toHaveLength(0); expect(ui.one('save-requirements').props.disabled).toBe(false)
     ui.click('save-requirements'); await ui.settle()
     expect(h.commands.map(command => command.payload.kind)).toEqual(['requirement.update', 'requirement.update', 'requirement.update', 'requirement.update', 'requirement.update', 'requirement.update', 'requirements.reorder'])
     expect(h.store.getSnapshot().saveState).toBe('saved'); expect(ui.one('requirement-title').props.value).toBe('新的标题')
   })
   it('passes the exact rendered token once, latches before awaits, and never implicitly saves during confirmation', async () => {
     const h = await setup({ included: true }); const ui = h.ui(); await ui.settle()
+    ui.fire('requirement-title', 'onChange', { value: '随后放弃的临时标题' }); ui.render()
+    ui.click('discard-drafts'); ui.render(); ui.click('confirm-discard'); await ui.settle()
     const prepare = h.store.prepareConfirmation; const issued: unknown[] = []; h.store.prepareConfirmation = () => { const value = prepare(); issued.push(value); return value }
-    ui.clickText('重新核对确认摘要'); ui.render(); const displayed = issued.at(-1)
+    ui.clickText('核对本期范围'); ui.render(); const displayed = issued.at(-1)
     const publish = vi.spyOn(h.store, 'publishConfirmedBaseline'); const gate = deferred(); const entered = deferred()
     h.intercept(async (endpoint, _input, next) => { if (endpoint === 'projects.command') { entered.resolve(); await gate.promise } return next() })
     const button = ui.one('confirm-scope'); button.props.onClick(); button.props.onClick(); await entered.promise
@@ -276,10 +288,10 @@ describe('Product lifecycle and real store handlers', () => {
   it('invalidates a displayed summary on a newer edit and requires explicit review after saving', async () => {
     const h = await setup({ included: true }); const ui = h.ui(); await ui.settle(); const old = ui.one('confirm-scope')
     ui.fire('requirement-title', 'onChange', { value: '新版本待保存' }); ui.render()
-    expect(ui.all('confirmation-summary')).toHaveLength(0); expect(ui.one('confirm-scope').props.disabled).toBe(true)
+    expect(ui.all('confirmation-summary')).toHaveLength(0); expect(ui.one('save-requirements').props.disabled).toBe(false)
     old.props.onClick(); await ui.settle(); expect(h.commands).toHaveLength(0)
-    ui.click('save-requirements'); await ui.settle(); expect(ui.one('confirm-scope').props.disabled).toBe(true)
-    ui.clickText('重新核对确认摘要'); ui.render(); expect(ui.text(ui.one('confirmation-summary'))).toContain('新版本待保存')
+    ui.click('save-requirements'); await ui.settle(); expect(ui.text(ui.one('confirm-scope'))).toBe('核对本期范围')
+    ui.clickText('核对本期范围'); ui.render(); expect(ui.text(ui.one('confirmation-summary'))).toContain('确认摘要已准备')
     ui.click('confirm-scope'); await ui.settle(); expect(h.commands.map(c => c.payload.kind)).toEqual(['requirement.update', 'baseline.publish', 'prd.render'])
   })
   it('retains local drafts on project-switch refusal and discards only after a named native confirmation', async () => {
@@ -319,8 +331,10 @@ describe('Product lifecycle and real store handlers', () => {
     const h = await setup({ included: true }); const ui = h.ui(); await ui.settle()
     h.intercept(async (endpoint, input, next) => { const value = await next(); if (endpoint === 'projects.command' && (input as Stage3aProjectCommand).payload.kind === 'prd.render') throw new Error('lost'); return value })
     ui.click('confirm-scope'); await ui.settle(); const retry = h.store.getSnapshot().pendingRetry
+    ui.click('step-1'); ui.render()
     expect(retry?.payload.kind).toBe('prd.render'); expect(ui.text()).toContain('结果待确认')
-    for (const marker of ['requirement-title', 'requirement-pain-point', 'requirement-description', 'priority', 'decision', 'human-reason', 'requirement-order']) expect(ui.one(marker).props.disabled, marker).toBe(true)
+    for (const marker of ['requirement-title', 'requirement-pain-point', 'requirement-description', 'human-reason', 'requirement-order']) expect(ui.one(marker).props.disabled, marker).toBe(true)
+    for (const marker of ['priority', 'decision']) expect(ui.one(marker).children.filter(child => typeof child !== 'string').every(child => typeof child !== 'string' && child.props.disabled), marker).toBe(true)
     ui.click('refresh-project'); await ui.settle(); expect(h.store.getSnapshot().pendingRetry).toBe(retry)
     expect(ui.one('confirm-scope').props.disabled).toBe(true)
     h.intercept(); ui.click('retry-uncertain'); await ui.settle()
@@ -330,9 +344,10 @@ describe('Product lifecycle and real store handlers', () => {
   it('requires a newly displayed confirmation after baseline-stale and keeps stale PRD selectable and export-bound', async () => {
     const h = await setup({ included: true }); const ui = h.ui(); await ui.settle(); ui.click('confirm-scope'); await ui.settle()
     const first = h.record().prdRevisions[0]!
+    ui.click('step-1'); ui.render()
     ui.fire('human-reason', 'onChange', { value: '调整需求的理由' }); ui.render(); ui.click('save-requirements'); await ui.settle()
-    expect(ui.text()).toContain('需求已调整，此 PRD 保留的是上次确认的内容')
-    ui.clickText('重新核对确认摘要'); ui.render(); ui.click('confirm-scope'); await ui.settle()
+    ui.click('step-2'); ui.render(); expect(ui.text()).toContain('需求已调整，此 PRD 保留的是上次确认的内容')
+    ui.click('step-1'); ui.render(); ui.clickText('核对本期范围'); ui.render(); ui.click('confirm-scope'); await ui.settle()
     const second = h.record().prdRevisions[1]!; expect(ui.one('prd-preview').props['data-prd-revision-id']).toBe(second.id)
     ui.all('prd-history-item').find(node => node.props['data-prd-revision-id'] === first.id)!.props.onClick(); await ui.settle()
     ui.click('copy-prd'); ui.click('download-prd'); await ui.settle()
@@ -352,8 +367,8 @@ describe('Product lifecycle and real store handlers', () => {
     expect(ui.one('confirm-scope').props.disabled).toBe(true)
     ui.click('confirm-scope'); await ui.settle(); expect(h.commands).toHaveLength(0)
     expect(ui.text()).toContain('请至少选择一项纳入本期的需求并保存修改')
-    ui.fire('decision', 'onChange', { value: 'include' }); ui.render(); ui.click('save-requirements'); await ui.settle()
-    ui.clickText('重新核对确认摘要'); ui.render(); expect(ui.one('confirm-scope').props.disabled).toBe(false)
+    ui.clickTextStartingWith('纳入本期'); ui.render(); ui.click('save-requirements'); await ui.settle()
+    ui.clickText('核对本期范围'); ui.render(); expect(ui.one('confirm-scope').props.disabled).toBe(false)
   })
   it('keeps discard unavailable during a material read, queued save, and accepted-but-unread save', async () => {
     const h = await setup({ empty: true }); const ui = h.ui(); await ui.settle(); ui.click('load-fixture'); await ui.settle()
@@ -369,8 +384,8 @@ describe('Product lifecycle and real store handlers', () => {
     h.intercept(async (endpoint, _input, next) => endpoint === 'projects.get' ? { ok: false, error: { code: 'internal', message: 'private', details: {} } } : next())
     wait.resolve(); await ui.settle(); expect(h.store.getSnapshot().acceptedVersionFloor).toBe(2)
     expect(ui.all('discard-drafts').every(node => node.props.disabled)).toBe(true)
-    expect(ui.one('save-requirements').props.disabled).toBe(true)
-    const flush = vi.spyOn(h.store, 'flushProjectEdits'); ui.click('save-requirements'); await ui.settle(); expect(flush).not.toHaveBeenCalled()
+    expect(ui.all('save-requirements')).toHaveLength(0)
+    expect(vi.spyOn(h.store, 'flushProjectEdits')).not.toHaveBeenCalled()
   })
   it('invalidates an externally stale baseline and sends no second publication until new visible review', async () => {
     const h = await setup({ included: true }); const ui = h.ui(); await ui.settle(); let changed = false
@@ -383,9 +398,9 @@ describe('Product lifecycle and real store handlers', () => {
     })
     ui.click('confirm-scope'); await ui.settle()
     expect(h.commands.map(c => c.payload.kind)).toEqual(['baseline.publish']); expect(h.store.getSnapshot().baselineChain).toBeUndefined()
-    expect(ui.all('confirmation-summary')).toHaveLength(0); expect(ui.one('confirm-scope').props.disabled).toBe(true)
+    expect(ui.all('confirmation-summary')).toHaveLength(0); expect(ui.text(ui.one('confirm-scope'))).toBe('核对本期范围')
     ui.click('refresh-project'); await ui.settle(); expect(h.commands).toHaveLength(1)
-    ui.clickText('重新核对确认摘要'); ui.render(); expect(ui.text(ui.one('confirmation-summary'))).toContain('外部更新的标题')
+    ui.clickText('核对本期范围'); ui.render(); expect(ui.all('confirmation-summary')).toHaveLength(1)
     ui.click('confirm-scope'); await ui.settle(); expect(h.commands.map(c => c.payload.kind)).toEqual(['baseline.publish', 'baseline.publish', 'prd.render'])
   })
   it('ignores material and PRD errors from closed or superseded selections', async () => {
@@ -416,9 +431,11 @@ describe('Product lifecycle and real store handlers', () => {
       for (const marker of seen) if (!['requirement-card', 'requirement-title', 'requirement-pain-point', 'requirement-description', 'priority', 'decision', 'human-reason', 'requirement-order',
         'evidence', 'evidence-context', 'evidence-quote', 'prd-history-item'].includes(marker)) expect(ui.all(marker).length).toBeLessThanOrEqual(1)
     }
-    check(); ui.click('new-project'); ui.render(); ui.fire('project-name', 'onChange', { value: 'PROJECT_CANARY' }); ui.fire('research-goal', 'onChange', { value: 'GOAL_CANARY' }); ui.render(); check()
+    check(); ui.click('step-0'); ui.render(); check(); ui.click('step-1'); ui.render()
+    ui.click('new-project'); ui.render(); ui.fire('project-name', 'onChange', { value: 'PROJECT_CANARY' }); ui.fire('research-goal', 'onChange', { value: 'GOAL_CANARY' }); ui.render(); check()
     ui.clickText('取消新建'); ui.render(); ui.click('delete-project'); ui.render(); check(); ui.clickText('取消删除'); ui.render()
     ui.click('confirm-scope'); await ui.settle(); check()
+    ui.click('step-1'); ui.render()
     ui.fire('human-reason', 'onChange', { value: 'NEW_REASON_CANARY' }); ui.render(); ui.click('discard-drafts'); ui.render(); check()
     for (const marker of ['create-dialog', 'create-synthetic-attestation', 'confirm-create', 'project-name', 'research-goal', 'delete-dialog', 'confirm-delete',
       'discard-dialog', 'confirm-discard', 'source-text', 'evidence-context', 'evidence-quote', 'confirmation-summary', 'prd-preview', 'prd-history-item', 'prd-markdown', 'baseline-trace']) expect(seen.has(marker), marker).toBe(true)
@@ -431,7 +448,9 @@ describe('Product lifecycle and real store handlers', () => {
     const before = h.reads.length; const dispose = mountWorkbenchClient(ctx)
     expect(h.reads).toHaveLength(before)
     const ui = new ComponentHarness(<>{createElement(live.get('pm-workbench-product-launcher')!)}{createElement(live.get('pm-workbench-product-overlay')!)}</>)
-    ui.click('launcher'); await ui.settle(); ui.clickText('合成研究一'); await ui.settle(); ui.click('confirm-scope'); await ui.settle()
+    ui.click('launcher'); await ui.settle()
+    expect(ui.text()).toContain('人工最终标题')
+    ui.clickText('合成研究一'); await ui.settle(); ui.click('confirm-scope'); await ui.settle()
     expect(h.commands.map(c => c.commandId)).toEqual(commandIds.map(id => id.toLowerCase()))
     const anchor = { href: '', download: '', click: vi.fn(), remove: vi.fn() }; const append = vi.fn()
     Object.assign(ui.document, { createElement: (name: string) => { expect(name).toBe('a'); return anchor }, body: { append } })
@@ -468,9 +487,8 @@ describe('Product lifecycle and real store handlers', () => {
     ui.fire('requirement-title', 'onChange', { value: '随后放弃的修改' }); ui.render()
     ui.click('discard-drafts'); ui.render(); ui.click('confirm-discard'); await ui.settle()
     expect(h.store.getSnapshot().selectedProject).toBe(authoritative)
-    expect(ui.all('confirmation-summary')).toHaveLength(0); expect(ui.one('confirm-scope').props.disabled).toBe(true)
-    ui.click('confirm-scope'); await ui.settle(); expect(h.commands).toHaveLength(0)
-    ui.clickText('重新核对确认摘要'); ui.render(); expect(ui.all('confirmation-summary')).toHaveLength(1)
+    expect(ui.all('confirmation-summary')).toHaveLength(0); expect(ui.text(ui.one('confirm-scope'))).toBe('核对本期范围')
+    ui.click('confirm-scope'); await ui.settle(); expect(h.commands).toHaveLength(0); expect(ui.all('confirmation-summary')).toHaveLength(1)
     ui.click('confirm-scope'); await ui.settle(); expect(h.commands.map(c => c.payload.kind)).toEqual(['baseline.publish', 'prd.render'])
   })
   it('keeps each material keystroke visible while hashing and admits only the latest exact verified draft', async () => {
@@ -605,8 +623,9 @@ describe('Product lifecycle and real store handlers', () => {
     const completion = vi.spyOn(h.store, marker === 'copy-prd' ? 'copySelectedMarkdown' : 'downloadSelectedMarkdown')
     ui.click(marker); await entered.promise
     h.intercept(async (endpoint, _input, next) => endpoint === 'sources.get' ? { ok: false, error: { code: 'internal', message: 'NEW_SOURCE_PRIVATE_CANARY', details: {} } } : next())
-    ui.clickText('查看原文'); await ui.settle(() => ui.text().includes('工作台暂时无法连接'))
+    ui.click('step-1'); ui.render(); ui.clickText('查看全部原文'); await ui.settle(() => ui.text().includes('工作台暂时无法连接'))
     gate.resolve(); await completion.mock.results[0]!.value; await ui.settle()
+    ui.click('step-2'); ui.render()
     expect(ui.text()).toContain('工作台暂时无法连接'); expect(ui.text()).not.toContain('NEW_SOURCE_PRIVATE_CANARY')
     expect(ui.one('prd-preview').props['data-prd-revision-id']).toBe(second.id)
   })
@@ -616,9 +635,10 @@ describe('Product lifecycle and real store handlers', () => {
     const h = await withPrdHistory(marker === 'copy-prd' ? { writeClipboard: exporting } : { clickDownload: exporting })
     const { ui, second } = h
     const completion = vi.spyOn(h.store, marker === 'copy-prd' ? 'copySelectedMarkdown' : 'downloadSelectedMarkdown'), source = vi.spyOn(h.store, 'loadSource')
-    ui.click(marker); await entered.promise; ui.clickText('查看原文'); await source.mock.results[0]!.value; ui.render()
+    ui.click(marker); await entered.promise; ui.click('step-1'); ui.render(); ui.clickText('查看全部原文'); await source.mock.results[0]!.value; ui.render()
     expect(ui.nodes().filter(node => node.props.role === 'alert')).toHaveLength(0)
     gate.resolve(); await completion.mock.results[0]!.value; await ui.settle()
+    ui.click('step-2'); ui.render()
     expect(ui.nodes().filter(node => node.props.role === 'alert')).toHaveLength(0); expect(ui.text()).not.toContain('OLD_EXPORT_PRIVATE_CANARY')
     expect(ui.one('prd-preview').props['data-prd-revision-id']).toBe(second.id)
   })

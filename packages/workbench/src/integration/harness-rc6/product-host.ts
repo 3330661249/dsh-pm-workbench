@@ -1,16 +1,21 @@
+import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ConnectionRpcHandler } from '@deepseek-ai/dsh-client-connection'
 import { FixtureInsightEngine } from '../../analysis/fixture-engine.js'
+import { HarnessModelInsightEngine } from '../../analysis/harness-model-engine.js'
 import { FIXTURE_MANIFEST } from '../../analysis/fixture-manifest.js'
+import { HybridInsightEngine } from '../../analysis/types.js'
 import { nodeSha256Utf8 } from '../../application/node-sha256.js'
 import { createProductHandler, internalProductResult } from '../../application/product-handler.js'
 import { TableProjectRepository } from '../../application/project-repository.js'
 import { ProjectService } from '../../application/project-service.js'
 import { PRODUCT_CAPABILITIES, PRODUCT_RPC_CHANNEL } from '../../protocol/product.js'
+import { CordisAnalysisSubagentPort } from './cordis-analysis-port.js'
 import { projectDomainSpec } from './project-domain.js'
+import { SubagentStructuredAnalysisRunner } from './subagent-analysis-runner.js'
 
 export { projectDomainSpec } from './project-domain.js'
-export const inject = ['connection', 'storageDomain'] as const
+export const inject = ['connection', 'storageDomain', 'agents', 'subagents', 'agentDefaultModel', 'tools'] as const
 
 export async function apply(ctx: Context): Promise<() => Promise<void>> {
   const lifecycle = new AbortController()
@@ -21,8 +26,10 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
   const domain = await ctx.storageDomain.open(projectDomainSpec)
   try {
     const table = domain.table('projects')
+    const modelRunner = new SubagentStructuredAnalysisRunner(new CordisAnalysisSubagentPort(ctx))
     repository = new TableProjectRepository(table, {
-      engine: new FixtureInsightEngine(FIXTURE_MANIFEST, nodeSha256Utf8),
+      engine: new HybridInsightEngine(new FixtureInsightEngine(FIXTURE_MANIFEST, nodeSha256Utf8),
+        new HarnessModelInsightEngine(modelRunner, nodeSha256Utf8, randomUUID)),
       sha256Utf8: nodeSha256Utf8,
     })
     const ownedRepository = repository

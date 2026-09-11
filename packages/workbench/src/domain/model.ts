@@ -100,14 +100,18 @@ export interface EvidenceExcerpt {
   readonly quoteHash: Sha256Hex
 }
 
-export interface AnalysisRevision {
+interface AnalysisRevisionBase {
   readonly id: AnalysisRevisionId
   readonly sourceRevisionId: SourceRevisionId
-  readonly kind: 'fixture' | 'harness-model'
   readonly generation: number
   readonly baseProjectVersion: number
   readonly status: 'draft' | 'superseded'
 }
+
+export type AnalysisRevision = AnalysisRevisionBase & (
+  | { readonly kind: 'fixture' }
+  | { readonly kind: 'harness-model'; readonly provider: string; readonly model: string }
+)
 
 export interface GeneratedRequirementDraft {
   readonly id: GeneratedDraftId
@@ -377,14 +381,18 @@ export const evidenceExcerptSchema: z.ZodType<EvidenceExcerpt> = z.strictObject(
   quoteHash: sha256HexSchema,
 })
 
-export const analysisRevisionSchema: z.ZodType<AnalysisRevision> = z.strictObject({
+const analysisRevisionBaseDefinition = {
   id: analysisRevisionIdSchema,
   sourceRevisionId: sourceRevisionIdSchema,
-  kind: z.enum(['fixture', 'harness-model']),
   generation: positiveSafeIntegerSchema,
   baseProjectVersion: positiveSafeIntegerSchema,
   status: z.enum(['draft', 'superseded']),
-})
+}
+const modelRouteSchema = boundedText({ codePoints: 200, utf8Bytes: 400, nonEmpty: true })
+export const analysisRevisionSchema: z.ZodType<AnalysisRevision> = z.discriminatedUnion('kind', [
+  z.strictObject({ ...analysisRevisionBaseDefinition, kind: z.literal('fixture') }),
+  z.strictObject({ ...analysisRevisionBaseDefinition, kind: z.literal('harness-model'), provider: modelRouteSchema, model: modelRouteSchema }),
+])
 
 const generatedRequirementDraftDefinition = z.strictObject({
   id: generatedDraftIdSchema,

@@ -272,7 +272,6 @@ export class TableProjectRepository implements ProjectRepository {
     let contentChanged = false
     let identities: Partial<Extract<ProjectCommandOutcome, { status: 'accepted' }>['value']> = {}
     switch (payload.kind) {
-      case 'analysis.runHarnessModel': return { error: 'stage-unavailable', outcome: rejectProjectCommand(command, 'stage-unavailable') }
       case 'project.create':
       case 'project.delete': return { error: 'version-conflict', outcome: rejectProjectCommand(command, 'version-conflict') }
       case 'source.importText': {
@@ -285,16 +284,19 @@ export class TableProjectRepository implements ProjectRepository {
         identities = { sourceRevisionId: source.id }
         break
       }
-      case 'analysis.runFixture': {
+      case 'analysis.runFixture':
+      case 'analysis.runHarnessModel': {
         if (record.header.reviewStarted || record.baselines.length || record.prdRevisions.length) fail('analysis-already-reviewed')
         if (!record.source || record.source.id !== payload.sourceRevisionId) fail('not-found')
-        const input = deepFreeze({ projectId: record.header.id, source: record.source!,
+        const input = deepFreeze({ mode: payload.kind === 'analysis.runHarnessModel' ? 'harness-model' as const : 'fixture' as const,
+          projectId: record.header.id, source: record.source!, researchGoal: record.header.researchGoal,
           analysisRevisionId: analysisRevisionIdSchema.parse(this.#newId()),
           generation: Math.max(0, ...record.analyses.map(item => item.generation)) + 1,
           baseProjectVersion: record.header.projectVersion })
         const analysed = await this.#dependencies.engine.analyse(input, signal)
         validateAnalysisCandidate(input, analysed, this.#dependencies.sha256Utf8)
-        if (analysed.analysis.kind !== 'fixture') fail('invalid-evidence')
+        const expectedKind = payload.kind === 'analysis.runHarnessModel' ? 'harness-model' : 'fixture'
+        if (analysed.analysis.kind !== expectedKind) fail('invalid-evidence')
         candidate = { ...record, analyses: [...record.analyses.map(item => ({ ...item, status: 'superseded' as const })), analysed.analysis],
           currentAnalysisRevisionId: analysed.analysis.id, evidence: analysed.evidence, generatedRequirements: analysed.generatedRequirements,
           humanRevisions: [], humanDecisions: analysed.generatedRequirements.map(draft => ({ requirementId: draft.requirementId,

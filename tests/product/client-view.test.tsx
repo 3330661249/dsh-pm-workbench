@@ -58,10 +58,18 @@ describe('Product semantic markup', () => {
     }
   })
 
+  it('shows the exact Harness provider and model for a model-generated analysis', () => {
+    const modelProject = { ...project, analysis: { ...project.analysis!, kind: 'harness-model' as const,
+      provider: 'deepseek-official', model: 'deepseek-v4-flash' } }
+    const html = render({ ...ready, selectedProject: modelProject })
+    expect(tag(html, 'model-route')).toContain('data-dsh-pm-workbench="model-route"')
+    expect(html).toContain('Harness 模型分析 · deepseek-official / deepseek-v4-flash')
+  })
+
   it('shows the synthetic-only gate in the material stage and three ordinary workflow buttons', () => {
     const html = render({ ...ready, selectedProject: { ...project, analysis: null } })
-    for (const text of ['当前仅支持合成测试材料，请勿导入真实访谈或客户信息', '我确认这是新写的合成测试材料，不含真实个人或客户数据',
-      '生成本地测试草稿', '本地 Fixture 结果，未调用模型，不代表 AI 分析', '导入材料', '确认优先级', '生成 PRD', '确认并保存材料']) expect(html).toContain(text)
+    for (const text of ['当前模型验证仅支持合成测试材料，请勿导入真实访谈或客户信息', '我确认这是新写的合成测试材料，不含真实个人或客户数据',
+      '发送给 Harness 模型并分析', '仅发送当前合成材料；模型结果仍需经过原文引用校验和人工确认', '导入材料', '确认优先级', '生成 PRD', '确认并保存材料']) expect(html).toContain(text)
     expect(html).not.toContain('role="tab"')
     for (const text of ['API key', 'provider', '发送消息', '选择模型', '发布基线']) expect(html).not.toContain(text)
   })

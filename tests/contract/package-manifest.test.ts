@@ -30,6 +30,7 @@ describe('workbench bundle manifest', () => {
     expect(manifest).not.toHaveProperty('dependencies')
     expect(manifest.files).toEqual([
       'lib',
+      'skills',
       'cordis.patch.yml',
       'README.md',
       'LICENSE',
@@ -37,25 +38,37 @@ describe('workbench bundle manifest', () => {
     ])
     expect(manifest.peerDependencies).toEqual(expect.objectContaining({
       '@deepseek-ai/cordis': '4.0.1',
+      '@deepseek-ai/dsh-agent': '0.1.0-rc.6',
+      '@deepseek-ai/dsh-agent-default-model': '0.1.0-rc.6',
       '@deepseek-ai/dsh-invariants': '0.1.0-rc.6',
       '@deepseek-ai/dsh-client-connection': '0.1.0-rc.6',
       '@deepseek-ai/dsh-client-runtime': '0.1.0-rc.6',
       '@deepseek-ai/dsh-client-ui-layout': '0.1.0-rc.6',
       '@deepseek-ai/dsh-client-ui-sidebar': '0.1.0-rc.6',
       '@deepseek-ai/dsh-client-ui-slots': '0.1.0-rc.6',
+      '@deepseek-ai/dsh-skill-filesystem': '0.1.0-rc.6',
+      '@deepseek-ai/dsh-session': '0.1.0-rc.6',
       '@deepseek-ai/dsh-storage-domain': '0.1.0-rc.6',
+      '@deepseek-ai/dsh-subagent': '0.1.0-rc.6',
+      '@deepseek-ai/dsh-tools': '0.1.0-rc.6',
       react: '18.3.1',
       'react-dom': '18.3.1',
     }))
     expect(manifest.peerDependenciesMeta).toEqual({
       '@deepseek-ai/cordis': { optional: true },
+      '@deepseek-ai/dsh-agent': { optional: true },
+      '@deepseek-ai/dsh-agent-default-model': { optional: true },
       '@deepseek-ai/dsh-invariants': { optional: true },
       '@deepseek-ai/dsh-client-connection': { optional: true },
       '@deepseek-ai/dsh-client-runtime': { optional: true },
       '@deepseek-ai/dsh-client-ui-layout': { optional: true },
       '@deepseek-ai/dsh-client-ui-sidebar': { optional: true },
       '@deepseek-ai/dsh-client-ui-slots': { optional: true },
+      '@deepseek-ai/dsh-skill-filesystem': { optional: true },
+      '@deepseek-ai/dsh-session': { optional: true },
       '@deepseek-ai/dsh-storage-domain': { optional: true },
+      '@deepseek-ai/dsh-subagent': { optional: true },
+      '@deepseek-ai/dsh-tools': { optional: true },
       react: { optional: true },
       'react-dom': { optional: true },
     })
@@ -69,7 +82,7 @@ test('ships truthful Stage 3A package documentation and the unchanged full Zod n
     const text = await readFile(resolve(packageRoot, file), 'utf8')
     expect(text).toMatch(/Stage 3A/)
     expect(text).toMatch(/synthetic/i)
-    expect(text).toMatch(/Stage 3B.*unimplemented/s)
+    expect(text).toMatch(/Stage 3B.*synthetic/s)
     expect(text).toMatch(/not secure erasure/)
     expect(text).not.toContain('/dsh-pm-workbench-v1')
   }

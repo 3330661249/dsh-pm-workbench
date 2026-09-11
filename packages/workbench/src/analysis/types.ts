@@ -9,8 +9,11 @@ import type {
 } from '../domain/model.js'
 
 export interface AnalysisInput {
+  /** Absent remains the Stage 3A fixture path for backwards-compatible tests and adapters. */
+  readonly mode?: 'fixture' | 'harness-model'
   readonly projectId: ProjectId
   readonly source: SourceRevision
+  readonly researchGoal?: string | null
   readonly analysisRevisionId: AnalysisRevisionId
   readonly generation: number
   readonly baseProjectVersion: number
@@ -27,6 +30,14 @@ export interface FixtureManifest {
 
 export interface InsightEngine {
   analyse(input: AnalysisInput, signal: AbortSignal): Promise<AnalysisCandidate>
+}
+
+export class HybridInsightEngine implements InsightEngine {
+  constructor(private readonly fixture: InsightEngine, private readonly model: InsightEngine) {}
+
+  analyse(input: AnalysisInput, signal: AbortSignal): Promise<AnalysisCandidate> {
+    return (input.mode === 'harness-model' ? this.model : this.fixture).analyse(input, signal)
+  }
 }
 
 export class DomainFailure extends Error {

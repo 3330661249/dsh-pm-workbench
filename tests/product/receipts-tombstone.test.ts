@@ -64,11 +64,11 @@ describe('durable receipts and body-free tombstones', () => {
 
   it('caps receipts without eviction, still replays old results, and always permits deletion at capacity', async () => {
     const { service, table } = setup()
-    for (let i = 1; i <= 256; i++) expect(await service.command(input(i))).toMatchObject({ status: 'rejected', error: { code: 'stage-unavailable' } })
+    for (let i = 1; i <= 256; i++) expect(await service.command(input(i))).toMatchObject({ status: 'rejected', error: { code: 'not-found' } })
     expect((table.get(SMALL_PROJECT_ID) as ActiveProjectRecord).commandReceipts).toHaveLength(256)
     const before = table.writeCount
     expect(await service.command(input(257))).toMatchObject({ status: 'rejected', error: { code: 'receipt-capacity-reached' } })
-    expect(await service.command(input(1))).toMatchObject({ status: 'rejected', error: { code: 'stage-unavailable' } })
+    expect(await service.command(input(1))).toMatchObject({ status: 'rejected', error: { code: 'not-found' } })
     expect(table.writeCount).toBe(before)
     expect(await service.command(input(258, { kind: 'project.delete' }, 2))).toMatchObject({ status: 'rejected', error: { code: 'version-conflict' } })
     expect(table.writeCount).toBe(before)

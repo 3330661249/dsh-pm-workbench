@@ -16,6 +16,7 @@ export class FixtureInsightEngine implements InsightEngine {
 
   async analyse(input: AnalysisInput, signal: AbortSignal): Promise<AnalysisCandidate> {
     signal.throwIfAborted()
+    if (input.mode && input.mode !== 'fixture') throw new DomainFailure('stage-unavailable')
     const fixture = this.manifest.sources[input.source.contentHash]
     if (!fixture) throw new DomainFailure('fixture-not-allowed')
 

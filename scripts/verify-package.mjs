@@ -42,6 +42,13 @@ export const WORKBENCH_PACKAGE_FILES = Object.freeze([
   'lib/client.js',
   'lib/index.js',
   'package.json',
+  'skills/adversarial-product-review/SKILL.md',
+  'skills/interview-intake/SKILL.md',
+  'skills/interview-to-prd/SKILL.md',
+  'skills/prd-drafting/SKILL.md',
+  'skills/prioritization-review/SKILL.md',
+  'skills/requirement-framing/SKILL.md',
+  'skills/research-synthesis/SKILL.md',
 ])
 
 export function assertNoStorageGateDiagnostics(bytes) {
@@ -178,7 +185,16 @@ export async function verifyBuiltWorkbenchPackage({
   if ((patch.match(/^- insert:/gmu) ?? []).length !== 1) {
     throw new Error('patch must contain exactly one insert')
   }
-  if (patch !== "- insert:\n    - id: dsh-pm-workbench\n      name: '@knight/dsh-pm-workbench'\n") throw new Error('invalid Product patch identity')
+  const expectedPatch = "- insert:\n"
+    + "    - id: dsh-pm-workbench\n"
+    + "      name: '@knight/dsh-pm-workbench'\n"
+    + "    - id: dsh-pm-workbench-skills\n"
+    + "      name: '@deepseek-ai/dsh-skill-filesystem'\n"
+    + "      config:\n"
+    + "        providerName: dsh-pm-workbench\n"
+    + "        includeDefaultRoots: false\n"
+    + "        bundledSkillDir: !!js \"process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@knight/dsh-pm-workbench/package.json')), 'skills')\"\n"
+  if (patch !== expectedPatch) throw new Error('invalid Product patch identity')
   const zodLicense = (await readFile(path.join(repositoryRoot, 'node_modules/zod/LICENSE'), 'utf8')).trim()
   const thirdParty = byPath.get('docs/third-party.md').bytes.toString('utf8')
   await assertZodVersion()
@@ -333,7 +349,7 @@ const equalIdentity = (a, b) => a.dev === b.dev && a.ino === b.ino
 const releaseRelative = '.superpowers/sdd/2026-09-07-dsh-pm-workbench-stage-3a-core/task-11-release'
 const releaseCanonicalRoot = path.join(defaultRepositoryRoot, releaseRelative)
 const MAX_RECEIPT_BYTES = 1024 * 1024
-const MAX_TAR_BYTES = 9 * MAX_PACKAGE_FILE_BYTES + 64 * 1024
+const MAX_TAR_BYTES = WORKBENCH_PACKAGE_FILES.length * MAX_PACKAGE_FILE_BYTES + 64 * 1024
 export const WORKBENCH_RELEASE_SOURCE_PATHS = Object.freeze([...new Set([
   ...PRODUCT_INPUT_PATHS,
   'package-lock.json', 'tsconfig.json', 'packages/workbench/tsconfig.json',
@@ -341,19 +357,23 @@ export const WORKBENCH_RELEASE_SOURCE_PATHS = Object.freeze([...new Set([
   'packages/workbench/LICENSE', 'packages/workbench/README.md', 'packages/workbench/cordis.patch.yml',
   'packages/workbench/docs/compatibility.md', 'packages/workbench/docs/privacy.md', 'packages/workbench/docs/third-party.md',
   'packages/workbench/package.json', 'node_modules/zod/LICENSE', 'node_modules/zod/package.json',
+  ...WORKBENCH_PACKAGE_FILES.filter(file => file.startsWith('skills/')).map(file => `packages/workbench/${file}`),
 ])].sort(comparePath))
 
 function assertPackageManifest(manifest) {
   const peers = {
-    '@deepseek-ai/cordis': '4.0.1', '@deepseek-ai/dsh-invariants': '0.1.0-rc.6',
+    '@deepseek-ai/cordis': '4.0.1', '@deepseek-ai/dsh-agent': '0.1.0-rc.6',
+    '@deepseek-ai/dsh-agent-default-model': '0.1.0-rc.6', '@deepseek-ai/dsh-invariants': '0.1.0-rc.6',
     '@deepseek-ai/dsh-client-connection': '0.1.0-rc.6', '@deepseek-ai/dsh-client-runtime': '0.1.0-rc.6',
     '@deepseek-ai/dsh-client-ui-layout': '0.1.0-rc.6', '@deepseek-ai/dsh-client-ui-sidebar': '0.1.0-rc.6',
-    '@deepseek-ai/dsh-client-ui-slots': '0.1.0-rc.6', '@deepseek-ai/dsh-storage-domain': '0.1.0-rc.6',
+    '@deepseek-ai/dsh-client-ui-slots': '0.1.0-rc.6', '@deepseek-ai/dsh-skill-filesystem': '0.1.0-rc.6',
+    '@deepseek-ai/dsh-session': '0.1.0-rc.6', '@deepseek-ai/dsh-storage-domain': '0.1.0-rc.6',
+    '@deepseek-ai/dsh-subagent': '0.1.0-rc.6', '@deepseek-ai/dsh-tools': '0.1.0-rc.6',
     react: '18.3.1', 'react-dom': '18.3.1',
   }
   if (manifest.type !== 'module' || manifest.license !== 'UNLICENSED' || manifest.main !== './lib/index.js'
     || !exact(manifest.exports, { '.': './lib/index.js', './client': './lib/client.js', './package.json': './package.json' })
-    || !exact(manifest.files, ['lib', 'cordis.patch.yml', 'README.md', 'LICENSE', 'docs'])
+    || !exact(manifest.files, ['lib', 'skills', 'cordis.patch.yml', 'README.md', 'LICENSE', 'docs'])
     || !exact(manifest.dsh, { bundle: { patch: './cordis.patch.yml' }, client: { platform: 'web', inject: ['@deepseek-ai/dsh-client-connection', '@deepseek-ai/dsh-client-runtime', '@deepseek-ai/dsh-client-ui-layout', '@deepseek-ai/dsh-client-ui-sidebar'] } })
     || !exact(manifest.peerDependencies, peers)
     || !exact(manifest.peerDependenciesMeta, Object.fromEntries(Object.keys(peers).map(name => [name, { optional: true }])))
@@ -361,7 +381,7 @@ function assertPackageManifest(manifest) {
 }
 function assertProductPackageBytes(bytes) {
   const text = bytes.toString('utf8')
-  const forbidden = ['/dsh-pm-workbench-v1', 'counter.increment', 'pm-workbench-probe', 'workbench-probe-launcher', 'workbench-probe-overlay', 'src/client/probe/', 'src/probe/', 'probe-host.ts', 'src/demo/', 'DemoApp', 'runHarnessModel(', '@deepseek-ai/dsh-agent', '@deepseek-ai/dsh-llm', 'dsh_pm_workbench_probe']
+  const forbidden = ['/dsh-pm-workbench-v1', 'counter.increment', 'pm-workbench-probe', 'workbench-probe-launcher', 'workbench-probe-overlay', 'src/client/probe/', 'src/probe/', 'probe-host.ts', 'src/demo/', 'DemoApp', 'runHarnessModel(', '@deepseek-ai/dsh-llm', 'dsh_pm_workbench_probe']
   if (forbidden.some(value => text.includes(value))) throw new Error('non-product-runtime-forbidden')
 }
 async function assertZodVersion(sources) {
@@ -1047,7 +1067,7 @@ export async function createWorkbenchRelease(releaseRoot) {
     if (!npmCliPath || !path.isAbsolute(npmCliPath)) failRelease()
     const { runNpmPack } = await import('./pack-dry.mjs')
     await assertOwned()
-    // Exactly one real offline/no-script pack of the frozen nine files.
+    // Exactly one real offline/no-script pack of the fixed package files.
     const packed = await runNpmPack({ nodeExecutable: await realpath(process.execPath), npmCliPath: await realpath(npmCliPath), stagedPackageRoot: stagedRoot, operationRoot, dryRun: false,
       ownershipGuard: async (createdDirectory, createdStat, records) => { acceptPackRecordsSync(records); await assertOwned(); if (createdDirectory) await retainDirectory(createdDirectory, createdStat); await assertOwned() } })
     await assertOwned()

@@ -43,8 +43,17 @@ export function mountWorkbenchClient(ctx: WorkbenchClientContext, suppliedStore?
       const request = ++openingGeneration
       const current = () => alive.current && !disposed && request === openingGeneration && store.getSnapshot().isOpen
       launcher = target; setError(undefined)
-      void store.open().then(result => { if (current()) setError(result.ok ? undefined : storeErrorText(result.code)) },
-        () => { if (current()) setError('工作台暂时无法连接') })
+      void (async () => {
+        const opened = await store.open()
+        if (!current()) return
+        if (!opened.ok) { setError(storeErrorText(opened.code)); return }
+        const snapshot = store.getSnapshot()
+        const first = snapshot.projects[0]
+        if (!snapshot.selectedProjectId && first) {
+          const selected = await store.selectProject(first.id)
+          if (current()) setError(selected.ok ? undefined : storeErrorText(selected.code))
+        }
+      })().catch(() => { if (current()) setError('工作台暂时无法连接') })
     }} />{error && <p role="alert">{error}</p>}</>
   }
   function Overlay() { return <WorkbenchView store={store} createCommandId={uuid} onClose={invalidateOpening} restoreFocus={() => { if (launcher?.isConnected !== false) launcher?.focus() }} /> }

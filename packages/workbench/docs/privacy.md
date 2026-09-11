@@ -1,14 +1,18 @@
 # Privacy
 
-Stage 3A uses one built-in synthetic Fixture, makes no model call and does not
-accept real interview/customer data. Synthetic source text and human edits are
-bounded and validated. Do not enter personal, customer or confidential content.
-Stage 3B model execution is unimplemented.
+Stage 3A uses one built-in synthetic Fixture and does not accept real
+interview/customer data. Synthetic source text and human edits are bounded and
+validated. Do not enter personal, customer or confidential content. Stage 3B
+model execution sends only explicitly attested synthetic material to the model
+provider currently selected in Harness. It rejects unverified quotes and does
+not silently replace a failed model result with Fixture output.
 
 The Host owns Product state in the Harness profile. The Client keeps transient
 drafts and communicates through the six strict Product RPC endpoints. It does
 not persist Product drafts in browser storage. The implementation does not read
-Harness workspace sessions, credentials or provider responses. Public outer
+Harness workspace sessions or credentials. Stage 3B reads only the selected
+provider/model identifiers and the structured response created for the current
+synthetic analysis. Public outer
 Connection failures use the fixed `internal` carrier; the Client ignores raw
 carrier messages and details.
 

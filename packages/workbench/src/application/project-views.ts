@@ -84,10 +84,10 @@ const projectViewDefinition = z.strictObject({
     || view.requirementOrder.some(id => !requirements.includes(id))) invalid()
   if (view.source && view.source.projectId !== view.header.id) invalid()
   if (view.analysis && (view.analysis.sourceRevisionId !== view.source?.sourceRevisionId
-    || view.analysis.status !== 'draft' || view.analysis.kind !== 'fixture')) invalid()
+    || view.analysis.status !== 'draft')) invalid()
   for (const draft of view.generatedRequirements) {
     if (draft.analysisRevisionId !== view.analysis?.id || draft.sourceRevisionId !== view.source?.sourceRevisionId
-      || draft.producer !== 'fixture' || !unique(draft.evidenceIds)
+      || (view.analysis?.kind === 'fixture' ? draft.producer !== 'fixture' : draft.producer !== 'ai') || !unique(draft.evidenceIds)
       || draft.evidenceIds.some(id => !view.evidence.some(item => item.id === id))) invalid()
   }
   for (const evidence of view.evidence) {
@@ -199,11 +199,14 @@ export function assertProjectAggregate(project: ActiveProjectRecord): void {
   if (project.currentAnalysisRevisionId === null ? project.analyses.length > 0
     : project.analyses.filter(item => item.id === project.currentAnalysisRevisionId).length !== 1) fail()
   for (const analysis of project.analyses) {
-    if (analysis.sourceRevisionId !== project.source?.id || analysis.kind !== 'fixture'
+    if (analysis.sourceRevisionId !== project.source?.id
       || analysis.baseProjectVersion >= project.header.projectVersion
       || analysis.status !== (analysis.id === project.currentAnalysisRevisionId ? 'draft' : 'superseded')) fail()
   }
   if (project.generatedRequirements.some(draft => draft.analysisRevisionId !== project.currentAnalysisRevisionId)) fail()
+  const currentAnalysis = project.analyses.find(item => item.id === project.currentAnalysisRevisionId)
+  if (project.generatedRequirements.some(draft => currentAnalysis?.kind === 'fixture'
+    ? draft.producer !== 'fixture' : draft.producer !== 'ai')) fail()
   if (project.humanDecisions.length !== project.generatedRequirements.length) fail()
   for (const revision of project.humanRevisions) {
     if (!project.generatedRequirements.some(draft => draft.id === revision.basedOnDraftId && draft.requirementId === revision.requirementId)) fail()

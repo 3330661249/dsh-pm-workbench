@@ -107,6 +107,7 @@ const zodInputs = new Set([
 const hostApplicationInputs = new Set([
   "packages/workbench/src/analysis/fixture-engine.ts",
   "packages/workbench/src/analysis/fixture-manifest.ts",
+  "packages/workbench/src/analysis/harness-model-engine.ts",
   "packages/workbench/src/analysis/types.ts",
   "packages/workbench/src/application/clock.ts",
   "packages/workbench/src/application/node-sha256.ts",
@@ -126,7 +127,9 @@ const hostApplicationInputs = new Set([
   "packages/workbench/src/domain/text.ts",
   "packages/workbench/src/index.ts",
   "packages/workbench/src/integration/harness-rc6/product-host.ts",
+  "packages/workbench/src/integration/harness-rc6/cordis-analysis-port.ts",
   "packages/workbench/src/integration/harness-rc6/project-domain.ts",
+  "packages/workbench/src/integration/harness-rc6/subagent-analysis-runner.ts",
   "packages/workbench/src/protocol/canonical-json.ts",
   "packages/workbench/src/protocol/product.ts"
 ])
@@ -236,6 +239,7 @@ const reviewedImports = {
   "node_modules/zod/v4/locales/zh-TW.js": [["node_modules/zod/v4/core/util.js","import-statement",false]],
   "packages/workbench/src/analysis/fixture-engine.ts": [["packages/workbench/src/domain/evidence.ts","import-statement",false],["packages/workbench/src/analysis/types.ts","import-statement",false]],
   "packages/workbench/src/analysis/fixture-manifest.ts": [["packages/workbench/src/domain/ids.ts","import-statement",false],["packages/workbench/src/analysis/types.ts","import-statement",false]],
+  "packages/workbench/src/analysis/harness-model-engine.ts": [["node_modules/zod/index.js","import-statement",false],["packages/workbench/src/domain/ids.ts","import-statement",false],["packages/workbench/src/domain/evidence.ts","import-statement",false],["packages/workbench/src/analysis/types.ts","import-statement",false]],
   "packages/workbench/src/analysis/types.ts": [],
   "packages/workbench/src/application/clock.ts": [],
   "packages/workbench/src/application/node-sha256.ts": [["node:crypto","import-statement",true],["packages/workbench/src/domain/ids.ts","import-statement",false]],
@@ -267,17 +271,44 @@ const reviewedImports = {
   "packages/workbench/src/domain/requirements.ts": [["packages/workbench/src/domain/evidence.ts","import-statement",false],["packages/workbench/src/domain/limits.ts","import-statement",false],["packages/workbench/src/domain/model.ts","import-statement",false]],
   "packages/workbench/src/domain/text.ts": [["packages/workbench/src/domain/limits.ts","import-statement",false],["packages/workbench/src/domain/model.ts","import-statement",false]],
   "packages/workbench/src/index.ts": [["packages/workbench/src/config.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/product-host.ts","import-statement",false]],
-  "packages/workbench/src/integration/harness-rc6/product-host.ts": [["packages/workbench/src/analysis/fixture-engine.ts","import-statement",false],["packages/workbench/src/analysis/fixture-manifest.ts","import-statement",false],["packages/workbench/src/application/node-sha256.ts","import-statement",false],["packages/workbench/src/application/product-handler.ts","import-statement",false],["packages/workbench/src/application/project-repository.ts","import-statement",false],["packages/workbench/src/application/project-service.ts","import-statement",false],["packages/workbench/src/protocol/product.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/project-domain.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/project-domain.ts","import-statement",false]],
+  "packages/workbench/src/integration/harness-rc6/cordis-analysis-port.ts": [["node:crypto","import-statement",true],["@deepseek-ai/dsh-agent-default-model","import-statement",true],["@deepseek-ai/dsh-session","import-statement",true],["@deepseek-ai/dsh-tools","import-statement",true]],
+  "packages/workbench/src/integration/harness-rc6/product-host.ts": [["node:crypto","import-statement",true],["packages/workbench/src/analysis/fixture-engine.ts","import-statement",false],["packages/workbench/src/analysis/harness-model-engine.ts","import-statement",false],["packages/workbench/src/analysis/fixture-manifest.ts","import-statement",false],["packages/workbench/src/analysis/types.ts","import-statement",false],["packages/workbench/src/application/node-sha256.ts","import-statement",false],["packages/workbench/src/application/product-handler.ts","import-statement",false],["packages/workbench/src/application/project-repository.ts","import-statement",false],["packages/workbench/src/application/project-service.ts","import-statement",false],["packages/workbench/src/protocol/product.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/cordis-analysis-port.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/project-domain.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/subagent-analysis-runner.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/project-domain.ts","import-statement",false]],
   "packages/workbench/src/integration/harness-rc6/project-domain.ts": [["@deepseek-ai/dsh-storage-domain","import-statement",true],["packages/workbench/src/domain/model.ts","import-statement",false]],
+  "packages/workbench/src/integration/harness-rc6/subagent-analysis-runner.ts": [["packages/workbench/src/analysis/harness-model-engine.ts","import-statement",false],["packages/workbench/src/analysis/types.ts","import-statement",false]],
   "packages/workbench/src/protocol/canonical-json.ts": [["packages/workbench/src/domain/limits.ts","import-statement",false]],
   "packages/workbench/src/protocol/product.ts": [["node_modules/zod/index.js","import-statement",false],["packages/workbench/src/domain/ids.ts","import-statement",false],["packages/workbench/src/domain/model.ts","import-statement",false],["packages/workbench/src/domain/limits.ts","import-statement",false],["packages/workbench/src/application/project-views.ts","import-statement",false],["packages/workbench/src/protocol/canonical-json.ts","import-statement",false]],
 }
-const hostExternals = Object.freeze(["@deepseek-ai/dsh-storage-domain", "node:crypto"])
+const hostExternals = Object.freeze(["@deepseek-ai/dsh-agent-default-model", "@deepseek-ai/dsh-session", "@deepseek-ai/dsh-storage-domain", "@deepseek-ai/dsh-tools", "node:crypto"])
 const clientExternals = Object.freeze(["react", "react/jsx-runtime"])
 const outputImports = {
   "host": [
     [
+      "@deepseek-ai/dsh-agent-default-model",
+      "import-statement",
+      true
+    ],
+    [
+      "@deepseek-ai/dsh-session",
+      "import-statement",
+      true
+    ],
+    [
       "@deepseek-ai/dsh-storage-domain",
+      "import-statement",
+      true
+    ],
+    [
+      "@deepseek-ai/dsh-tools",
+      "import-statement",
+      true
+    ],
+    [
+      "node:crypto",
+      "import-statement",
+      true
+    ],
+    [
+      "node:crypto",
       "import-statement",
       true
     ],

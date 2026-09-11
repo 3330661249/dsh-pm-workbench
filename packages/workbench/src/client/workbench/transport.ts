@@ -8,9 +8,7 @@ import {
 import type { MarkdownView } from '../../application/project-views.js'
 import { webSha256Utf8 } from './web-sha256.js'
 
-export type Stage3aProjectCommand = Omit<ProjectCommand, 'payload'> & {
-  readonly payload: Exclude<ProjectCommand['payload'], { readonly kind: 'analysis.runHarnessModel' }>
-}
+export type Stage3aProjectCommand = ProjectCommand
 export type WorkbenchTransportErrorCode = 'cancelled' | 'host-unavailable' | 'protocol-invalid' | 'transport-internal'
 export type WorkbenchResult<E extends ProductEndpoint> =
   | { readonly ok: true; readonly value: ProductOutcome<E> }
@@ -121,7 +119,6 @@ export class ConnectionRpcWorkbenchTransport implements WorkbenchTransport {
     let input: ProductInput<E>
     try {
       input = parseProductInput(endpoint, rawInput)
-      if (endpoint === 'projects.command' && (input as ProjectCommand).payload.kind === 'analysis.runHarnessModel') return failed('protocol-invalid', false)
     } catch { return failed('protocol-invalid', false) }
     if (signal?.aborted) return failed('cancelled', false)
     const admitted = await this.admission.acquire(signal, async () => {

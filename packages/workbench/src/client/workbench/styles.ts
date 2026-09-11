@@ -167,6 +167,7 @@ export const workbenchCss = `
   backdrop-filter: blur(26px) saturate(106%); -webkit-backdrop-filter: blur(26px) saturate(106%);
 }
 .pmwb-focus-panel { grid-column: 2; grid-row: 1; min-height: 0; overflow: auto; padding: 32px 30px 36px; border-radius: 0; }
+.pmwb-model-route { margin-bottom: 14px !important; color: var(--pmwb-subtle); font-size: 11px; letter-spacing: .02em; }
 .pmwb-decision-palette {
   grid-column: 3; grid-row: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column;
   padding: 30px 24px 24px; border-left: 0; border-radius: 0 19px 19px 0; background: rgba(18, 18, 18, .72);

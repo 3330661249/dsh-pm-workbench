@@ -43,7 +43,7 @@ describe('strict Product protocol', () => {
     expect(Object.keys(productEndpointRegistry)).toEqual(['health', 'projects.list', 'projects.get', 'sources.get', 'artifacts.getMarkdown', 'projects.command'])
     expect(STAGE3A_COMMAND_KINDS).toEqual(inputs.slice(0, 8).map(input => input.payload.kind))
     expect(PRODUCT_COMMAND_SCHEMA_KINDS).toEqual(inputs.map(input => input.payload.kind))
-    expect(PRODUCT_CAPABILITIES).toEqual({ wireSchemaVersion: '1', dataSchemaVersion: '1', analysisMode: 'fixture', modelAnalysis: false, realDataAllowed: false, maxHostInflightRequests: 16, maxClientInflightRequests: 8 })
+    expect(PRODUCT_CAPABILITIES).toEqual({ wireSchemaVersion: '1', dataSchemaVersion: '1', analysisMode: 'hybrid', modelAnalysis: true, realDataAllowed: false, maxHostInflightRequests: 16, maxClientInflightRequests: 8 })
   })
 
   it.each(inputs)('validates the complete strict command payload', input => {
@@ -126,10 +126,10 @@ describe('strict Product protocol', () => {
     expect(parseProductOutcome('projects.command', baseline, inputs[6])).toEqual(baseline)
     expect(() => parseProductOutcome('projects.command', response, inputs[6])).toThrowError('invalid-outcome')
     expect(() => parseProductOutcome('projects.command', { ...baseline, value: { ...baseline.value, contentVersion: 2 } }, inputs[6])).toThrowError('invalid-outcome')
-    const unavailable = { status: 'rejected', projectId: ID, commandId: ID, error: { code: 'stage-unavailable' } }
-    expect(parseProductOutcome('projects.command', unavailable, inputs[8])).toEqual(unavailable)
+    const modelAccepted = { ...response, value: { projectVersion: 2, contentVersion: 1, analysisRevisionId: ID } }
+    expect(parseProductOutcome('projects.command', modelAccepted, inputs[8])).toEqual(modelAccepted)
     expect(() => parseProductOutcome('projects.command', response, inputs[8])).toThrowError('invalid-outcome')
-    expect(() => parseProductOutcome('projects.command', { ...unavailable, commandId: OTHER }, inputs[8])).toThrowError('invalid-outcome')
+    expect(() => parseProductOutcome('projects.command', { ...modelAccepted, commandId: OTHER }, inputs[8])).toThrowError('invalid-outcome')
   })
 
 
@@ -143,6 +143,7 @@ describe('strict Product protocol', () => {
       { projectVersion: 2, contentVersion: 1 },
       { projectVersion: 2, contentVersion: 1, baselineId: ID },
       { projectVersion: 2, contentVersion: 1, baselineId: ID, prdRevisionId: ID },
+      { projectVersion: 2, contentVersion: 1, analysisRevisionId: ID },
     ]
     values.forEach((value, index) => {
       const response = { status: 'accepted', projectId: ID, commandId: ID, value }
@@ -162,7 +163,7 @@ describe('strict Product protocol', () => {
       const extra = { apiVersion: PRODUCT_API_VERSION, text: 'x'.repeat(productEndpointRegistry[endpoint].maxRequestUtf8Bytes) }
       expect(() => parseProductInput(endpoint, extra)).toThrowError('limit-exceeded')
     }
-    expect(() => parseProductOutcome('health', accepted({ ...PRODUCT_CAPABILITIES, modelAnalysis: true }))).toThrowError('invalid-outcome')
+    expect(() => parseProductOutcome('health', accepted({ ...PRODUCT_CAPABILITIES, realDataAllowed: true }))).toThrowError('invalid-outcome')
   })
 
   it('keeps all business and outer errors closed and does not echo thrown data', () => {

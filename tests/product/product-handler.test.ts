@@ -168,13 +168,13 @@ describe('Product Connection handler', () => {
     expect(await call('projects.list', api, controller.signal)).toEqual(outerFailure)
   })
 
-  it('returns stage-unavailable for the reserved model command through the real repository', async () => {
+  it('validates the model command through the real repository before model invocation', async () => {
     const { call, table } = setup()
     await call('projects.command', command)
     const input = { ...command, commandId: '20000000-0000-4000-8000-000000000001', expectedVersion: 1,
       payload: { kind: 'analysis.runHarnessModel', sourceRevisionId: id } }
     expect(await call('projects.command', input)).toEqual({ ok: true, value: { status: 'rejected', projectId: SMALL_PROJECT_ID,
-      commandId: input.commandId, error: { code: 'stage-unavailable' } } })
+      commandId: input.commandId, error: { code: 'not-found' } } })
     expect(table.writeCount).toBe(2)
   })
 })

@@ -27,13 +27,15 @@ overlay. The six endpoints are `health`, `projects.list`, `projects.get`,
 bundled into both outputs; React and the observed public Harness runtime imports
 remain external. There are no runtime dependencies in the package manifest.
 
-The visual workbench panel still uses one built-in synthetic Fixture. The panel
-makes no model call and does not yet accept real interview/customer data.
-Synthetic source import, evidence
+The visual workbench panel still accepts only synthetic material. Stage 3B can
+send that synthetic material to the model currently selected in Harness through
+a fresh, task-owned analysis agent. The child exposes only structured result
+capture; every returned quote must match the frozen source exactly or the
+analysis is rejected. Provider and model identifiers are retained with the
+analysis. The panel does not yet accept real interview/customer data. Synthetic source import, evidence
 review, human requirement revision, priority confirmation, immutable baselines,
 and deterministic Markdown are implemented in source. Real text analysis is
-currently available through `/interview-to-prd` in a Harness conversation; the
-panel-to-model bridge remains a later stage.
+currently available through `/interview-to-prd` in a Harness conversation.
 
 Product data persists in the Harness profile by design. Package removal does
 not erase that profile data. Delete/remove is not secure erasure. Use only

@@ -20,7 +20,7 @@ import { canonicalEnvelopeUtf8Bytes } from './canonical-json.js'
 export const PRODUCT_RPC_CHANNEL = '/dsh-pm-workbench-product-v1' as const
 export const PRODUCT_API_VERSION = 'pmwb-product-v1' as const
 export const PRODUCT_CAPABILITIES = Object.freeze({
-  wireSchemaVersion: '1', dataSchemaVersion: '1', analysisMode: 'fixture', modelAnalysis: false,
+  wireSchemaVersion: '1', dataSchemaVersion: '1', analysisMode: 'hybrid', modelAnalysis: true,
   realDataAllowed: false, maxHostInflightRequests: 16, maxClientInflightRequests: 8,
 } as const)
 export const PRODUCT_ERROR_CODES = Object.freeze([
@@ -97,8 +97,8 @@ export type GetProjectInput = ReadonlyValue<z.infer<typeof getProjectInputSchema
 export type GetSourceInput = ReadonlyValue<z.infer<typeof getSourceInputSchema>>
 export type GetMarkdownInput = ReadonlyValue<z.infer<typeof getMarkdownInputSchema>>
 export const productCapabilitiesSchema = z.strictObject({
-  wireSchemaVersion: z.literal('1'), dataSchemaVersion: z.literal('1'), analysisMode: z.literal('fixture'),
-  modelAnalysis: z.literal(false), realDataAllowed: z.literal(false),
+  wireSchemaVersion: z.literal('1'), dataSchemaVersion: z.literal('1'), analysisMode: z.literal('hybrid'),
+  modelAnalysis: z.literal(true), realDataAllowed: z.literal(false),
   maxHostInflightRequests: z.literal(16), maxClientInflightRequests: z.literal(8),
 })
 export const productBusinessErrorSchema = z.strictObject({ code: z.enum(PRODUCT_ERROR_CODES) })
@@ -140,7 +140,8 @@ function commandCorrelates(input: ProjectCommand, outcome: ProjectCommandOutcome
     case 'project.delete': return expectFields('projectVersion')
     case 'project.create': return expectFields('projectVersion', 'contentVersion') && value.contentVersion === 0
     case 'source.importText': return expectFields('projectVersion', 'contentVersion', 'sourceRevisionId')
-    case 'analysis.runFixture': return expectFields('projectVersion', 'contentVersion', 'analysisRevisionId')
+    case 'analysis.runFixture':
+    case 'analysis.runHarnessModel': return expectFields('projectVersion', 'contentVersion', 'analysisRevisionId')
     case 'requirement.update':
     case 'requirements.reorder': return expectFields('projectVersion', 'contentVersion')
     case 'baseline.publish': return expectFields('projectVersion', 'contentVersion', 'baselineId')

@@ -46,7 +46,7 @@ export function MaterialPane({ store, state, pending, onResult, onReadStart, onR
       && current.saveState !== 'uncertain' && !!value.verified && value.verified === current.materialDraft && value.text === value.verified.text
   }
   return <>
-    <p>当前仅支持合成测试材料，请勿导入真实访谈或客户信息</p>
+    <p>当前模型验证仅支持合成测试材料，请勿导入真实访谈或客户信息</p>
     <button type="button" data-dsh-pm-workbench="load-fixture" disabled={locked}
       onClick={() => { if (!locked) void read({ kind: 'paste', text: BUILT_IN_SYNTHETIC_TEXT, displayName: 'synthetic.txt' }) }}>载入合成测试材料</button>
     <label id={`${id}-text`} htmlFor={`${id}-text-input`}>合成测试材料正文</label>
@@ -69,8 +69,8 @@ export function MaterialPane({ store, state, pending, onResult, onReadStart, onR
       onClick={() => { if (!locked && validated() && store.getSnapshot().importAttested) onSave() }}>确认并保存材料</button>
     <p data-dsh-pm-workbench="source-status" data-source-revision-id={source?.sourceRevisionId}>{source ? '材料已保存，正文已锁定' : '材料尚未保存'}</p>
     {persisted && <pre data-dsh-pm-workbench="source-text">{persisted.text}</pre>}
-    <button type="button" data-dsh-pm-workbench="analyse-fixture" disabled={!source || pending || state.saveState !== 'saved' || state.selectedProject?.header.reviewStarted}
-      onClick={() => { if (live()) onAnalyse() }}>生成本地测试草稿</button>
-    <p className="pmwb-notice">本地 Fixture 结果，未调用模型，不代表 AI 分析</p>
+    <button type="button" data-dsh-pm-workbench="analyse-model" disabled={!source || pending || state.saveState !== 'saved' || state.selectedProject?.header.reviewStarted}
+      onClick={() => { if (live()) onAnalyse() }}>发送给 Harness 模型并分析</button>
+    <p className="pmwb-notice">仅发送当前合成材料；模型结果仍需经过原文引用校验和人工确认</p>
   </>
 }

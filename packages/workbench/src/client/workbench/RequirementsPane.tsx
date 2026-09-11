@@ -175,6 +175,9 @@ export function ReviewWorkspace({ store, state, confirmation, pending, onResult,
 
   return <section className="pmwb-review" data-dsh-pm-workbench="review-workspace">
     <article className="pmwb-focus-panel" data-dsh-pm-workbench="requirement-card" data-requirement-id={selected.requirementId}>
+      {state.selectedProject?.analysis?.kind === 'harness-model' && <p className="pmwb-model-route" data-dsh-pm-workbench="model-route">
+        Harness 模型分析 · {state.selectedProject.analysis.provider} / {state.selectedProject.analysis.model}
+      </p>}
       <header className="pmwb-focus-header">
         <div>
           <span>需求 {selectedIndex + 1} / {items.length}</span>

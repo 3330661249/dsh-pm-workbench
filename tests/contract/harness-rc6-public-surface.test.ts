@@ -6,6 +6,7 @@ import { describe, expect, test } from 'vitest'
 const workspaceRoot = resolve(import.meta.dirname, '../..')
 const rc6DirectPackages = [
   '@deepseek-ai/dsh-agent',
+  '@deepseek-ai/dsh-agent-default-model',
   '@deepseek-ai/dsh-agent-presets',
   '@deepseek-ai/dsh-api-gateway',
   '@deepseek-ai/dsh-api-remotes',
@@ -26,11 +27,11 @@ const rc6DirectPackages = [
   '@deepseek-ai/dsh-sandbox-policy',
   '@deepseek-ai/dsh-storage',
   '@deepseek-ai/dsh-storage-domain',
+  '@deepseek-ai/dsh-subagent',
   '@deepseek-ai/dsh-typert-protocol',
   '@deepseek-ai/dsh-typert-registry',
 ] as const
 const rc6OverridePackages = [
-  '@deepseek-ai/dsh-agent-default-model',
   '@deepseek-ai/dsh-atomic-write',
   '@deepseek-ai/dsh-attachment',
   '@deepseek-ai/dsh-brand',
@@ -56,7 +57,6 @@ const rc6OverridePackages = [
   '@deepseek-ai/dsh-session-title',
   '@deepseek-ai/dsh-settings',
   '@deepseek-ai/dsh-skill',
-  '@deepseek-ai/dsh-subagent',
   '@deepseek-ai/dsh-system-prompt',
   '@deepseek-ai/dsh-timeout',
   '@deepseek-ai/dsh-tools',
@@ -66,13 +66,19 @@ const rc6OverridePackages = [
 ] as const
 const optionalWorkbenchPeers = [
   '@deepseek-ai/cordis',
+  '@deepseek-ai/dsh-agent',
+  '@deepseek-ai/dsh-agent-default-model',
   '@deepseek-ai/dsh-invariants',
   '@deepseek-ai/dsh-client-connection',
   '@deepseek-ai/dsh-client-runtime',
   '@deepseek-ai/dsh-client-ui-layout',
   '@deepseek-ai/dsh-client-ui-sidebar',
   '@deepseek-ai/dsh-client-ui-slots',
+  '@deepseek-ai/dsh-skill-filesystem',
+  '@deepseek-ai/dsh-session',
   '@deepseek-ai/dsh-storage-domain',
+  '@deepseek-ai/dsh-subagent',
+  '@deepseek-ai/dsh-tools',
   'react',
   'react-dom',
 ] as const
@@ -406,13 +412,19 @@ describe('rc.6 public smoke surface', () => {
     })
     expect(peerDependencies).toEqual({
       '@deepseek-ai/cordis': '4.0.1',
+      '@deepseek-ai/dsh-agent': '0.1.0-rc.6',
+      '@deepseek-ai/dsh-agent-default-model': '0.1.0-rc.6',
       '@deepseek-ai/dsh-invariants': '0.1.0-rc.6',
       '@deepseek-ai/dsh-client-connection': '0.1.0-rc.6',
       '@deepseek-ai/dsh-client-runtime': '0.1.0-rc.6',
       '@deepseek-ai/dsh-client-ui-layout': '0.1.0-rc.6',
       '@deepseek-ai/dsh-client-ui-sidebar': '0.1.0-rc.6',
       '@deepseek-ai/dsh-client-ui-slots': '0.1.0-rc.6',
+      '@deepseek-ai/dsh-skill-filesystem': '0.1.0-rc.6',
+      '@deepseek-ai/dsh-session': '0.1.0-rc.6',
       '@deepseek-ai/dsh-storage-domain': '0.1.0-rc.6',
+      '@deepseek-ai/dsh-subagent': '0.1.0-rc.6',
+      '@deepseek-ai/dsh-tools': '0.1.0-rc.6',
       react: '18.3.1',
       'react-dom': '18.3.1',
     })

@@ -17,8 +17,7 @@ function transport(raw: unknown) {
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 it('validates the strict input, nested creation attestation and reserved command before invocation', async () => {
   const h = transport(accepted)
-  for (const raw of [{ ...command, extra: true }, { ...command, payload: { ...command.payload, syntheticDataAttested: false } },
-    { ...command, expectedVersion: 1, payload: { kind: 'analysis.runHarnessModel', sourceRevisionId: SMALL_PROJECT_ID } }]) {
+  for (const raw of [{ ...command, extra: true }, { ...command, payload: { ...command.payload, syntheticDataAttested: false } }]) {
     expect(await h.transport.command(raw as typeof command)).toEqual({ ok: false, error: { code: 'protocol-invalid', uncertain: false } })
   }
   expect(h.call).not.toHaveBeenCalled()

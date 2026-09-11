@@ -36,6 +36,13 @@ const exactFiles = [
   'lib/client.js',
   'lib/index.js',
   'package.json',
+  'skills/adversarial-product-review/SKILL.md',
+  'skills/interview-intake/SKILL.md',
+  'skills/interview-to-prd/SKILL.md',
+  'skills/prd-drafting/SKILL.md',
+  'skills/prioritization-review/SKILL.md',
+  'skills/requirement-framing/SKILL.md',
+  'skills/research-synthesis/SKILL.md',
 ] as const
 
 function hash(algorithm: string, bytes: string | Buffer): string {

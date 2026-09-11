@@ -112,15 +112,28 @@ describe('Stage 3A project command service', () => {
     expect(JSON.stringify(record())).toBe(before)
   })
 
-  it('rejects the reserved model command with a durable receipt before any engine invocation', async () => {
-    const engine: InsightEngine = { analyse: vi.fn(() => Promise.reject(new Error('must never run'))) }
+  it('commits a verified Harness model candidate and persists its exact route', async () => {
+    const fixture = new FixtureInsightEngine(FIXTURE_MANIFEST, nodeSha256Utf8)
+    const analyse = vi.fn<InsightEngine['analyse']>(async (input, signal) => {
+      const candidate = await fixture.analyse({ ...input, mode: 'fixture' }, signal)
+      return { ...candidate,
+        analysis: { ...candidate.analysis, kind: 'harness-model' as const,
+          provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+        generatedRequirements: candidate.generatedRequirements.map(draft => ({ ...draft, producer: 'ai' as const })),
+      }
+    })
+    const engine: InsightEngine = { analyse }
     const { service, importSource, input, record, table } = setup({ engine })
     await importSource()
     const request = input({ kind: 'analysis.runHarnessModel', sourceRevisionId: record().source!.id })
     const outcome = await service.command(request)
-    expect(outcome).toEqual({ status: 'rejected', projectId: SMALL_PROJECT_ID, commandId: request.commandId, error: { code: 'stage-unavailable' } })
-    expect(engine.analyse).not.toHaveBeenCalled()
-    expect(record().commandReceipts.at(-1)?.outcome).toEqual({ ok: false, code: 'stage-unavailable' })
+    expect(outcome).toMatchObject({ status: 'accepted', projectId: SMALL_PROJECT_ID, commandId: request.commandId,
+      value: { projectVersion: 3, contentVersion: 2, analysisRevisionId: expect.any(String) } })
+    expect(analyse).toHaveBeenCalledOnce()
+    expect(analyse.mock.calls[0]?.[0]).toMatchObject({ mode: 'harness-model', researchGoal: null })
+    expect(record().analyses.at(-1)).toMatchObject({ kind: 'harness-model', provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+    expect(record().generatedRequirements[0]).toMatchObject({ producer: 'ai' })
+    expect(record().commandReceipts.at(-1)?.outcome).toMatchObject({ ok: true, analysisRevisionId: expect.any(String) })
     expect(await service.command(request)).toEqual(outcome)
     expect(table.writeCount).toBe(2)
   })

@@ -216,7 +216,6 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
     try {
       const checked = parseProductInput('projects.command', command ?? { ...api, projectId: id, commandId: '00000000-0000-4000-8000-000000000001',
         expectedVersion: payload.kind === 'project.create' ? 0 : Math.max(1, state.selectedProject?.header.projectVersion ?? 1), payload })
-      if (checked.payload.kind === 'analysis.runHarnessModel') return fail('stage-unavailable')
       const revision = state.dirtyRevision + 1
       intents.push({ projectId: id, selectionGeneration, revision, payload: checked.payload, command, ...(checked.payload.kind === 'source.importText' ? { material: state.materialDraft } : {}) })
       if (affectsContent(checked.payload)) invalidateChain()
@@ -333,7 +332,6 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
     let captured: Stage3aProjectCommand
     try {
       captured = parseProductInput('projects.command', input) as Stage3aProjectCommand
-      if (captured.payload.kind === 'analysis.runHarnessModel' as string) return fail('stage-unavailable')
     } catch { return fail('protocol-invalid') }
     if (captured.payload.kind === 'project.create') beginSelection(captured.projectId)
     else if (captured.projectId !== state.selectedProjectId) return fail('project-switch-blocked')
