@@ -1,14 +1,14 @@
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { PRODUCT_API_VERSION, PRODUCT_ERROR_CODES, parseProductInput } from '../../protocol/product.js'
 import type { ProjectId, PrdRevisionId } from '../../domain/ids.js'
 import type { Stage3aProjectCommand } from './transport.js'
 import type { ConfirmationSnapshot, StoreErrorCode, StoreResult, WorkbenchStore } from './store.js'
 import { CreateProjectDialog, NativeDialog, ProjectList, type FocusTarget } from './ProjectList.js'
 import { MaterialPane } from './MaterialPane.js'
-import { RequirementsPane } from './RequirementsPane.js'
-import { PriorityPane } from './PriorityPane.js'
+import { ReviewWorkspace } from './RequirementsPane.js'
+import './PriorityPane.js'
 import { PrdPane } from './PrdPane.js'
-import { workbenchCss } from './styles.js'
+import { launcherCss, workbenchCss } from './styles.js'
 
 const errors: Record<StoreErrorCode, string> = {
   'transport-internal': '工作台暂时无法连接', 'host-unavailable': '工作台暂时无法连接',
@@ -34,8 +34,23 @@ type ActionResult = { readonly ok: true } | { readonly ok: false; readonly code:
 const done = { ok: true } as const
 const cancelled = { ok: false, code: 'cancelled' } as const
 
+function PrismMark({ marker, className = 'dsh-pm-launcher-icon', variant = false }: { marker?: string; className?: string; variant?: boolean }) {
+  return <svg className={className} data-dsh-pm-workbench={marker} data-icon-variant={variant ? 'validation-prism' : undefined} viewBox="0 0 64 64" role="presentation" focusable="false">
+    <path className="dsh-pm-launcher-prism-blade dsh-pm-launcher-prism-blade--top" d="M32 5C38 14 40 23 38 29L32 25 26 29C24 23 26 14 32 5Z" />
+    <path className="dsh-pm-launcher-prism-blade dsh-pm-launcher-prism-blade--right" d="M55.4 45.5C44.6 46.2 35.8 43.5 31.6 38.8L37.9 37.5 39.6 31.3C45.9 31.6 52.3 38 55.4 45.5Z" />
+    <path className="dsh-pm-launcher-prism-blade dsh-pm-launcher-prism-blade--left" d="M8.6 45.5C11.7 38 18.1 31.6 24.4 31.3L26.1 37.5 32.4 38.8C28.2 43.5 19.4 46.2 8.6 45.5Z" />
+    <path className="dsh-pm-launcher-prism-core" d="M32 27.5 36.5 32 32 36.5 27.5 32Z" />
+  </svg>
+}
+
 export function WorkbenchLauncher({ onOpen }: { onOpen(target: FocusTarget): void }) {
-  return <button type="button" data-dsh-pm-workbench="launcher" onClick={event => onOpen(event.currentTarget)}>AI PM 工作台</button>
+  return <>
+    <style>{launcherCss}</style>
+    <button type="button" className="dsh-pm-launcher" data-dsh-pm-workbench="launcher" onClick={event => onOpen(event.currentTarget)}>
+      <PrismMark variant />
+      <span className="dsh-pm-launcher-label">AI PM 工作台</span>
+    </button>
+  </>
 }
 
 export function WorkbenchView({ store, createCommandId = () => globalThis.crypto.randomUUID().toLowerCase(), restoreFocus, onClose }: {
@@ -46,6 +61,8 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
     saved: state.savedDraftRevision, generation: 0 }))
   const [error, setError] = useState<string>(), [pending, setPending] = useState(0)
   const [materialReading, setMaterialReading] = useState(false)
+  const [activeStage, setActiveStage] = useState<0 | 1 | 2>(() => !state.selectedProject?.analysis ? 0
+    : state.selectedProject.currentBaseline || state.selectedProject.prdSummaries.length > 0 ? 2 : 1)
   const [createDialog, setCreateDialog] = useState(false), [deleteDialog, setDeleteDialog] = useState(false), [discardDialog, setDiscardDialog] = useState(false)
   const actionLatch = useRef(false), activeActions = useRef(0), prdRequest = useRef(0), recoveryRequest = useRef(0), exportRequest = useRef(0)
   const errorOwner = useRef(0)
@@ -59,7 +76,6 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
     const current = store.getSnapshot()
     setReview({ token, dirty: current.dirtyRevision, saved: current.savedDraftRevision, generation: selection.current.generation })
   }
-  const sectionRefs = useRef<Array<HTMLElement | null>>([]), sectionId = useId()
   function ownAlert() {
     const owner = ++errorOwner.current, captured = selection.current
     return (message?: string) => {
@@ -212,45 +228,69 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
   const recovery = !!state.baselineChain && !hasAcceptedPrd
   const visibleError = state.error === 'transport-internal' || state.error === 'host-unavailable'
     ? storeErrorText(state.error) : error ?? (state.error ? storeErrorText(state.error) : undefined)
+  const currentStep: 0 | 1 | 2 = !state.selectedProject?.analysis ? 0
+    : state.selectedProject.currentBaseline || state.selectedProject.prdSummaries.length > 0 ? 2 : 1
+  const steps = ['导入材料', '确认优先级', '生成 PRD'] as const
+  useEffect(() => { setActiveStage(currentStep) }, [state.selectedProjectId, currentStep])
   if (!state.isOpen) return null
   return <NativeDialog marker="overlay" heading="AI PM 工作台" onClose={close} restoreFocus={restoreFocus} workbench>
     <style>{workbenchCss}</style>
-    <header><p>材料 → 需求 → 优先级 → PRD</p><button type="button" data-dsh-pm-workbench="close" onClick={close}>关闭工作台</button></header>
-    <p className="pmwb-notice">当前仅支持合成测试材料，请勿导入真实访谈或客户信息</p>
-    <p data-dsh-pm-workbench="save-state" role="status">{saveText[state.saveState]}</p>
-    {visibleError && <p role="alert">{visibleError}</p>}
-    {recovery && <p role="status">基线已确认，PRD 尚未完成，请刷新继续</p>}
-    <div className="pmwb-actions">
-      <button type="button" data-dsh-pm-workbench="refresh-project" disabled={pending > 0} onClick={() => recover()}>刷新项目</button>
-      {state.pendingRetry && <button type="button" data-dsh-pm-workbench="retry-uncertain" disabled={pending > 0} onClick={() => recover(true)}>重试原操作</button>}
-      {canDiscard && <button type="button" data-dsh-pm-workbench="discard-drafts" onClick={() => setDiscardDialog(true)}>放弃未保存修改</button>}
-    </div>
-    <div className="pmwb-body">
-      <ProjectList state={state} onNew={() => setCreateDialog(true)} onSelect={id => { if (id !== state.selectedProjectId) void run(() => store.selectProject(id)) }} />
-      <main>{state.selectedProject ? <>
-        <header><h2>{state.selectedProject.header.name}</h2>
-          <button type="button" data-dsh-pm-workbench="delete-project" disabled={pending > 0 || state.saveState !== 'saved'} onClick={() => setDeleteDialog(true)}>删除项目</button></header>
-        <p>{state.selectedProject.header.researchGoal || '研究目标未提供'}</p>
-        <p>{state.selectedProject.header.reviewStarted ? '需求审核中' : state.selectedProject.analysis ? '本地草稿待审核' : state.selectedProject.source ? '材料已保存' : '等待合成材料'}</p>
-        <nav>{['材料', '需求', '优先级', 'PRD'].map((label, index) => <button key={index} type="button" onClick={() => {
-          sectionRefs.current[index]?.scrollIntoView?.({ block: 'start' }); sectionRefs.current[index]?.focus()
-        }}>{label}</button>)}</nav>
-        {['材料', '需求', '优先级', 'PRD'].map((label, index) => <section key={index} tabIndex={-1} aria-labelledby={`${sectionId}-${index}`} ref={node => { sectionRefs.current[index] = node }}>
-          <h2 id={`${sectionId}-${index}`}>{label}</h2>
-          {index === 0 && <MaterialPane store={store} state={state} pending={pending > 0} onResult={report} onReading={setMaterialReading}
-            onReadStart={() => { const update = ownAlert(); update(undefined); return {
-              onResult: result => report(result, update),
-              onReadError: () => update('材料读取失败，请检查 TXT 或 Markdown 文件及 UTF-8 编码后重试'),
-            } }}
-            onSave={() => mutate(async () => { const result = await store.importMaterial(); if (!result.ok) return result; return store.loadSource() })}
-            onAnalyse={() => mutate(() => localCommand('analysis.runFixture'))} />}
-          {index === 1 && <RequirementsPane store={store} state={state} pending={pending > 0} onResult={report}
-            onSave={saveRequirements} onEvidence={() => { void run(() => store.loadSource()) }} />}
-          {index === 2 && <PriorityPane state={state} confirmation={confirmation} pending={pending > 0} onConfirm={confirm}
-            onReview={() => { const token = store.prepareConfirmation(); displayConfirmation(token); report(token.ok ? done : { ok: false, code: token.reason }) }} />}
-          {index === 3 && <PrdPane state={state} onSelect={selectPrd} onCopy={() => exportPrd(false)} onDownload={() => exportPrd(true)} />}
-        </section>)}
-      </> : <p>请选择或新建一个合成测试项目。</p>}</main>
+    <div className="pmwb-shell">
+      <header className="pmwb-shell-header" data-dsh-pm-workbench="workbench-header">
+        <div className="pmwb-brand">
+          <PrismMark marker="brand-mark" className="pmwb-brand-mark" />
+          <strong>AI PM 工作台</strong>
+        </div>
+        <ProjectList state={state} onNew={() => setCreateDialog(true)} onSelect={id => { if (id !== state.selectedProjectId) void run(() => store.selectProject(id)) }} />
+        <nav className="pmwb-stepper" data-dsh-pm-workbench="stepper">{steps.map((label, index) => {
+          const stage = index as 0 | 1 | 2
+          const available = stage === 0 || stage === 1 && !!state.selectedProject?.analysis
+            || stage === 2 && (!!state.selectedProject?.currentBaseline || (state.selectedProject?.prdSummaries.length ?? 0) > 0)
+          return <button key={label} type="button" data-dsh-pm-workbench={`step-${index}`}
+            className={stage < currentStep ? 'is-complete' : undefined} aria-current={stage === activeStage ? 'step' : undefined}
+            disabled={!available} onClick={() => setActiveStage(stage)}><span>{index + 1}</span>{label}</button>
+        })}</nav>
+        <div className="pmwb-header-actions">
+          <p className={`pmwb-save-state pmwb-save-state--${state.saveState}`} data-dsh-pm-workbench="save-state" role="status">{saveText[state.saveState]}</p>
+          {visibleError && <p className="pmwb-visually-hidden" role="alert">{visibleError}</p>}
+          <button type="button" className="pmwb-quiet-action" data-dsh-pm-workbench="refresh-project" disabled={pending > 0} onClick={() => recover()}>刷新</button>
+          {state.pendingRetry && <button type="button" data-dsh-pm-workbench="retry-uncertain" disabled={pending > 0} onClick={() => recover(true)}>重试原操作</button>}
+          {canDiscard && <button type="button" data-dsh-pm-workbench="discard-drafts" onClick={() => setDiscardDialog(true)}>放弃修改</button>}
+          {state.selectedProject && <button type="button" className="pmwb-danger-action" data-dsh-pm-workbench="delete-project"
+            disabled={pending > 0 || state.saveState !== 'saved'} onClick={() => setDeleteDialog(true)}>删除</button>}
+          <button type="button" className="pmwb-close" data-dsh-pm-workbench="close" onClick={close}>关闭</button>
+        </div>
+      </header>
+      <main className="pmwb-spatial-stage">
+        {visibleError && <p className="pmwb-toast" role="status">{visibleError}</p>}
+        {recovery && <p className="pmwb-toast" role="status">基线已确认，PRD 尚未完成，请刷新继续</p>}
+        {state.selectedProject ? <>
+          {activeStage === 0 && <section className="pmwb-surface pmwb-material-surface">
+            <header><div><span>材料</span><h2>{state.selectedProject.header.name}</h2></div>
+              <p>{state.selectedProject.header.researchGoal || '导入访谈材料，开始形成有依据的产品需求。'}</p></header>
+            <MaterialPane store={store} state={state} pending={pending > 0} onResult={report} onReading={setMaterialReading}
+                onReadStart={() => { const update = ownAlert(); update(undefined); return {
+                  onResult: result => report(result, update),
+                  onReadError: () => update('材料读取失败，请检查 TXT 或 Markdown 文件及 UTF-8 编码后重试'),
+                } }}
+                onSave={() => mutate(async () => { const result = await store.importMaterial(); if (!result.ok) return result; return store.loadSource() })}
+                onAnalyse={() => mutate(() => localCommand('analysis.runFixture'))} />
+          </section>}
+          {activeStage === 1 && <ReviewWorkspace store={store} state={state} confirmation={confirmation} pending={pending > 0}
+            onResult={report} onSave={saveRequirements} onEvidence={() => { void run(() => store.loadSource()) }}
+            onReview={() => { const token = store.prepareConfirmation(); displayConfirmation(token); report(token.ok ? done : { ok: false, code: token.reason }) }}
+            onConfirm={confirm} />}
+          {activeStage === 2 && <section className="pmwb-surface pmwb-prd-surface">
+            <header><div><span>PRD</span><h2>{state.selectedProject.header.name}</h2></div><p>基于人工确认的本期范围生成。</p></header>
+            <PrdPane state={state} onSelect={selectPrd} onCopy={() => exportPrd(false)} onDownload={() => exportPrd(true)} />
+          </section>}
+        </> : <section className="pmwb-empty-state pmwb-surface" data-dsh-pm-workbench="empty-state">
+            <PrismMark className="pmwb-empty-mark" />
+            <h2>还没有项目</h2>
+            <p>新建第一个项目，开始整理材料并形成有依据的产品需求。</p>
+            <button type="button" className="pmwb-primary" data-dsh-pm-workbench="empty-new-project" onClick={() => setCreateDialog(true)}>新建第一个项目</button>
+          </section>}
+      </main>
     </div>
     {createDialog && <CreateProjectDialog pending={pending > 0} uncertain={state.saveState === 'uncertain'} error={visibleError} onClose={() => setCreateDialog(false)} onCreate={(name, researchGoal, attested) => mutate(async () => {
       const result = await store.createProject({ name, researchGoal }, attested)

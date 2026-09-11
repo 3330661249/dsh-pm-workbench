@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import type { ProjectId } from '../../domain/ids.js'
 import type { WorkbenchState } from './store.js'
-import { dialogStyle } from './styles.js'
+import { dialogStyle, workbenchDialogStyle } from './styles.js'
 
 export interface FocusTarget { focus(): void; readonly isConnected?: boolean }
 
@@ -24,11 +24,11 @@ export function NativeDialog({ marker, heading, children, onClose, restoreFocus,
     }
   }, [])
   return <dialog ref={ref} data-dsh-pm-workbench={marker} className={workbench ? 'pmwb' : undefined}
-    style={dialogStyle} aria-labelledby={id} onCancel={event => {
+    style={workbench ? workbenchDialogStyle : dialogStyle} aria-labelledby={id} onCancel={event => {
       event.preventDefault(); event.stopPropagation()
       if (event.target === event.currentTarget) onClose()
     }}>
-    <h1 id={id}>{heading}</h1>{children}
+    <h1 id={id} className={workbench ? 'pmwb-dialog-heading' : undefined}>{heading}</h1>{children}
   </dialog>
 }
 
@@ -57,16 +57,26 @@ export function CreateProjectDialog({ pending, uncertain, error, onCreate, onClo
 export function ProjectList({ state, onNew, onSelect }: {
   state: WorkbenchState; onNew?: () => void; onSelect?: (id: ProjectId) => void
 }) {
-  return <aside data-dsh-pm-workbench="project-list">
-    <h2>项目</h2>
-    <button type="button" data-dsh-pm-workbench="new-project" disabled={state.projects.length >= 20} onClick={onNew}>新建项目</button>
-    {state.projects.length >= 20 && <p>已达到 20 个项目上限</p>}
-    {state.projects.length === 0 && <p>暂时没有项目</p>}
-    <ul>{state.projects.map(project => <li key={project.id}>
-      <button type="button" data-project-id={project.id} aria-current={state.selectedProjectId === project.id ? 'true' : undefined}
-        onClick={() => onSelect?.(project.id)}>{project.name}</button>
-      <p>{project.researchGoal || '研究目标未提供'}</p>
-      <small>更新时间：{project.updatedAt}</small>
-    </li>)}</ul>
-  </aside>
+  const menu = useRef<HTMLDetailsElement>(null)
+  const selected = state.projects.find(project => project.id === state.selectedProjectId)
+  const closeMenu = () => {
+    const current = menu.current as { removeAttribute?: (name: string) => void } | null
+    current?.removeAttribute?.('open')
+  }
+  return <details ref={menu} className="pmwb-project-switcher" data-dsh-pm-workbench="project-list">
+    <summary><span>{selected?.name ?? '选择项目'}</span><small>{state.projects.length} 个项目</small></summary>
+    <div className="pmwb-project-menu">
+      <header><div><h2>项目</h2><span>{state.projects.length}</span></div>
+        <button type="button" className="pmwb-new-project" data-dsh-pm-workbench="new-project" disabled={state.projects.length >= 20}
+          onClick={() => { closeMenu(); onNew?.() }}>新建项目</button></header>
+      {state.projects.length >= 20 && <p className="pmwb-rail-message">已达到 20 个项目上限</p>}
+      {state.projects.length === 0 && <div className="pmwb-rail-empty"><p>暂时没有项目</p><small>创建项目后会显示在这里</small></div>}
+      <ul>{state.projects.map(project => <li key={project.id}>
+        <button type="button" className="pmwb-project-item" data-project-id={project.id} aria-current={state.selectedProjectId === project.id ? 'true' : undefined}
+          onClick={() => { closeMenu(); onSelect?.(project.id) }}>{project.name}</button>
+        <p className="pmwb-project-goal">{project.researchGoal || '研究目标未提供'}</p>
+        <small>更新时间：{project.updatedAt}</small>
+      </li>)}</ul>
+    </div>
+  </details>
 }

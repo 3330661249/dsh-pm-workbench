@@ -1,3 +1,9 @@
 - insert:
     - id: dsh-pm-workbench
       name: '@knight/dsh-pm-workbench'
+    - id: dsh-pm-workbench-skills
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        providerName: dsh-pm-workbench
+        includeDefaultRoots: false
+        bundledSkillDir: !!js "process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@knight/dsh-pm-workbench/package.json')), 'skills')"

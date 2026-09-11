@@ -4,6 +4,7 @@ import { WorkbenchLauncher, WorkbenchView } from '../../packages/workbench/src/c
 import { PriorityPane } from '../../packages/workbench/src/client/workbench/PriorityPane.js'
 import { PrdPane } from '../../packages/workbench/src/client/workbench/PrdPane.js'
 import { ProjectList } from '../../packages/workbench/src/client/workbench/ProjectList.js'
+import { launcherCss, workbenchCss } from '../../packages/workbench/src/client/workbench/styles.js'
 import type { WorkbenchState, WorkbenchStore, ConfirmationSnapshot } from '../../packages/workbench/src/client/workbench/store.js'
 import type { ProjectView } from '../../packages/workbench/src/application/project-views.js'
 import { FIXTURE_MANIFEST, BUILT_IN_SYNTHETIC_HASH, BUILT_IN_SYNTHETIC_TEXT } from '../../packages/workbench/src/analysis/fixture-manifest.js'
@@ -35,10 +36,32 @@ function tag(html: string, marker: string) { return html.match(new RegExp(`<[^>]
 function dataNames(element: string) { return [...element.matchAll(/\b(data-[a-z-]+)=/g)].map(m => m[1]).filter(n => n !== 'data-dsh-pm-workbench').sort() }
 
 describe('Product semantic markup', () => {
-  it('shows the synthetic-only gate, local-test identity, and four ordinary labelled area buttons', () => {
+  it('renders the native monochrome three-column review composition', () => {
     const html = render()
+    expect(tag(html, 'review-navigator')).toMatch(/^<footer/)
+    expect(html).toMatch(/<aside class="pmwb-decision-palette">[\s\S]*class="pmwb-review-actions"/)
+    expect(html).toContain('AI 建议')
+    expect(workbenchCss).toContain('grid-template-columns: 240px minmax(0, 1fr) 320px')
+    expect(workbenchCss).toContain('.pmwb-project-switcher { display: block')
+    expect(workbenchCss).toContain('backdrop-filter: grayscale(1)')
+    const monochromeCss = `${workbenchCss}\n${launcherCss}`
+    expect(monochromeCss).not.toContain('linear-gradient')
+
+    for (const match of monochromeCss.matchAll(/#([0-9a-f]{6})\b/gi)) {
+      const [r, g, b] = [match[1]!.slice(0, 2), match[1]!.slice(2, 4), match[1]!.slice(4, 6)]
+      expect(r, match[0]).toBe(g)
+      expect(g, match[0]).toBe(b)
+    }
+    for (const match of monochromeCss.matchAll(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/g)) {
+      expect(match[1], match[0]).toBe(match[2])
+      expect(match[2], match[0]).toBe(match[3])
+    }
+  })
+
+  it('shows the synthetic-only gate in the material stage and three ordinary workflow buttons', () => {
+    const html = render({ ...ready, selectedProject: { ...project, analysis: null } })
     for (const text of ['当前仅支持合成测试材料，请勿导入真实访谈或客户信息', '我确认这是新写的合成测试材料，不含真实个人或客户数据',
-      '生成本地测试草稿', '本地 Fixture 结果，未调用模型，不代表 AI 分析', '材料', '需求', '优先级', 'PRD', '确认并保存材料', '保存修改']) expect(html).toContain(text)
+      '生成本地测试草稿', '本地 Fixture 结果，未调用模型，不代表 AI 分析', '导入材料', '确认优先级', '生成 PRD', '确认并保存材料']) expect(html).toContain(text)
     expect(html).not.toContain('role="tab"')
     for (const text of ['API key', 'provider', '发送消息', '选择模型', '发布基线']) expect(html).not.toContain(text)
   })
@@ -51,14 +74,43 @@ describe('Product semantic markup', () => {
     const launcher = renderToStaticMarkup(<WorkbenchLauncher onOpen={() => {}} />)
     expect(tag(launcher, 'launcher')).toMatch(/^<button/)
     expect(launcher).not.toContain('aria-label=')
+    expect(launcher).toContain('class="dsh-pm-launcher"')
+    expect(launcher).toContain('class="dsh-pm-launcher-icon"')
+    expect(launcher).toContain('data-icon-variant="validation-prism"')
+    expect(launcher.match(/<path class="dsh-pm-launcher-prism-blade/g)).toHaveLength(3)
+    expect(launcher).toContain('class="dsh-pm-launcher-prism-core"')
+    expect(launcher).toContain('class="dsh-pm-launcher-label"')
+    expect(launcher).toContain('<svg')
+    expect(launcher).toContain('AI PM 工作台')
+    expect(launcher).toContain('[data-sidebar-collapsed] .dsh-pm-launcher')
     expect(render({ ...ready, isOpen: false })).toBe('')
+  })
+  it('renders the selected floating workbench shell with a compact project switcher, three-step navigator, and composed empty state', () => {
+    const empty = render({ ...ready, projects: [], selectedProject: undefined, selectedProjectId: undefined, selectedSource: undefined })
+    expect(tag(empty, 'workbench-header')).toMatch(/^<header/)
+    expect(tag(empty, 'brand-mark')).toMatch(/^<svg/)
+    expect(tag(empty, 'stepper')).toMatch(/^<nav/)
+    expect(tag(empty, 'empty-state')).toMatch(/^<section/)
+    expect(tag(empty, 'empty-new-project')).toContain('type="button"')
+    expect(empty).toContain('还没有项目')
+    expect(empty).toContain('新建第一个项目')
+    expect(empty).toContain('background:transparent')
+    expect(empty).toContain('grid-template-columns: repeat(3, minmax(0, 1fr))')
+    expect(empty).not.toContain('材料 → 需求 → 优先级 → PRD')
+    expect(empty).not.toContain('当前仅支持合成测试材料，请勿导入真实访谈或客户信息')
+    const disconnected = render({ ...ready, projects: [], selectedProject: undefined, selectedProjectId: undefined, selectedSource: undefined, error: 'host-unavailable' })
+    expect(disconnected).toContain('class="pmwb-visually-hidden" role="alert">工作台暂时无法连接')
+    const active = tag(render(), 'step-1')
+    expect(active).toContain('aria-current="step"')
+    expect(tag(render(), 'review-workspace')).toMatch(/^<section/)
   })
   it('renders empty inventory, optional goal, limit and Host-supplied row order using only public summaries', () => {
     const empty = render({ ...ready, projects: [], selectedProject: undefined, selectedProjectId: undefined, selectedSource: undefined })
     expect(empty).toContain('暂时没有项目'); expect(empty).toContain('新建项目')
     const headers = [{ ...header, id: OTHER_PROJECT_ID, name: '第二个先显示', researchGoal: null }, { ...header, name: '第一个后显示' }]
     const html = renderToStaticMarkup(<ProjectList state={{ ...ready, projects: headers }} />)
-    expect(html.indexOf('第二个先显示')).toBeLessThan(html.indexOf('第一个后显示'))
+    const inventory = html.slice(html.indexOf('<ul>'))
+    expect(inventory.indexOf('第二个先显示')).toBeLessThan(inventory.indexOf('第一个后显示'))
     expect(html).toContain('研究目标未提供')
     for (const text of ['材料已导入', '已分析', 'PRD 已过期', '需求审核中']) expect(html).not.toContain(text)
     const full = render({ ...ready, projects: Array.from({ length: 20 }, (_, n) => ({ ...header, id: `${header.id.slice(0, -2)}${String(n).padStart(2, '0')}` as typeof header.id })) })
@@ -79,7 +131,8 @@ describe('Product semantic markup', () => {
   })
   it.each([['unsaved', '未保存'], ['saving', '保存中'], ['saved', '已保存'], ['failed', '保存失败'], ['uncertain', '结果待确认']] as const)(
     'renders %s independently of selected review stage', (saveState, label) => {
-      const html = render({ ...ready, saveState }); expect(html).toContain(label); expect(html).toContain('需求审核中')
+      const html = render({ ...ready, saveState }); expect(html).toContain(label); expect(html).toContain('确认优先级')
+      expect(tag(html, 'step-1')).toContain('aria-current="step"')
       expect(dataNames(tag(html, 'save-state'))).toEqual([])
     })
   it.each([['transport-internal', '工作台暂时无法连接'], ['host-unavailable', '工作台暂时无法连接'],
@@ -90,11 +143,13 @@ describe('Product semantic markup', () => {
     expect(render({ ...ready, selectedProject: { ...project, generatedRequirements: [], requirementOrder: [], humanDecisions: [], selectedHumanRevisions: [] } }))
       .toContain('暂未找到有充分依据的需求，可检查材料或保留为后续研究问题。')
     const html = render()
-    expect(html).toContain('查看原文'); expect(html).toContain(BUILT_IN_SYNTHETIC_TEXT)
-    expect(tag(html, 'source-text')).not.toContain('hidden')
-    expect(dataNames(tag(html, 'source-status'))).toEqual(['data-source-revision-id'])
+    expect(html).toContain('来自访谈'); expect(html).toContain(candidate.evidence[0]!.quote)
     expect(dataNames(tag(html, 'evidence'))).toEqual(['data-evidence-id', 'data-quote-end', 'data-quote-hash', 'data-quote-start', 'data-source-revision-id'])
     for (const name of ['requirement-title', 'requirement-pain-point', 'requirement-description', 'priority', 'decision', 'human-reason', 'requirement-order', 'evidence-quote', 'evidence-context']) expect(tag(html, name)).not.toBe('')
+    const material = render({ ...ready, selectedProject: { ...project, analysis: null } })
+    expect(material).toContain(BUILT_IN_SYNTHETIC_TEXT)
+    expect(tag(material, 'source-text')).not.toContain('hidden')
+    expect(dataNames(tag(material, 'source-status'))).toEqual(['data-source-revision-id'])
   })
   it('binds retained stale and current PRD markup and trace to a selected history revision', () => {
     const summary = { projectId: SMALL_PROJECT_ID, prdRevisionId: prdRevisionIdSchema.parse('70000000-0000-4000-8000-000000000001'),
