@@ -42,8 +42,8 @@ export function CreateProjectDialog({ pending, uncertain, error, onCreate, onClo
     <input id={`${id}-name-input`} aria-labelledby={`${id}-name`} data-dsh-pm-workbench="project-name" value={name} disabled={pending || uncertain} onChange={event => setName(event.currentTarget.value)} />
     <label id={`${id}-goal`} htmlFor={`${id}-goal-input`}>研究目标（可选）</label>
     <textarea id={`${id}-goal-input`} aria-labelledby={`${id}-goal`} data-dsh-pm-workbench="research-goal" value={goal} disabled={pending || uncertain} onChange={event => setGoal(event.currentTarget.value)} />
-    <label><input type="checkbox" data-dsh-pm-workbench="create-synthetic-attestation" checked={attested} disabled={pending || uncertain} onChange={event => setAttested(event.currentTarget.checked)} />
-      我确认此项目仅用于合成测试，不含真实个人或客户数据</label>
+    <label><input type="checkbox" data-dsh-pm-workbench="create-data-use-attestation" checked={attested} disabled={pending || uncertain} onChange={event => setAttested(event.currentTarget.checked)} />
+      我确认只会导入自己有权处理的材料</label>
     {error && <p role="alert">{error}</p>}
     {uncertain && <p>结果待确认，请返回工作台重试原操作或刷新。关闭此窗口不会撤销已发送的操作。</p>}
     <div className="pmwb-actions">

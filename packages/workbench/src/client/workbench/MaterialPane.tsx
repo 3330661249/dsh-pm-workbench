@@ -46,10 +46,10 @@ export function MaterialPane({ store, state, pending, onResult, onReadStart, onR
       && current.saveState !== 'uncertain' && !!value.verified && value.verified === current.materialDraft && value.text === value.verified.text
   }
   return <>
-    <p>当前模型验证仅支持合成测试材料，请勿导入真实访谈或客户信息</p>
+    <p>支持粘贴或导入 TXT、Markdown 访谈材料</p>
     <button type="button" data-dsh-pm-workbench="load-fixture" disabled={locked}
       onClick={() => { if (!locked) void read({ kind: 'paste', text: BUILT_IN_SYNTHETIC_TEXT, displayName: 'synthetic.txt' }) }}>载入合成测试材料</button>
-    <label id={`${id}-text`} htmlFor={`${id}-text-input`}>合成测试材料正文</label>
+    <label id={`${id}-text`} htmlFor={`${id}-text-input`}>访谈材料正文</label>
     <textarea id={`${id}-text-input`} aria-labelledby={`${id}-text`} data-dsh-pm-workbench="material-input" disabled={locked}
       value={edit.text} onChange={event => { if (!locked) void read({ kind: 'paste', text: event.currentTarget.value, displayName: 'pasted.txt' }) }} />
     <label id={`${id}-file`} htmlFor={`${id}-file-input`}>导入 TXT 或 Markdown 文件（UTF-8）</label>
@@ -61,9 +61,11 @@ export function MaterialPane({ store, state, pending, onResult, onReadStart, onR
         event.currentTarget.value = ''
       }} />
     {state.materialDraft && <p>当前草稿：{state.materialDraft.displayName}</p>}
-    <label><input type="checkbox" data-dsh-pm-workbench="synthetic-attestation" checked={validated() && state.importAttested} disabled={locked || !validated()}
+    <label><input type="checkbox" data-dsh-pm-workbench="data-use-attestation" checked={validated() && state.importAttested} disabled={locked || !validated()}
       onChange={event => { if (!locked && validated()) onResult(store.setMaterialDraft(visibleEdit.current.verified!, event.currentTarget.checked)) }} />
-      我确认这是新写的合成测试材料，不含真实个人或客户数据</label>
+      {state.materialDraft?.dataClassification === 'synthetic'
+        ? '我确认这是内置合成测试材料'
+        : '我确认有权处理这份材料，并理解点击分析后会发送给当前 Harness 模型提供方'}</label>
     {reading && <p role="status">正在校验材料</p>}
     <button type="button" data-dsh-pm-workbench="save-material" disabled={locked || reading || !validated() || !state.importAttested}
       onClick={() => { if (!locked && validated() && store.getSnapshot().importAttested) onSave() }}>确认并保存材料</button>
@@ -71,6 +73,6 @@ export function MaterialPane({ store, state, pending, onResult, onReadStart, onR
     {persisted && <pre data-dsh-pm-workbench="source-text">{persisted.text}</pre>}
     <button type="button" data-dsh-pm-workbench="analyse-model" disabled={!source || pending || state.saveState !== 'saved' || state.selectedProject?.header.reviewStarted}
       onClick={() => { if (live()) onAnalyse() }}>发送给 Harness 模型并分析</button>
-    <p className="pmwb-notice">仅发送当前合成材料；模型结果仍需经过原文引用校验和人工确认</p>
+    <p className="pmwb-notice">点击分析会把当前材料发送给 Harness 当前模型提供方；模型结果仍需经过原文引用校验和人工确认</p>
   </>
 }

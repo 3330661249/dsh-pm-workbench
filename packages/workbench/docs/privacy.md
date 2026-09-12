@@ -1,25 +1,30 @@
 # Privacy
 
-Stage 3A uses one built-in synthetic Fixture and does not accept real
-interview/customer data. Synthetic source text and human edits are bounded and
-validated. Do not enter personal, customer or confidential content. Stage 3B
-model execution sends only explicitly attested synthetic material to the model
+Stage 3C accepts pasted text, `.txt`, and `.md` material. One built-in synthetic
+Fixture remains available for testing. Other text is classified as authorized
+real material and requires a separate, explicit confirmation before import.
+Model execution sends the selected source text and research goal to the model
 provider currently selected in Harness. It rejects unverified quotes and does
 not silently replace a failed model result with Fixture output.
 
 The Host owns Product state in the Harness profile. The Client keeps transient
 drafts and communicates through the six strict Product RPC endpoints. It does
 not persist Product drafts in browser storage. The implementation does not read
-Harness workspace sessions or credentials. Stage 3B reads only the selected
+Harness workspace sessions or credentials. Stage 3C reads only the selected
 provider/model identifiers and the structured response created for the current
-synthetic analysis. Public outer
-Connection failures use the fixed `internal` carrier; the Client ignores raw
-carrier messages and details.
+analysis. Public outer Connection failures use the fixed `internal` carrier;
+the Client ignores raw carrier messages and details.
 
 Product profile data is intended to survive package removal. Delete/remove is
 not secure erasure, and removing the plugin does not claim to delete profile
-storage. Task 11 checks only the static code graph and exact package bytes;
-actual restart persistence and removal/re-add behavior await Task 12.
+storage. Static package verification does not by itself prove restart
+persistence or removal/re-add behavior for a particular retained archive.
+
+Authorization in the panel records the user's decision for that import; it is
+not a legal consent system and does not verify the provider's retention policy.
+Confirm organizational permission, participant consent, and the current model
+provider's policy before using real material. Remove direct identifiers when
+possible.
 
 ## Conversation Skill boundary
 

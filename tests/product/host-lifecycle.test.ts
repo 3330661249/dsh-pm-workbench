@@ -60,7 +60,7 @@ describe('Product Host ownership and lifecycle', () => {
     const dispose = await apply(host.ctx)
     expect(inject).toEqual(['connection', 'storageDomain', 'agents', 'subagents', 'agentDefaultModel', 'tools'])
     expect(host.events).toEqual(['domain.open', 'route.handle'])
-    expect(await host.call()).toMatchObject({ ok: true, value: { status: 'accepted', value: { analysisMode: 'hybrid', modelAnalysis: true, realDataAllowed: false } } })
+    expect(await host.call()).toMatchObject({ ok: true, value: { status: 'accepted', value: { analysisMode: 'hybrid', modelAnalysis: true, realDataAllowed: true } } })
     await dispose()
     expect(host.events).toEqual(['domain.open', 'route.handle', 'route.dispose', 'repository.close', 'domain.close'])
     expect(close).toHaveBeenCalledTimes(1)

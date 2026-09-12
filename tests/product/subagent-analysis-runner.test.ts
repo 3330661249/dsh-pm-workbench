@@ -30,6 +30,9 @@ describe('SubagentStructuredAnalysisRunner', () => {
       outputSchema: expect.objectContaining({ type: 'object' }),
       prompt: expect.stringContaining('合成访谈'),
     }), expect.any(AbortSignal))
+    const request = vi.mocked(h.port.start).mock.calls[0]![0]
+    expect(request.prompt).toContain('只分析下面的访谈材料')
+    expect(request.prompt).not.toContain('只分析下面的合成访谈材料')
     expect(h.child.dispose).toHaveBeenCalledOnce()
     expect(h.parent.dispose).toHaveBeenCalledOnce()
   })

@@ -124,8 +124,9 @@ export class ConnectionRpcWorkbenchTransport implements WorkbenchTransport {
     const admitted = await this.admission.acquire(signal, async () => {
       if (endpoint !== 'projects.command') return true
       const command = input as ProjectCommand
-      return command.payload.kind !== 'source.importText'
-        || Object.hasOwn(FIXTURE_MANIFEST.sources, await webSha256Utf8(command.payload.text))
+      if (command.payload.kind !== 'source.importText') return true
+      if (command.payload.dataClassification === 'authorized-real') return command.payload.dataUseAttested === true
+      return Object.hasOwn(FIXTURE_MANIFEST.sources, await webSha256Utf8(command.payload.text))
     })
     if (admitted.kind !== 'admitted') return failed(admitted.kind === 'cancelled' ? 'cancelled' : 'protocol-invalid', false)
     const release = admitted.release

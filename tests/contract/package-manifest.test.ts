@@ -76,13 +76,14 @@ describe('workbench bundle manifest', () => {
 
 })
 
-test('ships truthful Stage 3A package documentation and the unchanged full Zod notice', async () => {
+test('ships truthful Stage 3C package documentation and the unchanged full Zod notice', async () => {
   const packageRoot = resolve(import.meta.dirname, '../../packages/workbench')
   for (const file of ['README.md', 'docs/compatibility.md', 'docs/privacy.md']) {
     const text = await readFile(resolve(packageRoot, file), 'utf8')
-    expect(text).toMatch(/Stage 3A/)
     expect(text).toMatch(/synthetic/i)
-    expect(text).toMatch(/Stage 3B.*synthetic/s)
+    expect(text).toMatch(/Stage 3C/s)
+    expect(text).toMatch(/authoriz/i)
+    expect(text).toMatch(/provider/i)
     expect(text).toMatch(/not secure erasure/)
     expect(text).not.toContain('/dsh-pm-workbench-v1')
   }

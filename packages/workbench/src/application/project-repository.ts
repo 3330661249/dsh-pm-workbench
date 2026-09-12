@@ -276,9 +276,10 @@ export class TableProjectRepository implements ProjectRepository {
       case 'project.delete': return { error: 'version-conflict', outcome: rejectProjectCommand(command, 'version-conflict') }
       case 'source.importText': {
         if (record.source) fail('source-locked')
+        const syntheticDataAttested = payload.syntheticDataAttested === true || payload.dataClassification === 'synthetic'
         const source = validatePersistedSource({ id: sourceRevisionIdSchema.parse(this.#newId()), projectId: record.header.id,
           revision: 1, displayName: payload.displayName, format: payload.format, text: payload.text,
-          utf8Bytes: utf8ByteLength(payload.text), contentHash: this.#dependencies.sha256Utf8(payload.text), syntheticDataAttested: true }, this.#dependencies.sha256Utf8)
+          utf8Bytes: utf8ByteLength(payload.text), contentHash: this.#dependencies.sha256Utf8(payload.text), syntheticDataAttested }, this.#dependencies.sha256Utf8)
         candidate = { ...record, source }
         contentChanged = true
         identities = { sourceRevisionId: source.id }

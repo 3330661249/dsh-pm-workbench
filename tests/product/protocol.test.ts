@@ -43,7 +43,7 @@ describe('strict Product protocol', () => {
     expect(Object.keys(productEndpointRegistry)).toEqual(['health', 'projects.list', 'projects.get', 'sources.get', 'artifacts.getMarkdown', 'projects.command'])
     expect(STAGE3A_COMMAND_KINDS).toEqual(inputs.slice(0, 8).map(input => input.payload.kind))
     expect(PRODUCT_COMMAND_SCHEMA_KINDS).toEqual(inputs.map(input => input.payload.kind))
-    expect(PRODUCT_CAPABILITIES).toEqual({ wireSchemaVersion: '1', dataSchemaVersion: '1', analysisMode: 'hybrid', modelAnalysis: true, realDataAllowed: false, maxHostInflightRequests: 16, maxClientInflightRequests: 8 })
+    expect(PRODUCT_CAPABILITIES).toEqual({ wireSchemaVersion: '1', dataSchemaVersion: '1', analysisMode: 'hybrid', modelAnalysis: true, realDataAllowed: true, maxHostInflightRequests: 16, maxClientInflightRequests: 8 })
   })
 
   it.each(inputs)('validates the complete strict command payload', input => {
@@ -68,6 +68,11 @@ describe('strict Product protocol', () => {
       expect(() => parseProductInput('projects.command', { ...input, payload: { ...input.payload, syntheticDataAttested: false } })).toThrowError('invalid-request')
     }
     expect(() => parseProductInput('projects.command', { ...inputs[0], expectedVersion: 1 })).toThrowError('invalid-request')
+    const authorizedReal = { ...inputs[2], payload: { kind: 'source.importText', text: '真实访谈材料',
+      displayName: 'interview.md', format: 'text/markdown', dataClassification: 'authorized-real', dataUseAttested: true } }
+    expect(parseProductInput('projects.command', authorizedReal)).toEqual(authorizedReal)
+    expect(() => parseProductInput('projects.command', { ...authorizedReal,
+      payload: { ...authorizedReal.payload, dataUseAttested: false } })).toThrowError('invalid-request')
   })
 
   it('rejects invalid versions, canonical IDs and unsafe numeric fields', () => {
@@ -163,7 +168,7 @@ describe('strict Product protocol', () => {
       const extra = { apiVersion: PRODUCT_API_VERSION, text: 'x'.repeat(productEndpointRegistry[endpoint].maxRequestUtf8Bytes) }
       expect(() => parseProductInput(endpoint, extra)).toThrowError('limit-exceeded')
     }
-    expect(() => parseProductOutcome('health', accepted({ ...PRODUCT_CAPABILITIES, realDataAllowed: true }))).toThrowError('invalid-outcome')
+    expect(() => parseProductOutcome('health', accepted({ ...PRODUCT_CAPABILITIES, realDataAllowed: false }))).toThrowError('invalid-outcome')
   })
 
   it('keeps all business and outer errors closed and does not echo thrown data', () => {

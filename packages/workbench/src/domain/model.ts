@@ -87,7 +87,7 @@ export interface SourceRevision {
   readonly text: string
   readonly utf8Bytes: number
   readonly contentHash: Sha256Hex
-  readonly syntheticDataAttested: true
+  readonly syntheticDataAttested: boolean
 }
 
 export interface EvidenceExcerpt {
@@ -364,7 +364,7 @@ export const sourceRevisionSchema: z.ZodType<SourceRevision> = z.strictObject({
   }),
   utf8Bytes: safeIntegerSchema.max(MAX_SOURCE_PERSISTED_UTF8_BYTES),
   contentHash: sha256HexSchema,
-  syntheticDataAttested: z.literal(true),
+  syntheticDataAttested: z.boolean(),
 })
 
 export const evidenceExcerptSchema: z.ZodType<EvidenceExcerpt> = z.strictObject({

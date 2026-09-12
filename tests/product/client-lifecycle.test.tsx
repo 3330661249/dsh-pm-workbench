@@ -222,10 +222,10 @@ describe('Product lifecycle and real store handlers', () => {
     expect(ui.one('confirm-create').props.disabled).toBe(true)
     ui.fire('project-name', 'onChange', { value: '新的合成项目' }); ui.fire('research-goal', 'onChange', { value: '' }); ui.render()
     ui.click('confirm-create'); await ui.settle(); expect(h.commands).toHaveLength(0)
-    ui.fire('create-synthetic-attestation', 'onChange', { checked: true }); ui.render(); ui.click('confirm-create'); await ui.settle()
-    expect(h.commands).toHaveLength(1); expect(h.commands[0]).toMatchObject({ expectedVersion: 0, payload: { kind: 'project.create', name: '新的合成项目', researchGoal: null, syntheticDataAttested: true } })
+    ui.fire('create-data-use-attestation', 'onChange', { checked: true }); ui.render(); ui.click('confirm-create'); await ui.settle()
+    expect(h.commands).toHaveLength(1); expect(h.commands[0]).toMatchObject({ expectedVersion: 0, payload: { kind: 'project.create', name: '新的合成项目', researchGoal: null, dataUseAttested: true } })
     expect(h.store.getSnapshot().importAttested).toBe(false); expect(ui.all('create-dialog')).toHaveLength(0)
-    ui.click('new-project'); ui.render(); expect(ui.one('create-synthetic-attestation').props.checked).toBe(false)
+    ui.click('new-project'); ui.render(); expect(ui.one('create-data-use-attestation').props.checked).toBe(false)
     const cancel = ui.one('create-dialog'); const event = { target: cancel.host, currentTarget: cancel.host, preventDefault: vi.fn(), stopPropagation: vi.fn() }
     cancel.props.onCancel(event); ui.render(); expect(event.preventDefault).toHaveBeenCalled(); expect(event.stopPropagation).toHaveBeenCalled()
     expect(ui.all('overlay')).toHaveLength(1); expect(ui.document.activeElement).toBe(ui.one('new-project').host)
@@ -234,8 +234,8 @@ describe('Product lifecycle and real store handlers', () => {
     const h = await setup({ empty: true }); const ui = h.ui(); await ui.settle()
     ui.click('load-fixture'); await ui.settle()
     expect(h.commands).toHaveLength(0); expect(h.store.getSnapshot().materialDraft?.text).toBe(BUILT_IN_SYNTHETIC_TEXT)
-    expect(ui.one('synthetic-attestation').props.checked).toBe(false)
-    ui.fire('synthetic-attestation', 'onChange', { checked: true }); ui.render(); ui.click('save-material'); await ui.settle()
+    expect(ui.one('data-use-attestation').props.checked).toBe(false)
+    ui.fire('data-use-attestation', 'onChange', { checked: true }); ui.render(); ui.click('save-material'); await ui.settle()
     expect(h.commands.map(command => command.payload.kind)).toEqual(['source.importText'])
     expect(ui.text(ui.one('source-text'))).toBe(BUILT_IN_SYNTHETIC_TEXT)
     ui.click('analyse-model'); await ui.settle()
@@ -377,7 +377,7 @@ describe('Product lifecycle and real store handlers', () => {
     expect(ui.all('discard-drafts').every(node => node.props.disabled)).toBe(true)
     gate.resolve(bytes.buffer); await ui.settle(); expect(ui.all('discard-drafts')).toHaveLength(1)
     ui.click('discard-drafts'); ui.render(); ui.click('confirm-discard'); await ui.settle()
-    ui.click('load-fixture'); await ui.settle(); ui.fire('synthetic-attestation', 'onChange', { checked: true }); ui.render()
+    ui.click('load-fixture'); await ui.settle(); ui.fire('data-use-attestation', 'onChange', { checked: true }); ui.render()
     const entered = deferred(); const wait = deferred()
     h.intercept(async (endpoint, _input, next) => { if (endpoint === 'projects.command') { entered.resolve(); await wait.promise }; return next() })
     ui.click('save-material'); await entered.promise; ui.render(); expect(ui.all('discard-drafts').every(node => node.props.disabled)).toBe(true)
@@ -437,7 +437,7 @@ describe('Product lifecycle and real store handlers', () => {
     ui.click('confirm-scope'); await ui.settle(); check()
     ui.click('step-1'); ui.render()
     ui.fire('human-reason', 'onChange', { value: 'NEW_REASON_CANARY' }); ui.render(); ui.click('discard-drafts'); ui.render(); check()
-    for (const marker of ['create-dialog', 'create-synthetic-attestation', 'confirm-create', 'project-name', 'research-goal', 'delete-dialog', 'confirm-delete',
+    for (const marker of ['create-dialog', 'create-data-use-attestation', 'confirm-create', 'project-name', 'research-goal', 'delete-dialog', 'confirm-delete',
       'discard-dialog', 'confirm-discard', 'source-text', 'evidence-context', 'evidence-quote', 'confirmation-summary', 'prd-preview', 'prd-history-item', 'prd-markdown', 'baseline-trace']) expect(seen.has(marker), marker).toBe(true)
   })
   it('constructs the default public connection client lazily and cleans its temporary download anchor through the port', async () => {
@@ -475,7 +475,7 @@ describe('Product lifecycle and real store handlers', () => {
   it('shows creation failures inside the active native dialog and makes uncertainty return to exact retry', async () => {
     const h = await setup({ empty: true }); const ui = h.ui(); await ui.settle()
     h.intercept(async (endpoint, _input, next) => endpoint === 'projects.command' ? { ok: false, error: { code: 'internal', message: 'RAW_CREATE_CANARY', details: {} } } : next())
-    ui.click('new-project'); ui.render(); ui.fire('project-name', 'onChange', { value: '仅供测试' }); ui.fire('create-synthetic-attestation', 'onChange', { checked: true }); ui.render()
+    ui.click('new-project'); ui.render(); ui.fire('project-name', 'onChange', { value: '仅供测试' }); ui.fire('create-data-use-attestation', 'onChange', { checked: true }); ui.render()
     ui.click('confirm-create'); await ui.settle()
     expect(ui.text(ui.one('create-dialog'))).toContain('工作台暂时无法连接'); expect(ui.text()).not.toContain('RAW_CREATE_CANARY')
     expect(ui.one('confirm-create').props.disabled).toBe(true)
@@ -510,8 +510,8 @@ describe('Product lifecycle and real store handlers', () => {
     expect(ui.one('save-material').props.disabled).toBe(true)
     gates[1]!.resolve(); const latest = await reads.mock.results[1]!.value; await ui.settle()
     expect(h.store.getSnapshot().materialDraft).toBe(latest); expect(latest.text).toBe(BUILT_IN_SYNTHETIC_TEXT)
-    expect(ui.one('synthetic-attestation').props.checked).toBe(false)
-    ui.fire('synthetic-attestation', 'onChange', { checked: true }); ui.render(); expect(ui.one('save-material').props.disabled).toBe(false)
+    expect(ui.one('data-use-attestation').props.checked).toBe(false)
+    ui.fire('data-use-attestation', 'onChange', { checked: true }); ui.render(); expect(ui.one('save-material').props.disabled).toBe(false)
     ui.click('save-material'); await ui.settle()
     expect(h.commands).toHaveLength(1); expect(h.commands[0]!.payload).toMatchObject({ kind: 'source.importText', text: BUILT_IN_SYNTHETIC_TEXT })
     expect(ui.text(ui.one('source-text'))).toBe(BUILT_IN_SYNTHETIC_TEXT)
@@ -594,7 +594,7 @@ describe('Product lifecycle and real store handlers', () => {
     expect(ui.all('overlay')).toHaveLength(1); expect(h.store.getSnapshot().isOpen).toBe(true)
     dispose()
   })
-  it.each(['save-material', 'synthetic-attestation'] as const)('refuses retained %s handlers from an unmounted material pane after reopen', async marker => {
+  it.each(['save-material', 'data-use-attestation'] as const)('refuses retained %s handlers from an unmounted material pane after reopen', async marker => {
     const h = await setup({ empty: true }); const draft = await readMaterialDraft({ kind: 'paste', text: BUILT_IN_SYNTHETIC_TEXT, displayName: 'old.txt' })
     h.store.setMaterialDraft(draft, true); const ui = h.ui(); await ui.settle()
     expect(ui.one('save-material').props.disabled).toBe(false)

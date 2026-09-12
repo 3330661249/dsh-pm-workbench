@@ -8,14 +8,14 @@ import type { ProjectView, ProjectSummary, SourceView, MarkdownView } from '../.
 import type { WorkbenchTransport, WorkbenchTransportErrorCode, WorkbenchResult, Stage3aProjectCommand } from './transport.js'
 import { isVerifiedMarkdown } from './transport.js'
 import type { WorkbenchBrowserPort } from './browser-port.js'
-import { canPersistFixtureDraft, type MaterialDraft } from './material-input.js'
+import { canPersistMaterialDraft, type MaterialDraft } from './material-input.js'
 
 type Payload = Stage3aProjectCommand['payload']
 type RequirementPatch = Omit<Extract<Payload, { kind: 'requirement.update' }>, 'kind' | 'requirementId'>
 type Accepted = Extract<ProjectCommandOutcome, { status: 'accepted' }>
 export type SaveState = 'unsaved' | 'saving' | 'saved' | 'failed' | 'uncertain'
 export type StoreErrorCode = WorkbenchTransportErrorCode | ProductErrorCode | 'unsaved' | 'saving' | 'failed' | 'uncertain'
-  | 'closed' | 'disposed' | 'project-switch-blocked' | 'confirmation-stale' | 'refresh-required'
+  | 'closed' | 'disposed' | 'project-switch-blocked' | 'confirmation-stale' | 'refresh-required' | 'data-use-attestation-required'
 export type StoreResult<T = void> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly code: StoreErrorCode }
 export type ConfirmationSnapshot = { readonly ok: false; readonly reason: 'unsaved' | 'saving' | 'failed' | 'uncertain' }
   | { readonly ok: true; readonly projectVersion: number; readonly contentVersion: number; readonly project: ProjectView }
@@ -486,10 +486,10 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
     reorderRequirements: requirementIds => enqueue({ kind: 'requirements.reorder', requirementIds }),
     getConfirmationSnapshot, prepareConfirmation, publishConfirmedBaseline, renderPublishedBaseline,
     async createProject(input, creationAttested) {
-      if (creationAttested !== true) return fail('synthetic-attestation-required')
+      if (creationAttested !== true) return fail('data-use-attestation-required')
       if (blocked()) return fail('project-switch-blocked')
       try { return await command(parseProductInput('projects.command', { ...api, projectId: ids.createProjectId(), commandId: ids.createCommandId(),
-        expectedVersion: 0, payload: { kind: 'project.create', ...input, syntheticDataAttested: true } }) as Stage3aProjectCommand) }
+        expectedVersion: 0, payload: { kind: 'project.create', ...input, dataUseAttested: true } }) as Stage3aProjectCommand) }
       catch { return fail('protocol-invalid') }
     },
     setMaterialDraft(draft, importAttested) {
@@ -499,11 +499,12 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
     },
     async importMaterial() {
       const draft = state.materialDraft
-      if (!state.importAttested) return fail('synthetic-attestation-required')
-      if (!draft || !canPersistFixtureDraft(draft, state.importAttested)) return fail('fixture-not-allowed')
+      if (!state.importAttested) return fail('data-use-attestation-required')
+      if (!draft || !canPersistMaterialDraft(draft, state.importAttested)) return fail('fixture-not-allowed')
       try { return await command(parseProductInput('projects.command', { ...api, projectId: state.selectedProjectId,
         expectedVersion: state.selectedProject?.header.projectVersion, commandId: ids.createCommandId(), payload: {
-          kind: 'source.importText', text: draft.text, displayName: draft.displayName, format: draft.format, syntheticDataAttested: true,
+          kind: 'source.importText', text: draft.text, displayName: draft.displayName, format: draft.format,
+          dataClassification: draft.dataClassification, dataUseAttested: true,
         } }) as Stage3aProjectCommand) } catch { return fail('protocol-invalid') }
     },
     async loadSource() {

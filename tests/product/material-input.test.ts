@@ -7,9 +7,11 @@ function file(text: string, name = 'SYNTHETIC.MD', type = 'text/markdown') {
 }
 it('allows only the exact Fixture hash plus a separate import attestation', async () => {
   const draft = await readMaterialDraft({ kind: 'paste', text: BUILT_IN_SYNTHETIC_TEXT, displayName: 'synthetic.txt' })
+  expect(draft.dataClassification).toBe('synthetic')
   expect(canPersistFixtureDraft(draft, false)).toBe(false)
   expect(canPersistFixtureDraft(draft, true)).toBe(true)
   const stranger = await readMaterialDraft({ kind: 'paste', text: '新写的陌生合成文字', displayName: 'sample.txt' })
+  expect(stranger.dataClassification).toBe('authorized-real')
   expect(stranger.text).toBe('新写的陌生合成文字')
   expect(canPersistFixtureDraft(stranger, true)).toBe(false)
   expect(canPersistFixtureDraft({ ...stranger, contentHash: draft.contentHash }, true)).toBe(false)

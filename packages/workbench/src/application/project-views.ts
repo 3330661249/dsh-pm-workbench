@@ -30,7 +30,7 @@ const sourceMetadataShape = {
   projectId: projectIdSchema, sourceRevisionId: sourceRevisionIdSchema, revision: z.literal(1),
   displayName: sourceDisplayNameSchema, format: z.enum(['pasted', 'text/plain', 'text/markdown']),
   utf8Bytes: integer.max(MAX_SOURCE_PERSISTED_UTF8_BYTES), contentHash: sha256HexSchema,
-  syntheticDataAttested: z.literal(true),
+  syntheticDataAttested: z.boolean(),
 }
 export const sourceMetadataSchema = z.strictObject(sourceMetadataShape)
 export const sourceViewSchema = z.strictObject({

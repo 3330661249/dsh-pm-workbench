@@ -19,6 +19,7 @@ export interface MaterialDraft {
   readonly format: 'pasted' | 'text/plain' | 'text/markdown'
   readonly utf8Bytes: number
   readonly contentHash: Sha256Hex
+  readonly dataClassification: 'synthetic' | 'authorized-real'
 }
 const verifiedDrafts = new WeakSet<object>()
 export async function readMaterialDraft(input: MaterialInput): Promise<MaterialDraft> {
@@ -41,11 +42,18 @@ export async function readMaterialDraft(input: MaterialInput): Promise<MaterialD
   }
   if (hasUnpairedSurrogate(text) || text.includes('\0') || !text.trim() || text.length > MAX_SOURCE_UTF16_CODE_UNITS
     || utf8ByteLength(text) > MAX_SOURCE_RAW_UTF8_BYTES) throw new Error('invalid-source')
-  const draft = Object.freeze({ text, displayName, format, utf8Bytes: utf8ByteLength(text), contentHash: await webSha256Utf8(text) })
+  const contentHash = await webSha256Utf8(text)
+  const dataClassification = Object.hasOwn(FIXTURE_MANIFEST.sources, contentHash) ? 'synthetic' as const : 'authorized-real' as const
+  const draft = Object.freeze({ text, displayName, format, utf8Bytes: utf8ByteLength(text), contentHash, dataClassification })
   verifiedDrafts.add(draft)
   return draft
 }
 /** Attestation is supplied independently for this import; object ownership prevents hash substitution. */
 export function canPersistFixtureDraft(draft: MaterialDraft, importAttested: boolean): boolean {
-  return importAttested === true && verifiedDrafts.has(draft) && Object.hasOwn(FIXTURE_MANIFEST.sources, draft.contentHash)
+  return importAttested === true && verifiedDrafts.has(draft) && draft.dataClassification === 'synthetic'
+    && Object.hasOwn(FIXTURE_MANIFEST.sources, draft.contentHash)
+}
+/** Real text is accepted only from the exact verified browser-owned draft after a separate user attestation. */
+export function canPersistMaterialDraft(draft: MaterialDraft, importAttested: boolean): boolean {
+  return importAttested === true && verifiedDrafts.has(draft)
 }

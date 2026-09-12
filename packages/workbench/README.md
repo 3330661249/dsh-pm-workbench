@@ -27,19 +27,24 @@ overlay. The six endpoints are `health`, `projects.list`, `projects.get`,
 bundled into both outputs; React and the observed public Harness runtime imports
 remain external. There are no runtime dependencies in the package manifest.
 
-The visual workbench panel still accepts only synthetic material. Stage 3B can
-send that synthetic material to the model currently selected in Harness through
-a fresh, task-owned analysis agent. The child exposes only structured result
-capture; every returned quote must match the frozen source exactly or the
-analysis is rejected. Provider and model identifiers are retained with the
-analysis. The panel does not yet accept real interview/customer data. Synthetic source import, evidence
-review, human requirement revision, priority confirmation, immutable baselines,
-and deterministic Markdown are implemented in source. Real text analysis is
-currently available through `/interview-to-prd` in a Harness conversation.
+The visual workbench panel accepts pasted text, `.txt`, and `.md` material.
+Built-in synthetic material remains available for safe testing. Other text is
+classified as authorized real material and cannot be imported until the user
+explicitly confirms that it may be processed by the model provider currently
+selected in Harness. Stage 3C sends the selected material through a fresh,
+task-owned analysis agent. The child exposes only structured result capture;
+every returned quote must match the frozen source exactly or the analysis is
+rejected. Provider and model identifiers are retained with the analysis.
+
+Source import, evidence review, human requirement revision, priority
+confirmation, immutable baselines, and deterministic Markdown PRD generation
+are implemented in the panel. Audio, DOCX, PDF, and multi-interview aggregation
+are not part of this release.
 
 Product data persists in the Harness profile by design. Package removal does
-not erase that profile data. Delete/remove is not secure erasure. Use only
-synthetic, non-identifying material.
+not erase that profile data. Delete/remove is not secure erasure. Use real
+material only when the organization and participants permit the selected model
+provider to process it; remove direct identifiers when possible.
 
 ## Evidence boundary
 

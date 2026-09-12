@@ -21,7 +21,7 @@ export const PRODUCT_RPC_CHANNEL = '/dsh-pm-workbench-product-v1' as const
 export const PRODUCT_API_VERSION = 'pmwb-product-v1' as const
 export const PRODUCT_CAPABILITIES = Object.freeze({
   wireSchemaVersion: '1', dataSchemaVersion: '1', analysisMode: 'hybrid', modelAnalysis: true,
-  realDataAllowed: false, maxHostInflightRequests: 16, maxClientInflightRequests: 8,
+  realDataAllowed: true, maxHostInflightRequests: 16, maxClientInflightRequests: 8,
 } as const)
 export const PRODUCT_ERROR_CODES = Object.freeze([
   'not-found', 'project-deleted', 'project-limit-reached', 'version-conflict',
@@ -61,7 +61,7 @@ export const productCommandPayloadSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('project.create'),
     name: boundedText(MAX_PROJECT_NAME_CODE_POINTS, MAX_PROJECT_NAME_UTF8_BYTES),
     researchGoal: boundedText(MAX_RESEARCH_GOAL_CODE_POINTS, MAX_RESEARCH_GOAL_UTF8_BYTES, false).nullable(),
-    syntheticDataAttested: z.literal(true),
+    syntheticDataAttested: z.literal(true).optional(), dataUseAttested: z.literal(true).optional(),
   }),
   z.strictObject({ kind: z.literal('project.delete') }),
   z.strictObject({ kind: z.literal('source.importText'),
@@ -69,7 +69,9 @@ export const productCommandPayloadSchema = z.discriminatedUnion('kind', [
       !hasUnpairedSurrogate(value) && !value.includes('\0') && value.trim().length > 0
       && utf8ByteLength(value) <= MAX_SOURCE_PERSISTED_UTF8_BYTES),
     displayName: sourceDisplayNameSchema,
-    format: z.enum(['pasted', 'text/plain', 'text/markdown']), syntheticDataAttested: z.literal(true),
+    format: z.enum(['pasted', 'text/plain', 'text/markdown']),
+    syntheticDataAttested: z.literal(true).optional(), dataUseAttested: z.literal(true).optional(),
+    dataClassification: z.enum(['synthetic', 'authorized-real']).optional(),
   }),
   z.strictObject({ kind: z.literal('analysis.runFixture'), sourceRevisionId: sourceRevisionIdSchema }),
   requirementUpdate,
@@ -81,7 +83,14 @@ export const productCommandPayloadSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('prd.render'), baselineId: baselineIdSchema, confirmedContentVersion: integer }),
   // Reserved wire shape only. No Stage 3A execution path exists.
   z.strictObject({ kind: z.literal('analysis.runHarnessModel'), sourceRevisionId: sourceRevisionIdSchema }),
-])
+]).superRefine((payload, context) => {
+  if (payload.kind !== 'project.create' && payload.kind !== 'source.importText') return
+  const legacy = payload.syntheticDataAttested === true && payload.dataUseAttested === undefined
+    && (payload.kind !== 'source.importText' || payload.dataClassification === undefined)
+  const current = payload.syntheticDataAttested === undefined && payload.dataUseAttested === true
+    && (payload.kind !== 'source.importText' || payload.dataClassification !== undefined)
+  if (!legacy && !current) context.addIssue({ code: 'custom', message: 'data-use-attestation-required' })
+})
 export type StrictProjectCommandPayload = ReadonlyValue<z.infer<typeof productCommandPayloadSchema>>
 export const projectCommandSchema = z.strictObject({
   ...api, projectId: projectIdSchema, commandId: commandIdSchema, expectedVersion: integer,
@@ -98,7 +107,7 @@ export type GetSourceInput = ReadonlyValue<z.infer<typeof getSourceInputSchema>>
 export type GetMarkdownInput = ReadonlyValue<z.infer<typeof getMarkdownInputSchema>>
 export const productCapabilitiesSchema = z.strictObject({
   wireSchemaVersion: z.literal('1'), dataSchemaVersion: z.literal('1'), analysisMode: z.literal('hybrid'),
-  modelAnalysis: z.literal(true), realDataAllowed: z.literal(false),
+  modelAnalysis: z.literal(true), realDataAllowed: z.literal(true),
   maxHostInflightRequests: z.literal(16), maxClientInflightRequests: z.literal(8),
 })
 export const productBusinessErrorSchema = z.strictObject({ code: z.enum(PRODUCT_ERROR_CODES) })

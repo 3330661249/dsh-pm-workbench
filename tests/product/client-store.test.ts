@@ -196,10 +196,10 @@ it('blocks immediate confirmation before flush, after failed save and during adm
 })
 it('creation requires its own literal attestation even when material has import attestation', async () => {
   const h = await setup()
-  expect(await h.store.createProject({ name: 'Synthetic new', researchGoal: null }, false)).toMatchObject({ ok: false, code: 'synthetic-attestation-required' })
+  expect(await h.store.createProject({ name: 'Synthetic new', researchGoal: null }, false)).toMatchObject({ ok: false, code: 'data-use-attestation-required' })
   expect(h.commands).toHaveLength(0)
   expect(await h.store.createProject({ name: 'Synthetic new', researchGoal: null }, true)).toMatchObject({ ok: true })
-  expect(h.commands[0]).toMatchObject({ expectedVersion: 0, payload: { kind: 'project.create', syntheticDataAttested: true } })
+  expect(h.commands[0]).toMatchObject({ expectedVersion: 0, payload: { kind: 'project.create', dataUseAttested: true } })
 })
 
 it('rejects the displayed confirmation token after even a clean authoritative version change', async () => {
@@ -243,7 +243,7 @@ it('retains unsubmitted material across close and refuses a project switch until
   expect(h.store.getConfirmationSnapshot()).toMatchObject({ ok: false, reason: 'unsaved' })
   expect(await h.store.selectProject(OTHER_PROJECT_ID)).toMatchObject({ ok: false, code: 'project-switch-blocked' })
   h.store.close(); await h.store.open(); expect(h.store.getSnapshot().materialDraft).toBe(draft)
-  expect(await h.store.importMaterial()).toMatchObject({ ok: false, code: 'synthetic-attestation-required' })
+  expect(await h.store.importMaterial()).toMatchObject({ ok: false, code: 'data-use-attestation-required' })
 })
 it('imports a separately attested Fixture into a created empty project and clears only its saved form', async () => {
   const h = await setup(); await h.store.createProject({ name: 'Synthetic', researchGoal: null }, true)
@@ -252,6 +252,15 @@ it('imports a separately attested Fixture into a created empty project and clear
   expect(await h.store.importMaterial()).toMatchObject({ ok: true })
   expect(h.store.getSnapshot()).toMatchObject({ saveState: 'saved', dirty: false, materialDirty: false })
   expect(await h.store.loadSource()).toMatchObject({ ok: true, value: { text: BUILT_IN_SYNTHETIC_TEXT } })
+})
+it('imports separately authorized real text with an explicit data classification', async () => {
+  const h = await setup(); await h.store.createProject({ name: 'Authorized interview', researchGoal: null }, true)
+  const draft = await readMaterialDraft({ kind: 'paste', text: '受访者：每次整理审批记录都要来回核对。', displayName: 'interview.txt' })
+  h.store.setMaterialDraft(draft, true)
+  expect(await h.store.importMaterial()).toMatchObject({ ok: true })
+  expect(h.commands.at(-1)?.payload).toEqual({ kind: 'source.importText', text: draft.text,
+    displayName: 'interview.txt', format: 'pasted', dataClassification: 'authorized-real', dataUseAttested: true })
+  expect(h.store.getSnapshot().selectedProject?.source?.syntheticDataAttested).toBe(false)
 })
 it('a synchronous reentrant close during invocation retains the exact uncertain command', async () => {
   const h = await setup()
