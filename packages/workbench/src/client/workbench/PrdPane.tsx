@@ -16,6 +16,7 @@ export function PrdPane({ state, onSelect, onDownload, onRegenerate, pending = f
     {summaries.length === 0 && <p>确认本期需求后，可在此查看 PRD。</p>}
     <div className="pmwb-actions">{summaries.map((item, index) => <button type="button" key={item.prdRevisionId} data-dsh-pm-workbench="prd-history-item"
       data-prd-revision-id={item.prdRevisionId} data-baseline-id={item.baselineId} data-prd-hash={item.contentHash} data-prd-current={String(item.status === 'current')}
+      aria-pressed={item.prdRevisionId === state.selectedPrdRevisionId}
       onClick={() => onSelect?.(item.prdRevisionId)}>PRD {index + 1} · {item.status === 'current' ? '当前内容' : '历史内容'}</button>)}
       {onRegenerate && <button type="button" data-dsh-pm-workbench="regenerate-prd" disabled={!canRegenerate} onClick={onRegenerate}>{pending ? '起草中…' : '重新生成'}</button>}
     </div>

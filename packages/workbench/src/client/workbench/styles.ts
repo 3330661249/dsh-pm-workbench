@@ -155,6 +155,7 @@ body:has(dialog[data-dsh-pm-workbench=overlay][open]) [data-slot=sidebar] * { vi
 .pmwb-surface > header { display: flex; align-items: flex-end; justify-content: space-between; gap: 28px; padding-bottom: 20px; margin-bottom: 22px; border-bottom: 1px solid var(--pmwb-line-soft); }
 .pmwb-surface > header span { color: var(--pmwb-subtle); font-size: 11px; letter-spacing: .08em; }
 .pmwb-surface > header h2 { margin-top: 3px; font-size: 26px; font-weight: 650; letter-spacing: -.025em; }
+.pmwb-surface > header > div { min-width: 0; overflow-wrap: anywhere; }
 .pmwb-surface > header p { max-width: 46ch; color: var(--pmwb-muted); text-align: right; }
 .pmwb-review {
   width: 100%; height: calc(100dvh - 136px); min-height: 0;
@@ -188,7 +189,7 @@ body:has(dialog[data-dsh-pm-workbench=overlay][open]) [data-slot=sidebar] * { vi
 .pmwb-focus-header > div { min-width: 0; flex: 1; }
 .pmwb-focus-header > div > span { display: block; margin-bottom: 8px; color: var(--pmwb-subtle); font-size: 12px; }
 .pmwb-focus-header textarea {
-  display: block; width: 100%; min-height: 48px; resize: none; overflow: hidden; padding: 0; border: 0; border-radius: 5px;
+  display: block; width: 100%; min-height: 48px; resize: vertical; overflow: auto; padding: 0; border: 0; border-radius: 5px;
   color: var(--pmwb-text); background: transparent; font-size: clamp(27px, 2.25vw, 33px); font-weight: 650; line-height: 1.22; letter-spacing: -.025em;
 }
 .pmwb-focus-header textarea:hover:not(:disabled), .pmwb-focus-header textarea:focus { background: rgba(255, 255, 255, .035); }
@@ -269,7 +270,8 @@ body:has(dialog[data-dsh-pm-workbench=overlay][open]) [data-slot=sidebar] * { vi
 .pmwb-review-actions { display: grid; gap: 14px; margin-top: auto; padding-top: 22px; border-top: 1px solid var(--pmwb-line-soft); }
 .pmwb-review-actions p { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--pmwb-subtle); font-size: 11px; }
 .pmwb-review-actions p strong { color: var(--pmwb-text); font-weight: 580; }
-.pmwb .pmwb-primary { width: 100%; min-width: 0; min-height: 46px; padding: 10px 18px; border-color: rgba(238, 238, 238, .84); color: #161616; background: #eeeeee; font-weight: 650; white-space: nowrap; }
+.pmwb .pmwb-primary { width: auto; max-width: 100%; min-width: 0; min-height: 46px; padding: 10px 18px; border-color: rgba(238, 238, 238, .84); color: #161616; background: #eeeeee; font-weight: 650; white-space: normal; }
+.pmwb-review-actions .pmwb-primary { width: 100%; }
 .pmwb .pmwb-primary:hover:not(:disabled) { border-color: #eeeeee; background: #dedede; }
 .pmwb-review-empty { width: min(640px, calc(100vw - 220px)); padding: 36px; border: 1px solid var(--pmwb-line); border-radius: 18px; background: var(--pmwb-glass-strong); backdrop-filter: blur(22px); }
 .pmwb-review-empty h2 { margin-bottom: 8px; }
@@ -286,7 +288,9 @@ body:has(dialog[data-dsh-pm-workbench=overlay][open]) [data-slot=sidebar] * { vi
 .pmwb-notice { display: inline-block; margin-top: 14px !important; padding: 6px 9px; border-radius: 7px; color: var(--pmwb-muted); background: rgba(255,255,255,.04); font-size: 11px; }
 .pmwb [data-dsh-pm-workbench=source-text] { max-height: 180px; overflow: auto; margin-top: 10px; padding: 12px; border: 1px solid var(--pmwb-line-soft); border-radius: 9px; color: var(--pmwb-muted); background: rgba(0,0,0,.18); white-space: pre-wrap; }
 .pmwb-prd-surface { width: min(1000px, calc(100vw - 230px)); }
-.pmwb-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.pmwb-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 16px 0; }
+.pmwb .pmwb-actions > span { min-width: 0; color: var(--pmwb-muted); font-size: 12px; }
+.pmwb [data-dsh-pm-workbench=prd-history-item][aria-pressed=true] { border-color: rgba(255,255,255,.6); background: rgba(255,255,255,.12); }
 .pmwb [data-dsh-pm-workbench=prd-preview] { margin-top: 18px; }
 .pmwb [data-dsh-pm-workbench=prd-markdown] { max-height: 520px; overflow: auto; padding: 20px; border: 1px solid var(--pmwb-line-soft); border-radius: 10px; color: var(--pmwb-muted); background: rgba(0,0,0,.18); white-space: pre-wrap; overflow-wrap: anywhere; }
 .pmwb [data-dsh-pm-workbench=baseline-trace] { color: var(--pmwb-subtle); font-size: 11px; }
@@ -440,8 +444,8 @@ dialog[data-dsh-pm-workbench=create-dialog]::backdrop { background: rgba(3, 3, 3
   .pmwb-review-actions { padding-top: 14px; }
   .pmwb .pmwb-primary { min-height: 42px; }
 }
-@media (max-width: 820px) {
-  .pmwb-shell { height: 100%; min-height: 100%; overflow-y: auto; grid-template-rows: auto minmax(0, 1fr); padding: 14px 14px 28px; gap: 14px; }
+@media (max-width: 1100px) {
+  .pmwb-shell { height: 100%; min-height: 100%; overflow-y: auto; grid-template-rows: auto 1fr; padding: 14px 14px 28px; gap: 14px; }
   .pmwb-shell-header { height: auto; min-height: 58px; grid-template-columns: 1fr auto; gap: 8px; padding: 0; }
   .pmwb-project-switcher { position: static; grid-column: 1; grid-row: 1; width: auto; padding: 0 70px 0 0; }
   .pmwb-project-switcher > summary { min-height: 44px; }
@@ -461,11 +465,16 @@ dialog[data-dsh-pm-workbench=create-dialog]::backdrop { background: rgba(3, 3, 3
   .pmwb-decision-palette > section + section { margin-top: 12px; padding-top: 12px; }
   .pmwb-review-actions { margin-top: 20px; }
   .pmwb-review-actions p { justify-content: space-between; }
-  .pmwb .pmwb-primary { width: 100%; min-width: 0; }
   .pmwb-insight-grid { grid-template-columns: 1fr; }
   .pmwb-insight-grid > section { padding: 0; }
   .pmwb-insight-grid > section + section { padding: 16px 0 0; margin-top: 16px; border-left: 0; border-top: 1px solid var(--pmwb-line-soft); }
-  .pmwb-surface, .pmwb-prd-surface, .pmwb-review-empty { width: 100%; max-height: calc(100dvh - 145px); }
+  .pmwb-surface, .pmwb-prd-surface, .pmwb-review-empty { width: 100%; max-height: none; overflow: visible; }
+  .pmwb [data-dsh-pm-workbench=prd-markdown] { max-height: none; }
+}
+@media (max-width: 640px) {
+  .pmwb-surface > header { flex-direction: column; align-items: stretch; gap: 10px; }
+  .pmwb-surface > header p { max-width: none; text-align: left; font-size: 13px; }
+  .pmwb-actions > .pmwb-primary { width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   .pmwb *, .pmwb *::before, .pmwb *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
