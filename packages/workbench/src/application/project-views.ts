@@ -43,7 +43,7 @@ export type SourceView = ReadonlyValue<z.infer<typeof sourceViewSchema>>
 const prdMetadataShape = {
   projectId: projectIdSchema, prdRevisionId: prdRevisionIdSchema, sourceRevisionId: sourceRevisionIdSchema,
   baselineId: baselineIdSchema, baselineContentVersion: integer,
-  rendererVersion: z.literal('pmwb-prd-v1'), contentHash: sha256HexSchema,
+  rendererVersion: z.enum(['pmwb-prd-v1', 'pmwb-create-prd-v1']), contentHash: sha256HexSchema,
   utf8Bytes: positive.max(MAX_PRD_MARKDOWN_UTF8_BYTES), createdAt: timestamp,
 }
 export const markdownViewSchema = z.strictObject({

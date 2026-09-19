@@ -36,6 +36,21 @@ function setup(options: { engine?: InsightEngine; renderer?: PrdRenderer; record
 }
 
 describe('Stage 3A project command service', () => {
+  it('awaits model drafting before saving a PRD and replays the saved result without another model call', async () => {
+    const real = new DeterministicPrdRenderer(nodeSha256Utf8)
+    const drafting = vi.fn(async (input: Parameters<PrdRenderer['render']>[0]) => real.render(input))
+    const { ready, run, input, service, record } = setup({ renderer: { render: drafting } as unknown as PrdRenderer })
+    await ready()
+    await run({ kind: 'requirement.update', requirementId: record().requirementOrder[0]!, decision: 'include' })
+    await run({ kind: 'baseline.publish', confirmedContentVersion: 3 })
+    const request = input({ kind: 'prd.render', baselineId: record().currentBaselineId!, confirmedContentVersion: 3 })
+    const outcome = await service.command(request)
+    expect(outcome.status).toBe('accepted')
+    expect(record().prdRevisions).toHaveLength(1)
+    expect(await service.command(request)).toEqual(outcome)
+    expect(drafting).toHaveBeenCalledOnce()
+  })
+
   it('imports one exact source atomically and exposes empty project/source/PRD behavior', async () => {
     const { service, table, record, importSource } = setup()
     expect(await service.get({ apiVersion: 'pmwb-product-v1', projectId: SMALL_PROJECT_ID })).toMatchObject({ status: 'accepted', value: { source: null, analysis: null, generatedRequirements: [] } })

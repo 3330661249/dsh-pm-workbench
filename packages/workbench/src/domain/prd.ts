@@ -27,14 +27,14 @@ export interface CurrentBaselineInput {
 }
 
 export interface PrdRenderer {
-  render(input: CurrentBaselineInput): PrdRevision
+  render(input: CurrentBaselineInput, signal?: AbortSignal): PrdRevision | Promise<PrdRevision>
 }
 
 function failPrd(code = 'invalid-prd-input'): never {
   throw new Error(code)
 }
 
-function escapeInline(value: string): string {
+export function escapeInline(value: string): string {
   return value
     .replace(/\r\n|\r|\n/g, ' ')
     .replace(/&/g, '&amp;')
@@ -154,7 +154,7 @@ export function renderPmwbPrdV1(baseline: RequirementBaseline): string {
   ].join('\n')
 }
 
-function validateBaseline(
+export function validateBaseline(
   baseline: RequirementBaseline,
   sha256Utf8: (value: string) => Sha256Hex,
 ): void {

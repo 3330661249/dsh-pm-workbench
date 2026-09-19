@@ -105,6 +105,9 @@ const zodInputs = new Set([
   "node_modules/zod/v4/locales/zh-TW.js"
 ])
 const hostApplicationInputs = new Set([
+  "packages/workbench/skills/create-prd/SKILL.md",
+  "packages/workbench/src/analysis/create-prd-renderer.ts",
+  "packages/workbench/src/integration/harness-rc6/subagent-prd-runner.ts",
   "packages/workbench/src/analysis/fixture-engine.ts",
   "packages/workbench/src/analysis/fixture-manifest.ts",
   "packages/workbench/src/analysis/harness-model-engine.ts",
@@ -158,6 +161,10 @@ const clientApplicationInputs = new Set([
   "packages/workbench/src/protocol/product.ts"
 ])
 const reviewedImports = {
+  "packages/workbench/skills/create-prd/SKILL.md": [],
+  "packages/workbench/src/analysis/create-prd-renderer.ts": [["node_modules/zod/index.js", "import-statement", false], ["packages/workbench/src/domain/limits.ts", "import-statement", false], ["packages/workbench/src/domain/model.ts", "import-statement", false], ["packages/workbench/src/domain/prd.ts", "import-statement", false]],
+  "packages/workbench/src/integration/harness-rc6/subagent-prd-runner.ts": [["packages/workbench/src/analysis/create-prd-renderer.ts", "import-statement", false], ["packages/workbench/src/analysis/types.ts", "import-statement", false]],
+
   "node_modules/zod/index.js": [["node_modules/zod/v4/classic/external.js","import-statement",false],["node_modules/zod/v4/classic/external.js","import-statement",false]],
   "node_modules/zod/v4/classic/checks.js": [["node_modules/zod/v4/core/index.js","import-statement",false]],
   "node_modules/zod/v4/classic/coerce.js": [["node_modules/zod/v4/core/index.js","import-statement",false],["node_modules/zod/v4/classic/schemas.js","import-statement",false]],
@@ -272,7 +279,7 @@ const reviewedImports = {
   "packages/workbench/src/domain/text.ts": [["packages/workbench/src/domain/limits.ts","import-statement",false],["packages/workbench/src/domain/model.ts","import-statement",false]],
   "packages/workbench/src/index.ts": [["packages/workbench/src/config.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/product-host.ts","import-statement",false]],
   "packages/workbench/src/integration/harness-rc6/cordis-analysis-port.ts": [["node:crypto","import-statement",true],["@deepseek-ai/dsh-agent-default-model","import-statement",true],["@deepseek-ai/dsh-session","import-statement",true],["@deepseek-ai/dsh-tools","import-statement",true]],
-  "packages/workbench/src/integration/harness-rc6/product-host.ts": [["node:crypto","import-statement",true],["packages/workbench/src/analysis/fixture-engine.ts","import-statement",false],["packages/workbench/src/analysis/harness-model-engine.ts","import-statement",false],["packages/workbench/src/analysis/fixture-manifest.ts","import-statement",false],["packages/workbench/src/analysis/types.ts","import-statement",false],["packages/workbench/src/application/node-sha256.ts","import-statement",false],["packages/workbench/src/application/product-handler.ts","import-statement",false],["packages/workbench/src/application/project-repository.ts","import-statement",false],["packages/workbench/src/application/project-service.ts","import-statement",false],["packages/workbench/src/protocol/product.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/cordis-analysis-port.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/project-domain.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/subagent-analysis-runner.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/project-domain.ts","import-statement",false]],
+  "packages/workbench/src/integration/harness-rc6/product-host.ts": [["node:crypto","import-statement",true],["packages/workbench/skills/create-prd/SKILL.md","import-statement",false],["packages/workbench/src/analysis/create-prd-renderer.ts","import-statement",false],["packages/workbench/src/analysis/fixture-engine.ts","import-statement",false],["packages/workbench/src/analysis/harness-model-engine.ts","import-statement",false],["packages/workbench/src/analysis/fixture-manifest.ts","import-statement",false],["packages/workbench/src/analysis/types.ts","import-statement",false],["packages/workbench/src/application/node-sha256.ts","import-statement",false],["packages/workbench/src/application/product-handler.ts","import-statement",false],["packages/workbench/src/application/project-repository.ts","import-statement",false],["packages/workbench/src/application/project-service.ts","import-statement",false],["packages/workbench/src/protocol/product.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/cordis-analysis-port.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/project-domain.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/subagent-analysis-runner.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/subagent-prd-runner.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/project-domain.ts","import-statement",false]],
   "packages/workbench/src/integration/harness-rc6/project-domain.ts": [["@deepseek-ai/dsh-storage-domain","import-statement",true],["packages/workbench/src/domain/model.ts","import-statement",false]],
   "packages/workbench/src/integration/harness-rc6/subagent-analysis-runner.ts": [["packages/workbench/src/analysis/harness-model-engine.ts","import-statement",false],["packages/workbench/src/analysis/types.ts","import-statement",false]],
   "packages/workbench/src/protocol/canonical-json.ts": [["packages/workbench/src/domain/limits.ts","import-statement",false]],
@@ -540,7 +547,7 @@ export async function compileProductSnapshots(snapshots, assertOwned) {
           if (args.kind === 'entry-point') resolved = path.relative(repositoryRoot, path.resolve(repositoryRoot, args.path)).split(path.sep).join('/')
           else if (args.path === 'zod') resolved = 'node_modules/zod/index.js'
           else if (args.path.startsWith('.')) {
-            const relative = path.relative(repositoryRoot, path.resolve(path.dirname(args.importer), args.path)).split(path.sep).join('/')
+            const relative = path.relative(repositoryRoot, path.resolve(path.dirname(args.importer), args.path.endsWith(".md?raw") ? args.path.slice(0, -4) : args.path)).split(path.sep).join('/')
             resolved = [relative, relative.replace(/\.js$/, '.ts'), relative.replace(/\.js$/, '.tsx')].find(p => rule.inputs.has(p))
           }
           if (!rule.inputs.has(resolved) || !sources.has(resolved)) fail(role)
@@ -550,7 +557,7 @@ export async function compileProductSnapshots(snapshots, assertOwned) {
           await assertOwned?.()
           const name = path.relative(repositoryRoot, args.path).split(path.sep).join('/')
           if (!rule.inputs.has(name) || !sources.has(name)) fail(role)
-          return { contents: sources.get(name), loader: name.endsWith('.tsx') ? 'tsx' : name.endsWith('.ts') ? 'ts' : 'js', resolveDir: path.dirname(args.path) }
+          return { contents: sources.get(name), loader: name.endsWith('.md') ? 'text' : name.endsWith('.tsx') ? 'tsx' : name.endsWith('.ts') ? 'ts' : 'js', resolveDir: path.dirname(args.path) }
         })
       } }],
     })

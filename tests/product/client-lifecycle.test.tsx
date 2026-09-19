@@ -327,6 +327,22 @@ describe('Product lifecycle and real store handlers', () => {
     expect(h.commands.map(c => c.payload.kind)).toEqual(['baseline.publish', 'prd.render']); expect(ui.all('prd-preview')).toHaveLength(1)
     ui.click('refresh-project'); await ui.settle(); expect(h.commands).toHaveLength(2)
   })
+  it('shows drafting progress instead of advising refresh while PRD generation is still running', async () => {
+    const h = await setup({ included: true }), gate = deferred(); const ui = h.ui(); await ui.settle()
+    h.intercept(async (endpoint, input, next) => {
+      if (endpoint === 'projects.command' && (input as Stage3aProjectCommand).payload.kind === 'prd.render') await gate.promise
+      return next()
+    })
+    ui.click('confirm-scope')
+    try {
+      await vi.waitFor(() => { ui.render(); expect(h.commands.some(command => command.payload.kind === 'prd.render')).toBe(true) })
+      expect(ui.text()).toContain('正在根据已确认范围起草 PRD')
+      expect(ui.text()).not.toContain('请刷新继续')
+      expect(ui.one('regenerate-prd').props.disabled).toBe(true)
+    } finally { gate.resolve() }
+    await ui.settle()
+    expect(ui.all('prd-preview')).toHaveLength(1)
+  })
   it('exactly retries uncertain rendering then selects its accepted revision without another render', async () => {
     const h = await setup({ included: true }); const ui = h.ui(); await ui.settle()
     h.intercept(async (endpoint, input, next) => { const value = await next(); if (endpoint === 'projects.command' && (input as Stage3aProjectCommand).payload.kind === 'prd.render') throw new Error('lost'); return value })
@@ -341,6 +357,24 @@ describe('Product lifecycle and real store handlers', () => {
     expect(h.commands.map(c => c.payload.kind)).toEqual(['baseline.publish', 'prd.render', 'prd.render']); expect(h.commands[2]).toEqual(h.commands[1])
     expect(h.record().prdRevisions).toHaveLength(1); expect(ui.all('prd-preview')).toHaveLength(1)
   })
+  it('regenerates the saved baseline once on double-click and retains the previous PRD', async () => {
+    const h = await setup({ included: true }), ui = h.ui(); await ui.settle()
+    ui.click('confirm-scope'); await ui.settle()
+    const original = structuredClone(h.record().prdRevisions[0]!), count = h.commands.length, gate = deferred()
+    h.intercept(async (endpoint, input, next) => {
+      if (endpoint === 'projects.command' && (input as Stage3aProjectCommand).payload.kind === 'prd.render') await gate.promise
+      return next()
+    })
+    ui.click('regenerate-prd'); ui.click('regenerate-prd')
+    try {
+      await vi.waitFor(() => expect(h.commands.length).toBe(count + 1))
+      expect(h.commands.at(-1)!.payload).toMatchObject({ kind: 'prd.render', baselineId: original.baselineId })
+    } finally { gate.resolve() }
+    await ui.settle()
+    expect(h.record().prdRevisions).toHaveLength(2)
+    expect(h.record().prdRevisions[0]).toEqual(original)
+    expect(h.store.getSnapshot().selectedPrdRevisionId).toBe(h.record().prdRevisions[1]!.id)
+  })
   it('requires a newly displayed confirmation after baseline-stale and keeps stale PRD selectable and export-bound', async () => {
     const h = await setup({ included: true }); const ui = h.ui(); await ui.settle(); ui.click('confirm-scope'); await ui.settle()
     const first = h.record().prdRevisions[0]!
@@ -350,9 +384,9 @@ describe('Product lifecycle and real store handlers', () => {
     ui.click('step-1'); ui.render(); ui.clickText('核对本期范围'); ui.render(); ui.click('confirm-scope'); await ui.settle()
     const second = h.record().prdRevisions[1]!; expect(ui.one('prd-preview').props['data-prd-revision-id']).toBe(second.id)
     ui.all('prd-history-item').find(node => node.props['data-prd-revision-id'] === first.id)!.props.onClick(); await ui.settle()
-    ui.click('copy-prd'); ui.click('download-prd'); await ui.settle()
-    expect(h.clipboard).toEqual([first.markdown]); expect(await h.blobs[0]!.text()).toBe(first.markdown)
-    expect(h.downloads).toEqual([{ url: 'owned-test-url', name: `prd-${first.id}.md` }]); expect(h.revoked).toEqual(['owned-test-url'])
+    await h.store.copySelectedMarkdown(); ui.click('download-prd'); await ui.settle()
+    expect(h.clipboard).toEqual([first.markdown]); expect(h.blobs[0]!.type).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+    expect(h.downloads).toEqual([{ url: 'owned-test-url', name: `prd-${first.id}.docx` }]); expect(h.revoked).toEqual(['owned-test-url'])
     expect(ui.text(ui.one('prd-markdown'))).toBe(first.markdown)
     const pending = deferred(); const entered = deferred()
     h.intercept(async (endpoint, input, next) => { const value = await next(); if (endpoint === 'artifacts.getMarkdown' && (input as any).prdRevisionId === first.id) { entered.resolve(); await pending.promise } return value })
@@ -458,7 +492,7 @@ describe('Product lifecycle and real store handlers', () => {
     ui.click('download-prd'); await ui.settle()
     expect(create).toHaveBeenCalledTimes(1); expect(append).toHaveBeenCalledWith(anchor); expect(anchor.click).toHaveBeenCalledTimes(1)
     expect(anchor.remove).toHaveBeenCalledTimes(1); expect(revoke).toHaveBeenCalledExactlyOnceWith('owned-dom-url')
-    expect(anchor.download).toBe(`prd-${h.record().prdRevisions[0]!.id}.md`)
+    expect(anchor.download).toBe(`prd-${h.record().prdRevisions[0]!.id}.docx`)
     dispose()
   })
   it('allows safe local discard after a known rejected delete, then permits switching without another command', async () => {
@@ -550,16 +584,16 @@ describe('Product lifecycle and real store handlers', () => {
     gate.resolve(); await refreshing; await ui.settle()
     expect(h.store.getSnapshot().selectedPrdRevisionId).toBe(first.id)
     expect(ui.one('prd-preview').props['data-prd-revision-id']).toBe(first.id); expect(ui.text(ui.one('prd-markdown'))).toBe(first.markdown)
-    ui.click('copy-prd'); ui.click('download-prd'); await ui.settle()
-    expect(h.clipboard).toEqual([first.markdown]); expect(await h.blobs[0]!.text()).toBe(first.markdown)
-    expect(h.downloads[0]!.name).toBe(`prd-${first.id}.md`)
+    await h.store.copySelectedMarkdown(); ui.click('download-prd'); await ui.settle()
+    expect(h.clipboard).toEqual([first.markdown]); expect(await h.blobs[0]!.text()).toContain(first.baselineId)
+    expect(h.downloads[0]!.name).toBe(`prd-${first.id}.docx`)
   })
-  it.each(['copy-prd', 'download-prd'] as const)('ignores a delayed %s failure after the user selects another PRD', async marker => {
+  it.each(['download-prd'] as const)('ignores a delayed %s failure after the user selects another PRD', async marker => {
     const entered = deferred(), gate = deferred()
     const fail = async () => { entered.resolve(); await gate.promise; throw new Error('EXPORT_PRIVATE_CANARY') }
-    const h = await withPrdHistory(marker === 'copy-prd' ? { writeClipboard: fail } : { clickDownload: fail })
+    const h = await withPrdHistory({ clickDownload: fail })
     const { ui, first } = h
-    const exporting = vi.spyOn(h.store, marker === 'copy-prd' ? 'copySelectedMarkdown' : 'downloadSelectedMarkdown')
+    const exporting = vi.spyOn(h.store, 'downloadSelectedMarkdown')
     ui.click(marker); await entered.promise; const completion = exporting.mock.results[0]!.value
     ui.all('prd-history-item').find(node => node.props['data-prd-revision-id'] === first.id)!.props.onClick()
     await ui.settle(() => ui.all('prd-preview')[0]?.props['data-prd-revision-id'] === first.id)
@@ -568,15 +602,16 @@ describe('Product lifecycle and real store handlers', () => {
     expect(ui.one('prd-preview').props['data-prd-revision-id']).toBe(first.id); expect(ui.text(ui.one('prd-markdown'))).toBe(first.markdown)
     expect(ui.text()).not.toContain('EXPORT_PRIVATE_CANARY')
   })
-  it('does not let an old successful copy clear a newer selected-PRD export error', async () => {
+  it('does not let an old successful download clear a newer selected-PRD export error', async () => {
     const entered = deferred(), gate = deferred()
-    const h = await withPrdHistory({ writeClipboard: async () => { entered.resolve(); await gate.promise }, clickDownload: () => { throw new Error('DOWNLOAD_PRIVATE_CANARY') } })
-    const { ui, first } = h; const copying = vi.spyOn(h.store, 'copySelectedMarkdown')
-    ui.click('copy-prd'); await entered.promise; const oldCopy = copying.mock.results[0]!.value
+    let downloads = 0
+    const h = await withPrdHistory({ clickDownload: async () => { if (++downloads === 1) { entered.resolve(); await gate.promise } else throw new Error('DOWNLOAD_PRIVATE_CANARY') } })
+    const { ui, first } = h; const downloading = vi.spyOn(h.store, 'downloadSelectedMarkdown')
+    ui.click('download-prd'); await entered.promise; const oldDownload = downloading.mock.results[0]!.value
     ui.all('prd-history-item').find(node => node.props['data-prd-revision-id'] === first.id)!.props.onClick()
     await ui.settle(() => ui.all('prd-preview')[0]?.props['data-prd-revision-id'] === first.id)
     ui.click('download-prd'); await ui.settle(() => ui.text().includes('工作台暂时无法连接'))
-    gate.resolve(); await oldCopy; await ui.settle()
+    gate.resolve(); await oldDownload; await ui.settle()
     expect(ui.text()).toContain('工作台暂时无法连接'); expect(ui.text()).not.toContain('DOWNLOAD_PRIVATE_CANARY')
     expect(ui.one('prd-preview').props['data-prd-revision-id']).toBe(first.id)
   })
@@ -615,12 +650,12 @@ describe('Product lifecycle and real store handlers', () => {
     expect(h.store.getSnapshot().materialDraft?.text).toBe('重新打开后正在输入的新合成材料')
     expect(ui.one('material-input').props.value).toBe('重新打开后正在输入的新合成材料')
   })
-  it.each(['copy-prd', 'download-prd'] as const)('keeps a newer source-read error when an older %s succeeds on the same PRD', async marker => {
+  it.each(['download-prd'] as const)('keeps a newer source-read error when an older %s succeeds on the same PRD', async marker => {
     const entered = deferred(), gate = deferred()
     const exporting = async () => { entered.resolve(); await gate.promise }
-    const h = await withPrdHistory(marker === 'copy-prd' ? { writeClipboard: exporting } : { clickDownload: exporting })
+    const h = await withPrdHistory({ clickDownload: exporting })
     const { ui, second } = h
-    const completion = vi.spyOn(h.store, marker === 'copy-prd' ? 'copySelectedMarkdown' : 'downloadSelectedMarkdown')
+    const completion = vi.spyOn(h.store, 'downloadSelectedMarkdown')
     ui.click(marker); await entered.promise
     h.intercept(async (endpoint, _input, next) => endpoint === 'sources.get' ? { ok: false, error: { code: 'internal', message: 'NEW_SOURCE_PRIVATE_CANARY', details: {} } } : next())
     ui.click('step-1'); ui.render(); ui.clickText('查看全部原文'); await ui.settle(() => ui.text().includes('工作台暂时无法连接'))
@@ -629,12 +664,12 @@ describe('Product lifecycle and real store handlers', () => {
     expect(ui.text()).toContain('工作台暂时无法连接'); expect(ui.text()).not.toContain('NEW_SOURCE_PRIVATE_CANARY')
     expect(ui.one('prd-preview').props['data-prd-revision-id']).toBe(second.id)
   })
-  it.each(['copy-prd', 'download-prd'] as const)('ignores an older %s failure after a newer source read succeeds on the same PRD', async marker => {
+  it.each(['download-prd'] as const)('ignores an older %s failure after a newer source read succeeds on the same PRD', async marker => {
     const entered = deferred(), gate = deferred()
     const exporting = async () => { entered.resolve(); await gate.promise; throw new Error('OLD_EXPORT_PRIVATE_CANARY') }
-    const h = await withPrdHistory(marker === 'copy-prd' ? { writeClipboard: exporting } : { clickDownload: exporting })
+    const h = await withPrdHistory({ clickDownload: exporting })
     const { ui, second } = h
-    const completion = vi.spyOn(h.store, marker === 'copy-prd' ? 'copySelectedMarkdown' : 'downloadSelectedMarkdown'), source = vi.spyOn(h.store, 'loadSource')
+    const completion = vi.spyOn(h.store, 'downloadSelectedMarkdown'), source = vi.spyOn(h.store, 'loadSource')
     ui.click(marker); await entered.promise; ui.click('step-1'); ui.render(); ui.clickText('查看全部原文'); await source.mock.results[0]!.value; ui.render()
     expect(ui.nodes().filter(node => node.props.role === 'alert')).toHaveLength(0)
     gate.resolve(); await completion.mock.results[0]!.value; await ui.settle()

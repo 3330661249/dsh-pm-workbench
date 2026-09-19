@@ -5,5 +5,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["packages/workbench/src/index.ts", "packages/workbench/src/config.ts"]
+  "include": ["packages/workbench/src/index.ts", "packages/workbench/src/config.ts", "packages/workbench/src/skill-text.d.ts"]
 }

@@ -195,7 +195,7 @@ export interface PrdRevision {
   readonly sourceRevisionId: SourceRevisionId
   readonly baselineId: BaselineId
   readonly baselineContentVersion: number
-  readonly rendererVersion: 'pmwb-prd-v1'
+  readonly rendererVersion: 'pmwb-prd-v1' | 'pmwb-create-prd-v1'
   readonly contentHash: Sha256Hex
   readonly markdown: string
   readonly createdAt: string
@@ -506,7 +506,7 @@ export const prdRevisionSchema: z.ZodType<PrdRevision> = z.strictObject({
   sourceRevisionId: sourceRevisionIdSchema,
   baselineId: baselineIdSchema,
   baselineContentVersion: safeIntegerSchema,
-  rendererVersion: z.literal('pmwb-prd-v1'),
+  rendererVersion: z.enum(['pmwb-prd-v1', 'pmwb-create-prd-v1']),
   contentHash: sha256HexSchema,
   markdown: boundedText({ utf8Bytes: MAX_PRD_MARKDOWN_UTF8_BYTES, nonEmpty: true }),
   createdAt: dateTimeSchema,

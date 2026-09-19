@@ -221,9 +221,31 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
     const request = ++prdRequest.current
     void run(() => store.selectPrd(id), () => request === prdRequest.current)
   }
-  function exportPrd(download: boolean) {
+  function regeneratePrd() {
+    const snapshot = store.getSnapshot(), project = snapshot.selectedProject, baseline = project?.currentBaseline
+    if (!project || !baseline || snapshot.dirty || snapshot.saveState !== 'saved' || snapshot.pendingRetry
+      || baseline.contentVersion !== project.header.contentVersion) { report({ ok: false, code: 'baseline-stale' }); return }
+    const sameSelection = capturePrdSelection()
+    mutate(async () => {
+      const refreshed = await store.refresh()
+      if (!sameSelection()) return cancelled
+      if (!refreshed.ok) return refreshed
+      const current = store.getSnapshot(), latest = current.selectedProject
+      if (!latest || latest.header.id !== project.header.id || latest.currentBaseline?.id !== baseline.id
+        || latest.header.contentVersion !== baseline.contentVersion || current.dirty || current.saveState !== 'saved') return { ok: false, code: 'baseline-stale' }
+      const command = parseProductInput('projects.command', { apiVersion: PRODUCT_API_VERSION, projectId: project.header.id,
+        expectedVersion: latest.header.projectVersion, commandId: createCommandId(), payload: { kind: 'prd.render',
+          baselineId: baseline.id, confirmedContentVersion: baseline.contentVersion } }) as Stage3aProjectCommand
+      const result = await store.command(command)
+      if (!sameSelection()) return cancelled
+      if (!result.ok) return result
+      const id = store.getSnapshot().acceptedReceipt?.value.prdRevisionId
+      return id ? selectAndShowPrd(id, sameSelection) : { ok: false, code: 'refresh-required' }
+    }, sameSelection)
+  }
+  function exportPrd() {
     const revision = store.getSnapshot().selectedPrdRevisionId, request = ++exportRequest.current, sameSelection = capturePrdSelection()
-    void run(() => download ? store.downloadSelectedMarkdown() : store.copySelectedMarkdown(),
+    void run(() => store.downloadSelectedMarkdown(),
       () => sameSelection() && store.getSnapshot().selectedPrdRevisionId === revision && request === exportRequest.current)
   }
   function saveRequirements() {
@@ -275,7 +297,7 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
       </header>
       <main className="pmwb-spatial-stage">
         {visibleError && <p className="pmwb-toast" role="status">{visibleError}</p>}
-        {recovery && <p className="pmwb-toast" role="status">基线已确认，PRD 尚未完成，请刷新继续</p>}
+        {recovery && <p className="pmwb-toast" role="status">{pending > 0 ? '正在根据已确认范围起草 PRD，请稍候…' : '基线已确认，PRD 尚未完成，请刷新继续'}</p>}
         {state.selectedProject ? <>
           {activeStage === 0 && <section className="pmwb-surface pmwb-material-surface">
             <header><div><span>材料</span><h2>{state.selectedProject.header.name}</h2></div>
@@ -294,7 +316,7 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
             onConfirm={confirm} />}
           {activeStage === 2 && <section className="pmwb-surface pmwb-prd-surface">
             <header><div><span>PRD</span><h2>{state.selectedProject.header.name}</h2></div><p>基于人工确认的本期范围生成。</p></header>
-            <PrdPane state={state} onSelect={selectPrd} onCopy={() => exportPrd(false)} onDownload={() => exportPrd(true)} />
+            <PrdPane state={state} onSelect={selectPrd} onDownload={exportPrd} onRegenerate={regeneratePrd} pending={pending > 0} />
           </section>}
         </> : <section className="pmwb-empty-state pmwb-surface" data-dsh-pm-workbench="empty-state">
             <PrismMark className="pmwb-empty-mark" />

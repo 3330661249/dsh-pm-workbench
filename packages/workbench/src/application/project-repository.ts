@@ -333,9 +333,11 @@ export class TableProjectRepository implements ProjectRepository {
         if (record.prdRevisions.length >= MAX_PRD_REVISIONS_PER_PROJECT) fail('limit-exceeded')
         const baseline = record.baselines.find(item => item.id === payload.baselineId) ?? fail('baseline-stale')
         const prdRevisionId = prdRevisionIdSchema.parse(this.#newId())
-        const prd = this.#renderer.render({ baseline, prdRevisionId, createdAt: this.#clock.now(),
+        const rendered = this.#renderer.render({ baseline, prdRevisionId, createdAt: this.#clock.now(),
           currentBaselineId: record.currentBaselineId!, currentContentVersion: payload.confirmedContentVersion,
-          existingPrdCount: record.prdRevisions.length })
+          existingPrdCount: record.prdRevisions.length }, signal)
+        // Own synchronous results before yielding; async renderers must return their completed snapshot.
+        const prd = structuredClone(rendered instanceof Promise ? await rendered : rendered)
         if (prd.id !== prdRevisionId || prd.baselineId !== baseline.id
           || prd.baselineContentVersion !== baseline.contentVersion || prd.projectId !== record.header.id
           || prd.sourceRevisionId !== record.source?.id

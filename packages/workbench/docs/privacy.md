@@ -40,3 +40,22 @@ state its destination and retention policy before real recordings are used.
 
 These implementation constraints are not a runtime privacy certification.
 Historical Stage 2 and Task 3 artifacts establish only their own recorded scope.
+
+## PRD drafting model boundary
+
+The panel's PRD action sends the human-confirmed baseline project name, research
+goal, included requirement text, priorities, human reasons and cited excerpts to
+the model currently selected in Harness. It does not send the full source text or
+internal baseline/requirement/evidence IDs and hashes. If the model selection has
+changed since import, check that the new provider is authorized before drafting.
+The owned drafting agent exposes only structured output capture. The bundled
+`create-prd` guidance does not grant file, browser or external-service access.
+The resulting PRD and its provider/model provenance persist in profile storage.
+
+Generated flows, acceptance rules and plans are proposals for human review, not
+a guarantee of factual correctness or a published product commitment. Missing
+facts are collected as open questions. Existing PRD revisions are not rewritten.
+
+PRD drafting may use an advertised lighter reasoning option for that owned child
+only. The current provider/model route, global model settings, analysis semantics
+and other conversations are not changed.

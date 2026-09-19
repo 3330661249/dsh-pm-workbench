@@ -43,6 +43,7 @@ export const WORKBENCH_PACKAGE_FILES = Object.freeze([
   'lib/index.js',
   'package.json',
   'skills/adversarial-product-review/SKILL.md',
+  'skills/create-prd/SKILL.md',
   'skills/interview-intake/SKILL.md',
   'skills/interview-to-prd/SKILL.md',
   'skills/prd-drafting/SKILL.md',

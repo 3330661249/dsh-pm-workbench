@@ -4,7 +4,7 @@ Private, unofficial `@knight/dsh-pm-workbench@0.1.0` package for Harness `0.1.0-
 
 ## AI PM Skill suite
 
-The package bundles seven DeepSeek Harness Skills. Start the complete text-first
+The package bundles eight DeepSeek Harness Skills. Start the complete text-first
 workflow in any Harness conversation with `/interview-to-prd`, followed by an
 interview transcript or research notes. The orchestrator loads the focused
 Skills for evidence intake, synthesis, requirement framing, priority review,
@@ -37,9 +37,27 @@ every returned quote must match the frozen source exactly or the analysis is
 rejected. Provider and model identifiers are retained with the analysis.
 
 Source import, evidence review, human requirement revision, priority
-confirmation, immutable baselines, and deterministic Markdown PRD generation
-are implemented in the panel. Audio, DOCX, PDF, and multi-interview aggregation
-are not part of this release.
+confirmation and immutable baselines are implemented in the panel. PRD drafting
+uses the bundled `create-prd` Skill from `phuryn/pm-skills` and the model currently
+selected in Harness. Only confirmed baseline requirements and their evidence
+are sent for drafting, not the complete original transcript. The model proposes
+flows, acceptance criteria, exception paths and a POC/release plan; human scope,
+priority and ordering remain authoritative. Unknown facts are listed as open
+questions; suggested details are not confirmed business commitments. Internal
+IDs and hashes are kept in the traceability appendix. A failed or invalid model
+result is rejected instead of silently returning the old template. The drafting
+agent selects an advertised compact reasoning option when the current route
+supports one, leaving the global model selection and other conversations unchanged. “重新生成”
+creates a new revision of the current saved baseline; old PRDs remain history. The selected, hash-verified PRD can be downloaded
+as an editable Word (`.docx`) document locally through the single “下载PRD” button.
+Word export preserves renderer headings, lists, literal source text and traceability
+without uploading to a cloud service or changing the confirmed baseline.
+Audio, DOCX/PDF material import, and multi-interview aggregation are not part of
+this release. The deterministic renderer remains available for fixtures and historical data;
+the installed visual panel uses the model drafter.
+Supporting browsers show a save dialog starting on the Desktop; cancelling
+does not trigger a fallback download. Other browsers use their normal download
+location. The plugin does not change global browser download settings.
 
 Product data persists in the Harness profile by design. Package removal does
 not erase that profile data. Delete/remove is not secure erasure. Use real

@@ -365,3 +365,59 @@ describe('deterministic pmwb-prd-v1 renderer', () => {
     expect(MAX_PRD_MARKDOWN_UTF8_BYTES).toBe(262_144)
   })
 })
+
+describe('create-prd model drafting', () => {
+  function draft(baseline: RequirementBaseline) {
+    return { summary: '让用户在同一处核对审批意见，减少在多个页面之间来回查找。',
+      background: '访谈反映了原文核对的困难，需要围绕已确认需求验证解决方案。',
+      objectives: ['验证用户能定位原始意见，并完成核对任务。'],
+      usersAndScenarios: '处理多条记录并需要回看原始信息的用户；具体角色需要进一步确认。',
+      valueProposition: '通过清晰的原文入口减少重复查找；实际效果需要在试点中验证。',
+      requirements: baseline.items.map(item => ({ key: `R${item.rank}`, userStory: '作为核对记录的用户，我希望查看原始意见，以便完成检查。',
+        flow: ['选择需要核对的记录。', '查看对应原始意见。', '核对后返回记录。'],
+        acceptanceCriteria: ['选择有效记录后显示对应原始意见。', '返回后保留此前的记录位置。'],
+        exceptions: ['原始意见不存在时显示空状态，不编造内容。', '加载失败时允许重试并保留记录位置。'],
+        aiNotes: ['涉及 AI 总结时必须支持查看原文并允许人工修正。'] })),
+      releasePlan: ['先用少量已授权材料完成 POC，再决定是否推广。'],
+      assumptions: ['集中入口能够减少查找步骤，尚需验证。'], openQuestions: ['哪些角色参与验收？'] }
+  }
+  it('writes useful proposed flows and acceptance while preserving confirmed scope, order, priority and evidence', async () => {
+    const { HarnessSkillPrdRenderer } = await import('../../packages/workbench/src/analysis/create-prd-renderer.js')
+    const baseline = publish()
+    const renderer = new HarnessSkillPrdRenderer({ run: async () => ({ stopReason: 'completed', structured: draft(baseline), provider: 'test-provider', model: 'test-model' }) }, nodeSha256Utf8)
+    const result = await renderer.render({ baseline, prdRevisionId: PRD_ID, createdAt: CREATED_AT })
+    const [body, appendix] = result.markdown.split('## 附录：需求与证据追溯')
+    expect(body).toContain('选择有效记录后显示对应原始意见')
+    expect(body).toContain('加载失败时允许重试')
+    expect(body).toContain('人工确认的本期范围')
+    expect(body).not.toContain(BASELINE_ID); expect(body).not.toContain(SOURCE_HASH)
+    expect(body).not.toContain('待产品经理补充')
+    expect(appendix).toContain(BASELINE_ID); expect(appendix).toContain(QUOTE_HASH)
+    expect(appendix).toContain('test\\-provider'); expect(appendix).toContain('test\\-model')
+    expect(result.rendererVersion).toBe('pmwb-create-prd-v1')
+    expect(result.contentHash).toBe(nodeSha256Utf8(result.markdown))
+    expect(result.baselineId).toBe(baseline.id)
+    expect(Object.isFrozen(result)).toBe(true)
+  })
+  it.each(['extra-feature', 'missing-feature', 'duplicate-feature', 'placeholder', 'unfinished'] as const)
+  ('rejects %s model output without quietly using the old template', async mode => {
+    const { HarnessSkillPrdRenderer } = await import('../../packages/workbench/src/analysis/create-prd-renderer.js')
+    const baseline = publish(), candidate = draft(baseline)
+    if (mode === 'extra-feature') candidate.requirements.push({ ...candidate.requirements[0]!, key: 'R999' })
+    if (mode === 'missing-feature') candidate.requirements = []
+    if (mode === 'duplicate-feature') candidate.requirements.push(candidate.requirements[0]!)
+    if (mode === 'placeholder') candidate.background = '待产品经理补充'
+    const renderer = new HarnessSkillPrdRenderer({ run: async () => ({ stopReason: mode === 'unfinished' ? 'max-tokens' : 'completed', structured: candidate, provider: 'p', model: 'm' }) }, nodeSha256Utf8)
+    await expect(renderer.render({ baseline, prdRevisionId: PRD_ID, createdAt: CREATED_AT })).rejects.toThrow(mode === 'unfinished' ? 'stage-unavailable' : 'invalid-evidence')
+  })
+  it('checks stale confirmation before invoking the model and stops saving after cancellation', async () => {
+    const { HarnessSkillPrdRenderer } = await import('../../packages/workbench/src/analysis/create-prd-renderer.js')
+    const baseline = publish(), controller = new AbortController()
+    let calls = 0
+    const renderer = new HarnessSkillPrdRenderer({ run: async () => { calls++; controller.abort(); return { stopReason: 'completed', structured: draft(baseline), provider: 'p', model: 'm' } } }, nodeSha256Utf8)
+    await expect(renderer.render({ baseline, currentBaselineId: OTHER_BASELINE_ID, prdRevisionId: PRD_ID, createdAt: CREATED_AT })).rejects.toThrow('baseline-stale')
+    expect(calls).toBe(0)
+    await expect(renderer.render({ baseline, prdRevisionId: PRD_ID, createdAt: CREATED_AT }, controller.signal)).rejects.toThrow()
+    expect(calls).toBe(1)
+  })
+})

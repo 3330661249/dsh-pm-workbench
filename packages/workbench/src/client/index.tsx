@@ -22,11 +22,13 @@ function cleanupAll(cleanups: readonly ((() => void) | undefined)[]) {
 
 export function mountWorkbenchClient(ctx: WorkbenchClientContext, suppliedStore?: WorkbenchStore): () => void {
   const uuid = () => globalThis.crypto.randomUUID().toLowerCase()
+  const picker = (globalThis as unknown as { showSaveFilePicker?: ConstructorParameters<typeof WorkbenchBrowserPort>[0]['pickSaveFile'] }).showSaveFilePicker
   const store = suppliedStore ?? createWorkbenchStore(new ConnectionRpcWorkbenchTransport(ctx.connection.rpc),
     { createCommandId: uuid, createProjectId: uuid }, new WorkbenchBrowserPort({
       writeClipboard: text => navigator.clipboard.writeText(text),
       createObjectURL: blob => URL.createObjectURL(blob),
       revokeObjectURL: url => URL.revokeObjectURL(url),
+      pickSaveFile: typeof picker === 'function' ? options => picker.call(globalThis, options) : undefined,
       clickDownload: (url, name) => {
         const anchor = document.createElement('a')
         anchor.href = url; anchor.download = name

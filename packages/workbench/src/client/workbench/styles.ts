@@ -37,11 +37,10 @@ export const workbenchCss = `
   font: 15px/1.58 ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
   box-shadow: none;
 }
-.pmwb::backdrop { background: rgba(3, 3, 3, .08); }
-.pmwb::before {
-  content: ''; position: fixed; inset: 0 auto 0 0; z-index: 0; width: 232px; pointer-events: none;
-  background: rgba(0, 0, 0, .08); backdrop-filter: grayscale(1) brightness(.86); -webkit-backdrop-filter: grayscale(1) brightness(.86);
-}
+.pmwb::backdrop { background: rgba(3, 3, 3, .08); backdrop-filter: grayscale(1); -webkit-backdrop-filter: grayscale(1); }
+/* Keep the ripple canvas, but do not expose a second sidebar through the modal. */
+body:has(dialog[data-dsh-pm-workbench=overlay][open]) [data-slot=sidebar],
+body:has(dialog[data-dsh-pm-workbench=overlay][open]) [data-slot=sidebar] * { visibility: hidden !important; }
 .pmwb * { box-sizing: border-box; }
 .pmwb h1, .pmwb h2, .pmwb h3, .pmwb p, .pmwb blockquote { margin: 0; }
 .pmwb-dialog-heading, .pmwb-visually-hidden {
@@ -78,7 +77,7 @@ export const workbenchCss = `
 .pmwb button:disabled { cursor: default; opacity: .38; }
 .pmwb :focus-visible { outline: 2px solid var(--pmwb-accent-strong); outline-offset: 3px; }
 .pmwb-project-switcher { display: block;
-  position: absolute; top: 80px; left: 0; z-index: 32; width: 240px; min-width: 0;
+  position: absolute; top: 80px; left: -232px; z-index: 32; width: 222px; min-width: 0;
   padding: 10px 10px 0;
 }
 .pmwb-project-switcher > summary {
@@ -414,10 +413,9 @@ dialog[data-dsh-pm-workbench=create-dialog]::backdrop { background: rgba(3, 3, 3
   .pmwb-shell-header, .pmwb-focus-panel, .pmwb-decision-palette, .pmwb-review-dock, .pmwb-surface { background: rgba(15, 15, 15, .97); }
 }
 @media (max-width: 1200px) {
-  .pmwb::before { width: 210px; }
   .pmwb-shell { padding: 24px 18px 24px 210px; gap: 18px; }
   .pmwb-shell-header { width: 100%; grid-template-columns: 1fr auto; }
-  .pmwb-project-switcher { top: 72px; width: 210px; }
+  .pmwb-project-switcher { top: 72px; left: -210px; width: 200px; }
   .pmwb-save-state, .pmwb-header-actions .pmwb-danger-action { display: none; }
   .pmwb-review { width: 100%; height: calc(100dvh - 124px); grid-template-columns: 210px minmax(0, 1fr) 280px; grid-template-rows: minmax(0, 1fr); gap: 1px; }
   .pmwb-decision-palette { padding: 26px 22px; }
@@ -443,13 +441,13 @@ dialog[data-dsh-pm-workbench=create-dialog]::backdrop { background: rgba(3, 3, 3
   .pmwb .pmwb-primary { min-height: 42px; }
 }
 @media (max-width: 820px) {
-  .pmwb::before { display: none; }
-  .pmwb-shell { height: 100%; min-height: 100%; overflow-y: auto; padding: 14px 14px 28px; gap: 14px; }
+  .pmwb-shell { height: 100%; min-height: 100%; overflow-y: auto; grid-template-rows: auto minmax(0, 1fr); padding: 14px 14px 28px; gap: 14px; }
   .pmwb-shell-header { height: auto; min-height: 58px; grid-template-columns: 1fr auto; gap: 8px; padding: 0; }
   .pmwb-project-switcher { position: static; grid-column: 1; grid-row: 1; width: auto; padding: 0 70px 0 0; }
   .pmwb-project-switcher > summary { min-height: 44px; }
+  .pmwb-header-actions { top: 22px; }
   .pmwb-project-menu { left: 0; width: min(310px, calc(100vw - 28px)); }
-  .pmwb-stepper { grid-column: 1 / -1; width: calc(100% - 76px); }
+  .pmwb-stepper { grid-column: 1 / -1; width: 100%; }
   .pmwb-spatial-stage { display: block; min-height: 0; }
   .pmwb-review { height: auto; min-height: 0; grid-template-columns: 1fr; grid-template-rows: auto auto auto; gap: 0; overflow: visible; }
   .pmwb-review-dock { grid-column: 1; grid-row: 1; border-radius: 16px 16px 0 0; }

@@ -167,11 +167,24 @@ describe('Product semantic markup', () => {
     const state = { ...ready, selectedProject: { ...project, prdSummaries: [summary] }, selectedPrdRevisionId: summary.prdRevisionId,
       selectedMarkdown: { ...summary, markdown: 'MARKDOWN_CANARY' } }
     const html = renderToStaticMarkup(<PrdPane state={state} />)
-    for (const text of ['需求已调整，此 PRD 保留的是上次确认的内容', '复制 Markdown', '下载 Markdown', 'MARKDOWN_CANARY', summary.baselineId]) expect(html).toContain(text)
+    for (const text of ['需求已调整，此 PRD 保留的是上次确认的内容', '下载PRD', 'MARKDOWN_CANARY', summary.baselineId]) expect(html).toContain(text)
+    expect(tag(html, 'copy-prd')).toBe('')
+    expect(html).not.toContain('下载 Word')
     for (const marker of ['prd-preview', 'prd-history-item']) expect(dataNames(tag(html, marker))).toEqual(['data-baseline-id', 'data-prd-current', 'data-prd-hash', 'data-prd-revision-id'])
     expect(tag(html, 'prd-preview')).toContain('data-prd-current="false"'); expect(tag(html, 'prd-markdown')).not.toContain('hidden')
     const current = renderToStaticMarkup(<PrdPane state={{ ...state, selectedProject: { ...project, prdSummaries: [{ ...summary, status: 'current' }] } }} />)
     expect(tag(current, 'prd-preview')).toContain('data-prd-current="true"')
+  })
+  it('offers explicit PRD regeneration only for a saved, current human baseline', () => {
+    const baseline = { id: baselineIdSchema.parse('80000000-0000-4000-8000-000000000001'), projectId: SMALL_PROJECT_ID,
+      sourceRevisionId: candidate.analysis.sourceRevisionId, sourceContentHash: BUILT_IN_SYNTHETIC_HASH, projectVersion: header.projectVersion, contentVersion: header.contentVersion, itemCount: 1, createdAt: header.updatedAt }
+    const current = { ...ready, selectedProject: { ...project, currentBaseline: baseline } }
+    const pane = (state: WorkbenchState, pending = false) => tag(renderToStaticMarkup(<PrdPane state={state} pending={pending} onRegenerate={() => {}} />), 'regenerate-prd')
+    expect(pane(current)).toContain('button')
+    expect(pane(current)).not.toContain('disabled')
+    expect(pane(current, true)).toContain('disabled')
+    expect(pane({ ...current, saveState: 'unsaved', dirty: true })).toContain('disabled')
+    expect(pane({ ...current, selectedProject: { ...current.selectedProject, currentBaseline: { ...baseline, contentVersion: header.contentVersion - 1 } } })).toContain('disabled')
   })
   it('keeps every free-text canary out of all Product witness, title, hidden and accessibility attributes', () => {
     const html = render()

@@ -1,4 +1,5 @@
 import { readFile, readdir } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
@@ -29,9 +30,14 @@ async function load(name: string): Promise<string> {
 }
 
 describe('AI PM Skill suite', () => {
-  it('ships one orchestrator and six focused atomic Skills', async () => {
+  it('ships one orchestrator, six focused atomic Skills and the approved create-prd resource', async () => {
     const entries = await readdir(root, { withFileTypes: true })
-    expect(entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort()).toEqual(expectedSkills)
+    expect(entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort()).toEqual([...expectedSkills, 'create-prd'].sort())
+  })
+  it('retains the approved upstream create-prd guidance without rewriting it', async () => {
+    const markdown = await load('create-prd')
+    expect(createHash('sha256').update(markdown).digest('hex')).toBe('2a4059f16301c5559e10d0dfd00c9bdcde04d2cd964d8c360dbe43bd0161ed32')
+    expect(frontmatter(markdown).name).toBe('create-prd')
   })
 
   it.each(expectedSkills)('%s has discoverable, user-invocable Harness frontmatter', async (name) => {
