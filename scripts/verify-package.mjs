@@ -1053,7 +1053,13 @@ export async function createWorkbenchRelease(releaseRoot) {
     try { buildEvidence = await compileProductSnapshots(sources.map, assertOwned) } finally { stopProductCompiler() }
     await assertOwned()
     const stagedRoot = path.join(work, 'package'); await mkdirOwned(stagedRoot)
-    await mkdirOwned(path.join(stagedRoot, 'docs')); await mkdirOwned(path.join(stagedRoot, 'lib'))
+    // Every directory is derived only from the fixed package inventory and goes
+    // through the same owned-handle checks, including nested Skill resources.
+    const stagedDirectories = [...new Set(WORKBENCH_PACKAGE_FILES.flatMap(name => {
+      const segments = name.split('/').slice(0, -1)
+      return segments.map((_segment, index) => segments.slice(0, index + 1).join('/'))
+    }))].sort((left, right) => left.split('/').length - right.split('/').length || comparePath(left, right))
+    for (const relative of stagedDirectories) await mkdirOwned(path.join(stagedRoot, relative))
     const frozen = []
     for (const name of WORKBENCH_PACKAGE_FILES) {
       await assertOwned()

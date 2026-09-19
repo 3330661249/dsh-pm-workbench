@@ -9,6 +9,9 @@ import { ReviewWorkspace } from './RequirementsPane.js'
 import './PriorityPane.js'
 import { PrdPane } from './PrdPane.js'
 import { launcherCss, workbenchCss } from './styles.js'
+import { ValidationPane } from './ValidationPane.js'
+import type { ValidationClient } from './validation-client.js'
+import { validationCss } from './validation-styles.js'
 
 const errors: Record<StoreErrorCode, string> = {
   'transport-internal': '工作台暂时无法连接', 'host-unavailable': '工作台暂时无法连接',
@@ -62,15 +65,15 @@ export function WorkbenchLauncher({ onOpen }: { onOpen(target: FocusTarget): voi
   </>
 }
 
-export function WorkbenchView({ store, createCommandId = () => globalThis.crypto.randomUUID().toLowerCase(), restoreFocus, onClose }: {
-  store: WorkbenchStore; createCommandId?: () => string; restoreFocus?: () => void; onClose?: () => void
+export function WorkbenchView({ store, validationClient, createCommandId = () => globalThis.crypto.randomUUID().toLowerCase(), restoreFocus, onClose }: {
+  store: WorkbenchStore; validationClient?: ValidationClient; createCommandId?: () => string; restoreFocus?: () => void; onClose?: () => void
 }) {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
   const [review, setReview] = useState(() => ({ token: store.getConfirmationSnapshot(), dirty: state.dirtyRevision,
     saved: state.savedDraftRevision, generation: 0 }))
   const [error, setError] = useState<string>(), [pending, setPending] = useState(0)
   const [materialReading, setMaterialReading] = useState(false)
-  const [activeStage, setActiveStage] = useState<0 | 1 | 2>(() => naturalStage(state))
+  const [activeStage, setActiveStage] = useState<0 | 1 | 2 | 3 | 4>(() => naturalStage(state))
   const [createDialog, setCreateDialog] = useState(false), [deleteDialog, setDeleteDialog] = useState(false), [discardDialog, setDiscardDialog] = useState(false)
   const actionLatch = useRef(false), activeActions = useRef(0), prdRequest = useRef(0), recoveryRequest = useRef(0), exportRequest = useRef(0)
   const errorOwner = useRef(0)
@@ -264,11 +267,12 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
   const visibleError = state.error === 'transport-internal' || state.error === 'host-unavailable'
     ? storeErrorText(state.error) : error ?? (state.error ? storeErrorText(state.error) : undefined)
   const currentStep = naturalStage(state)
-  const steps = ['导入材料', '确认优先级', '生成 PRD'] as const
+  const steps = ['导入材料', '确认优先级', '生成 PRD', '方案验证', '研发交付'] as const
   useEffect(() => { setActiveStage(currentStep) }, [state.selectedProjectId, currentStep])
   if (!state.isOpen) return null
   return <NativeDialog marker="overlay" heading="AI PM 工作台" onClose={close} restoreFocus={restoreFocus} workbench>
     <style>{workbenchCss}</style>
+    <style>{validationCss}</style>
     <div className="pmwb-shell">
       <header className="pmwb-shell-header" data-dsh-pm-workbench="workbench-header">
         <div className="pmwb-brand">
@@ -277,9 +281,10 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
         </div>
         <ProjectList state={state} onNew={() => setCreateDialog(true)} onSelect={id => { if (id !== state.selectedProjectId) void run(() => store.selectProject(id)) }} />
         <nav className="pmwb-stepper" data-dsh-pm-workbench="stepper">{steps.map((label, index) => {
-          const stage = index as 0 | 1 | 2
+          const stage = index as 0 | 1 | 2 | 3 | 4
           const available = stage === 0 || stage === 1 && !!state.selectedProject?.analysis
             || stage === 2 && (!!state.selectedProject?.currentBaseline || (state.selectedProject?.prdSummaries.length ?? 0) > 0)
+            || stage >= 3 && !!validationClient && (state.selectedProject?.prdSummaries.length ?? 0) > 0
           return <button key={label} type="button" data-dsh-pm-workbench={`step-${index}`}
             className={stage < currentStep ? 'is-complete' : undefined} aria-current={stage === activeStage ? 'step' : undefined}
             disabled={!available} onClick={() => setActiveStage(stage)}><span>{index + 1}</span>{label}</button>
@@ -305,7 +310,7 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
             <MaterialPane store={store} state={state} pending={pending > 0} onResult={report} onReading={setMaterialReading}
                 onReadStart={() => { const update = ownAlert(); update(undefined); return {
                   onResult: result => report(result, update),
-                  onReadError: () => update('材料读取失败，请检查 TXT 或 Markdown 文件及 UTF-8 编码后重试'),
+                  onReadError: () => update('材料读取失败，请检查 Word、TXT 或 Markdown 文件；文本请使用 UTF-8 编码，Word 文件请勿加密'),
                 } }}
                 onSave={() => mutate(async () => { const result = await store.importMaterial(); if (!result.ok) return result; return store.loadSource() })}
                 onAnalyse={() => mutate(() => localCommand('analysis.runHarnessModel'))} />
@@ -317,7 +322,11 @@ export function WorkbenchView({ store, createCommandId = () => globalThis.crypto
           {activeStage === 2 && <section className="pmwb-surface pmwb-prd-surface">
             <header><div><span>PRD</span><h2>{state.selectedProject.header.name}</h2></div><p>基于人工确认的本期范围生成。</p></header>
             <PrdPane state={state} onSelect={selectPrd} onDownload={exportPrd} onRegenerate={regeneratePrd} pending={pending > 0} />
+            {validationClient && <div className="pmwb-actions"><button type="button" className="pmwb-primary" data-dsh-pm-workbench="continue-to-validation"
+              disabled={!state.selectedMarkdown || pending > 0 || state.dirty} onClick={() => setActiveStage(3)}>进入方案验证 →</button></div>}
           </section>}
+          {(activeStage === 3 || activeStage === 4) && validationClient && <ValidationPane key={state.selectedProjectId} state={state} client={validationClient}
+            stage={activeStage === 3 ? 'validation' : 'handoff'} onStage={setActiveStage} onReview={() => setActiveStage(1)} onSelectPrd={selectPrd} onDownloadPrd={exportPrd} />}
         </> : <section className="pmwb-empty-state pmwb-surface" data-dsh-pm-workbench="empty-state">
             <PrismMark className="pmwb-empty-mark" />
             <h2>还没有项目</h2>

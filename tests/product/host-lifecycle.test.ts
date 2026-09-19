@@ -9,6 +9,8 @@ import type { ProjectId } from '../../packages/workbench/src/domain/ids.js'
 import type { StoredProjectRecord } from '../../packages/workbench/src/domain/model.js'
 import { createFakeDomainTable } from './helpers/fake-domain-table.js'
 import { SMALL_PROJECT_ID, OTHER_PROJECT_ID } from './helpers/synthetic-records.js'
+import { validationDomainSpec } from '../../packages/workbench/src/integration/harness-rc6/validation-domain.js'
+import type { ValidationRecord } from '../../packages/workbench/src/validation/model.js'
 
 const api = { apiVersion: 'pmwb-product-v1' }
 const command = { ...api, projectId: SMALL_PROJECT_ID, commandId: '10000000-0000-4000-8000-000000000001', expectedVersion: 0,
@@ -22,16 +24,27 @@ function makeHostContext(options: { openError?: unknown; tableError?: unknown; r
   routeDispose?: () => Promise<void>; closeError?: unknown; duringRegistration?: (handler: ConnectionRpcHandler) => void } = {}) {
   const events: string[] = []
   const table = createFakeDomainTable<ProjectId, StoredProjectRecord>()
+  const validationTable = createFakeDomainTable<string, ValidationRecord>()
   let handler!: ConnectionRpcHandler
+  let validationHandler!: ConnectionRpcHandler
   const domain = { closed: false,
     table(name: string) { expect(name).toBe('projects'); if (options.tableError) throw options.tableError; return table },
     async close() { events.push('domain.close'); await table.close(); domain.closed = true; if (options.closeError) throw options.closeError },
   }
+  const validationDomain = { closed: false,
+    table(name: string) { expect(name).toBe('tasks'); return validationTable },
+    async close() { events.push('validation.close'); await validationTable.close(); validationDomain.closed = true },
+  }
   const ctx = { storageDomain: { async open(spec: unknown) {
+    if (spec === validationDomainSpec) { events.push('validation.open'); return validationDomain }
     events.push('domain.open'); expect(spec).toBe(projectDomainSpec)
     if (options.openError) throw options.openError
     return domain
   } }, connection: { rpc: { handle(channel: string, registered: ConnectionRpcHandler, routeOptions: unknown) {
+    if (channel === '/dsh-pm-validation-v1') {
+      events.push('validation.route.handle'); expect(routeOptions).toEqual({ authority: 'loopback' }); validationHandler = registered
+      return () => { events.push('validation.route.dispose'); return Promise.resolve() }
+    }
     events.push('route.handle')
     expect(channel).toBe('/dsh-pm-workbench-product-v1')
     expect(routeOptions).toEqual({ authority: 'loopback' })
@@ -41,7 +54,8 @@ function makeHostContext(options: { openError?: unknown; tableError?: unknown; r
     return () => { events.push('route.dispose'); return options.routeDispose?.() ?? Promise.resolve() }
   } } } } as unknown as Context
   const call = (endpoint = 'health', payload: unknown = api, signal = new AbortController().signal) => handler(endpoint, payload, signal)
-  return { ctx, events, table, domain, call }
+  const callValidation = (payload: unknown) => validationHandler('request', payload, new AbortController().signal)
+  return { ctx, events, table, domain, call, validationDomain, validationTable, callValidation }
 }
 function observeRepositoryClose(events: string[], error?: unknown) {
   const close = TableProjectRepository.prototype.close
@@ -54,15 +68,17 @@ function observeRepositoryClose(events: string[], error?: unknown) {
 afterEach(() => vi.restoreAllMocks())
 
 describe('Product Host ownership and lifecycle', () => {
-  it('opens before its single loopback registration and exposes the Product injection contract', async () => {
+  it('owns both loopback domains and routes, and closes both after their admitted requests', async () => {
     const host = makeHostContext()
     const close = observeRepositoryClose(host.events)
     const dispose = await apply(host.ctx)
     expect(inject).toEqual(['connection', 'storageDomain', 'agents', 'subagents', 'agentDefaultModel', 'tools'])
-    expect(host.events).toEqual(['domain.open', 'route.handle'])
+    expect(host.events).toEqual(['domain.open', 'route.handle', 'validation.open', 'validation.route.handle'])
     expect(await host.call()).toMatchObject({ ok: true, value: { status: 'accepted', value: { analysisMode: 'hybrid', modelAnalysis: true, realDataAllowed: true } } })
     await dispose()
-    expect(host.events).toEqual(['domain.open', 'route.handle', 'route.dispose', 'repository.close', 'domain.close'])
+    expect(host.events).toEqual(['domain.open', 'route.handle', 'validation.open', 'validation.route.handle',
+      'route.dispose', 'validation.route.dispose', 'validation.close', 'repository.close', 'domain.close'])
+    expect(host.validationDomain.closed).toBe(true)
     expect(close).toHaveBeenCalledTimes(1)
   })
 
@@ -238,7 +254,8 @@ describe('Product Host ownership and lifecycle', () => {
     await request
     await failed
     expect(dispose()).toBe(closing)
-    expect(host.events).toEqual(['domain.open', 'route.handle', 'route.dispose', 'repository.close', 'domain.close'])
+    expect(host.events).toEqual(['domain.open', 'route.handle', 'validation.open', 'validation.route.handle',
+      'route.dispose', 'validation.route.dispose', 'validation.close', 'repository.close', 'domain.close'])
     expect(host.domain.closed).toBe(true)
   })
 

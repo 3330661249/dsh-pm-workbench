@@ -8,6 +8,7 @@ import { createWorkbenchStore, type WorkbenchStore } from './workbench/store.js'
 import { ConnectionRpcWorkbenchTransport } from './workbench/transport.js'
 import { WorkbenchBrowserPort } from './workbench/browser-port.js'
 import type { FocusTarget } from './workbench/ProjectList.js'
+import { RpcValidationClient } from './workbench/validation-client.js'
 
 export const inject = ['connection', 'slots'] as const
 export type WorkbenchClientContext = ClientContext & { readonly connection: ConnectionHandle }
@@ -22,6 +23,7 @@ function cleanupAll(cleanups: readonly ((() => void) | undefined)[]) {
 
 export function mountWorkbenchClient(ctx: WorkbenchClientContext, suppliedStore?: WorkbenchStore): () => void {
   const uuid = () => globalThis.crypto.randomUUID().toLowerCase()
+  const validationClient = new RpcValidationClient(ctx.connection.rpc)
   const picker = (globalThis as unknown as { showSaveFilePicker?: ConstructorParameters<typeof WorkbenchBrowserPort>[0]['pickSaveFile'] }).showSaveFilePicker
   const store = suppliedStore ?? createWorkbenchStore(new ConnectionRpcWorkbenchTransport(ctx.connection.rpc),
     { createCommandId: uuid, createProjectId: uuid }, new WorkbenchBrowserPort({
@@ -58,7 +60,7 @@ export function mountWorkbenchClient(ctx: WorkbenchClientContext, suppliedStore?
       })().catch(() => { if (current()) setError('工作台暂时无法连接') })
     }} />{error && <p role="alert">{error}</p>}</>
   }
-  function Overlay() { return <WorkbenchView store={store} createCommandId={uuid} onClose={invalidateOpening} restoreFocus={() => { if (launcher?.isConnected !== false) launcher?.focus() }} /> }
+  function Overlay() { return <WorkbenchView store={store} validationClient={validationClient} createCommandId={uuid} onClose={invalidateOpening} restoreFocus={() => { if (launcher?.isConnected !== false) launcher?.focus() }} /> }
   let disposeLauncher: (() => void) | undefined, disposeOverlay: (() => void) | undefined
   try {
     disposeLauncher = ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register(

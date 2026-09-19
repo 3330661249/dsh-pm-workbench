@@ -107,7 +107,6 @@ const zodInputs = new Set([
 const hostApplicationInputs = new Set([
   "packages/workbench/skills/create-prd/SKILL.md",
   "packages/workbench/src/analysis/create-prd-renderer.ts",
-  "packages/workbench/src/integration/harness-rc6/subagent-prd-runner.ts",
   "packages/workbench/src/analysis/fixture-engine.ts",
   "packages/workbench/src/analysis/fixture-manifest.ts",
   "packages/workbench/src/analysis/harness-model-engine.ts",
@@ -129,12 +128,17 @@ const hostApplicationInputs = new Set([
   "packages/workbench/src/domain/requirements.ts",
   "packages/workbench/src/domain/text.ts",
   "packages/workbench/src/index.ts",
-  "packages/workbench/src/integration/harness-rc6/product-host.ts",
   "packages/workbench/src/integration/harness-rc6/cordis-analysis-port.ts",
+  "packages/workbench/src/integration/harness-rc6/product-host.ts",
   "packages/workbench/src/integration/harness-rc6/project-domain.ts",
   "packages/workbench/src/integration/harness-rc6/subagent-analysis-runner.ts",
+  "packages/workbench/src/integration/harness-rc6/subagent-prd-runner.ts",
+  "packages/workbench/src/integration/harness-rc6/validation-domain.ts",
   "packages/workbench/src/protocol/canonical-json.ts",
-  "packages/workbench/src/protocol/product.ts"
+  "packages/workbench/src/protocol/product.ts",
+  "packages/workbench/src/validation/model.ts",
+  "packages/workbench/src/validation/runner.ts",
+  "packages/workbench/src/validation/service.ts"
 ])
 const clientApplicationInputs = new Set([
   "packages/workbench/src/analysis/fixture-manifest.ts",
@@ -146,25 +150,30 @@ const clientApplicationInputs = new Set([
   "packages/workbench/src/client/workbench/PriorityPane.tsx",
   "packages/workbench/src/client/workbench/ProjectList.tsx",
   "packages/workbench/src/client/workbench/RequirementsPane.tsx",
+  "packages/workbench/src/client/workbench/ValidationPane.tsx",
   "packages/workbench/src/client/workbench/WorkbenchView.tsx",
   "packages/workbench/src/client/workbench/browser-port.ts",
+  "packages/workbench/src/client/workbench/docx-input.ts",
+  "packages/workbench/src/client/workbench/handoff-export.ts",
   "packages/workbench/src/client/workbench/material-input.ts",
   "packages/workbench/src/client/workbench/store.ts",
   "packages/workbench/src/client/workbench/styles.ts",
   "packages/workbench/src/client/workbench/transport.ts",
+  "packages/workbench/src/client/workbench/validation-client.ts",
+  "packages/workbench/src/client/workbench/validation-styles.ts",
   "packages/workbench/src/client/workbench/web-sha256.ts",
   "packages/workbench/src/domain/ids.ts",
   "packages/workbench/src/domain/limits.ts",
   "packages/workbench/src/domain/model.ts",
   "packages/workbench/src/domain/text.ts",
   "packages/workbench/src/protocol/canonical-json.ts",
-  "packages/workbench/src/protocol/product.ts"
+  "packages/workbench/src/protocol/product.ts",
+  "packages/workbench/src/validation/model.ts"
 ])
 const reviewedImports = {
   "packages/workbench/skills/create-prd/SKILL.md": [],
-  "packages/workbench/src/analysis/create-prd-renderer.ts": [["node_modules/zod/index.js", "import-statement", false], ["packages/workbench/src/domain/limits.ts", "import-statement", false], ["packages/workbench/src/domain/model.ts", "import-statement", false], ["packages/workbench/src/domain/prd.ts", "import-statement", false]],
-  "packages/workbench/src/integration/harness-rc6/subagent-prd-runner.ts": [["packages/workbench/src/analysis/create-prd-renderer.ts", "import-statement", false], ["packages/workbench/src/analysis/types.ts", "import-statement", false]],
-
+  "packages/workbench/src/analysis/create-prd-renderer.ts": [["node_modules/zod/index.js","import-statement",false],["packages/workbench/src/domain/limits.ts","import-statement",false],["packages/workbench/src/domain/model.ts","import-statement",false],["packages/workbench/src/domain/prd.ts","import-statement",false]],
+  "packages/workbench/src/integration/harness-rc6/subagent-prd-runner.ts": [["packages/workbench/src/analysis/create-prd-renderer.ts","import-statement",false],["packages/workbench/src/analysis/types.ts","import-statement",false]],
   "node_modules/zod/index.js": [["node_modules/zod/v4/classic/external.js","import-statement",false],["node_modules/zod/v4/classic/external.js","import-statement",false]],
   "node_modules/zod/v4/classic/checks.js": [["node_modules/zod/v4/core/index.js","import-statement",false]],
   "node_modules/zod/v4/classic/coerce.js": [["node_modules/zod/v4/core/index.js","import-statement",false],["node_modules/zod/v4/classic/schemas.js","import-statement",false]],
@@ -255,15 +264,15 @@ const reviewedImports = {
   "packages/workbench/src/application/project-service.ts": [["packages/workbench/src/protocol/product.ts","import-statement",false],["./project-repository.js","import-statement",true],["packages/workbench/src/application/project-views.ts","import-statement",false]],
   "packages/workbench/src/application/project-views.ts": [["node_modules/zod/index.js","import-statement",false],["packages/workbench/src/domain/ids.ts","import-statement",false],["packages/workbench/src/domain/model.ts","import-statement",false],["packages/workbench/src/domain/limits.ts","import-statement",false]],
   "packages/workbench/src/application/receipts.ts": [["packages/workbench/src/domain/model.ts","import-statement",false],["packages/workbench/src/protocol/canonical-json.ts","import-statement",false],["packages/workbench/src/protocol/product.ts","import-statement",false]],
-  "packages/workbench/src/client/index.tsx": [["react","import-statement",true],["packages/workbench/src/client/workbench/WorkbenchView.tsx","import-statement",false],["packages/workbench/src/client/workbench/store.ts","import-statement",false],["packages/workbench/src/client/workbench/transport.ts","import-statement",false],["packages/workbench/src/client/workbench/browser-port.ts","import-statement",false],["react/jsx-runtime","import-statement",true]],
+  "packages/workbench/src/client/index.tsx": [["react","import-statement",true],["packages/workbench/src/client/workbench/WorkbenchView.tsx","import-statement",false],["packages/workbench/src/client/workbench/store.ts","import-statement",false],["packages/workbench/src/client/workbench/transport.ts","import-statement",false],["packages/workbench/src/client/workbench/browser-port.ts","import-statement",false],["packages/workbench/src/client/workbench/validation-client.ts","import-statement",false],["react/jsx-runtime","import-statement",true]],
   "packages/workbench/src/client/workbench/MaterialPane.tsx": [["react","import-statement",true],["packages/workbench/src/analysis/fixture-manifest.ts","import-statement",false],["packages/workbench/src/client/workbench/material-input.ts","import-statement",false],["react/jsx-runtime","import-statement",true]],
   "packages/workbench/src/client/workbench/PrdPane.tsx": [["react/jsx-runtime","import-statement",true]],
   "packages/workbench/src/client/workbench/PriorityPane.tsx": [["packages/workbench/src/client/workbench/RequirementsPane.tsx","import-statement",false],["react/jsx-runtime","import-statement",true]],
   "packages/workbench/src/client/workbench/ProjectList.tsx": [["react","import-statement",true],["packages/workbench/src/client/workbench/styles.ts","import-statement",false],["react/jsx-runtime","import-statement",true]],
   "packages/workbench/src/client/workbench/RequirementsPane.tsx": [["react","import-statement",true],["react/jsx-runtime","import-statement",true]],
-  "packages/workbench/src/client/workbench/WorkbenchView.tsx": [["react","import-statement",true],["packages/workbench/src/protocol/product.ts","import-statement",false],["packages/workbench/src/client/workbench/ProjectList.tsx","import-statement",false],["packages/workbench/src/client/workbench/MaterialPane.tsx","import-statement",false],["packages/workbench/src/client/workbench/RequirementsPane.tsx","import-statement",false],["packages/workbench/src/client/workbench/PriorityPane.tsx","import-statement",false],["packages/workbench/src/client/workbench/PrdPane.tsx","import-statement",false],["packages/workbench/src/client/workbench/styles.ts","import-statement",false],["react/jsx-runtime","import-statement",true]],
+  "packages/workbench/src/client/workbench/WorkbenchView.tsx": [["react","import-statement",true],["packages/workbench/src/protocol/product.ts","import-statement",false],["packages/workbench/src/client/workbench/ProjectList.tsx","import-statement",false],["packages/workbench/src/client/workbench/MaterialPane.tsx","import-statement",false],["packages/workbench/src/client/workbench/RequirementsPane.tsx","import-statement",false],["packages/workbench/src/client/workbench/PriorityPane.tsx","import-statement",false],["packages/workbench/src/client/workbench/PrdPane.tsx","import-statement",false],["packages/workbench/src/client/workbench/styles.ts","import-statement",false],["packages/workbench/src/client/workbench/ValidationPane.tsx","import-statement",false],["packages/workbench/src/client/workbench/validation-styles.ts","import-statement",false],["react/jsx-runtime","import-statement",true]],
   "packages/workbench/src/client/workbench/browser-port.ts": [["packages/workbench/src/client/workbench/transport.ts","import-statement",false]],
-  "packages/workbench/src/client/workbench/material-input.ts": [["packages/workbench/src/analysis/fixture-manifest.ts","import-statement",false],["packages/workbench/src/domain/model.ts","import-statement",false],["packages/workbench/src/domain/limits.ts","import-statement",false],["packages/workbench/src/domain/text.ts","import-statement",false],["packages/workbench/src/client/workbench/web-sha256.ts","import-statement",false]],
+  "packages/workbench/src/client/workbench/material-input.ts": [["packages/workbench/src/analysis/fixture-manifest.ts","import-statement",false],["packages/workbench/src/domain/model.ts","import-statement",false],["packages/workbench/src/domain/limits.ts","import-statement",false],["packages/workbench/src/domain/text.ts","import-statement",false],["packages/workbench/src/client/workbench/web-sha256.ts","import-statement",false],["packages/workbench/src/client/workbench/docx-input.ts","import-statement",false]],
   "packages/workbench/src/client/workbench/store.ts": [["packages/workbench/src/protocol/product.ts","import-statement",false],["packages/workbench/src/protocol/canonical-json.ts","import-statement",false],["packages/workbench/src/domain/ids.ts","import-statement",false],["packages/workbench/src/client/workbench/transport.ts","import-statement",false],["packages/workbench/src/client/workbench/material-input.ts","import-statement",false]],
   "packages/workbench/src/client/workbench/styles.ts": [],
   "packages/workbench/src/client/workbench/transport.ts": [["packages/workbench/src/analysis/fixture-manifest.ts","import-statement",false],["packages/workbench/src/protocol/product.ts","import-statement",false],["packages/workbench/src/client/workbench/web-sha256.ts","import-statement",false]],
@@ -279,11 +288,20 @@ const reviewedImports = {
   "packages/workbench/src/domain/text.ts": [["packages/workbench/src/domain/limits.ts","import-statement",false],["packages/workbench/src/domain/model.ts","import-statement",false]],
   "packages/workbench/src/index.ts": [["packages/workbench/src/config.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/product-host.ts","import-statement",false]],
   "packages/workbench/src/integration/harness-rc6/cordis-analysis-port.ts": [["node:crypto","import-statement",true],["@deepseek-ai/dsh-agent-default-model","import-statement",true],["@deepseek-ai/dsh-session","import-statement",true],["@deepseek-ai/dsh-tools","import-statement",true]],
-  "packages/workbench/src/integration/harness-rc6/product-host.ts": [["node:crypto","import-statement",true],["packages/workbench/skills/create-prd/SKILL.md","import-statement",false],["packages/workbench/src/analysis/create-prd-renderer.ts","import-statement",false],["packages/workbench/src/analysis/fixture-engine.ts","import-statement",false],["packages/workbench/src/analysis/harness-model-engine.ts","import-statement",false],["packages/workbench/src/analysis/fixture-manifest.ts","import-statement",false],["packages/workbench/src/analysis/types.ts","import-statement",false],["packages/workbench/src/application/node-sha256.ts","import-statement",false],["packages/workbench/src/application/product-handler.ts","import-statement",false],["packages/workbench/src/application/project-repository.ts","import-statement",false],["packages/workbench/src/application/project-service.ts","import-statement",false],["packages/workbench/src/protocol/product.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/cordis-analysis-port.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/project-domain.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/subagent-analysis-runner.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/subagent-prd-runner.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/project-domain.ts","import-statement",false]],
+  "packages/workbench/src/integration/harness-rc6/product-host.ts": [["node:crypto","import-statement",true],["packages/workbench/skills/create-prd/SKILL.md","import-statement",false],["packages/workbench/src/analysis/create-prd-renderer.ts","import-statement",false],["packages/workbench/src/analysis/fixture-engine.ts","import-statement",false],["packages/workbench/src/analysis/harness-model-engine.ts","import-statement",false],["packages/workbench/src/analysis/fixture-manifest.ts","import-statement",false],["packages/workbench/src/analysis/types.ts","import-statement",false],["packages/workbench/src/application/node-sha256.ts","import-statement",false],["packages/workbench/src/application/product-handler.ts","import-statement",false],["packages/workbench/src/application/project-repository.ts","import-statement",false],["packages/workbench/src/application/project-service.ts","import-statement",false],["packages/workbench/src/protocol/product.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/cordis-analysis-port.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/project-domain.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/subagent-analysis-runner.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/subagent-prd-runner.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/validation-domain.ts","import-statement",false],["packages/workbench/src/validation/service.ts","import-statement",false],["packages/workbench/src/validation/runner.ts","import-statement",false],["packages/workbench/src/validation/model.ts","import-statement",false],["packages/workbench/src/integration/harness-rc6/project-domain.ts","import-statement",false]],
   "packages/workbench/src/integration/harness-rc6/project-domain.ts": [["@deepseek-ai/dsh-storage-domain","import-statement",true],["packages/workbench/src/domain/model.ts","import-statement",false]],
   "packages/workbench/src/integration/harness-rc6/subagent-analysis-runner.ts": [["packages/workbench/src/analysis/harness-model-engine.ts","import-statement",false],["packages/workbench/src/analysis/types.ts","import-statement",false]],
   "packages/workbench/src/protocol/canonical-json.ts": [["packages/workbench/src/domain/limits.ts","import-statement",false]],
   "packages/workbench/src/protocol/product.ts": [["node_modules/zod/index.js","import-statement",false],["packages/workbench/src/domain/ids.ts","import-statement",false],["packages/workbench/src/domain/model.ts","import-statement",false],["packages/workbench/src/domain/limits.ts","import-statement",false],["packages/workbench/src/application/project-views.ts","import-statement",false],["packages/workbench/src/protocol/canonical-json.ts","import-statement",false]],
+  "packages/workbench/src/validation/model.ts": [["node_modules/zod/index.js","import-statement",false]],
+  "packages/workbench/src/integration/harness-rc6/validation-domain.ts": [["@deepseek-ai/dsh-storage-domain","import-statement",true],["packages/workbench/src/validation/model.ts","import-statement",false]],
+  "packages/workbench/src/validation/runner.ts": [["node_modules/zod/index.js","import-statement",false],["packages/workbench/src/validation/model.ts","import-statement",false]],
+  "packages/workbench/src/validation/service.ts": [["node:crypto","import-statement",true],["packages/workbench/src/domain/ids.ts","import-statement",false],["packages/workbench/src/protocol/canonical-json.ts","import-statement",false],["packages/workbench/src/validation/runner.ts","import-statement",false],["packages/workbench/src/validation/model.ts","import-statement",false]],
+  "packages/workbench/src/client/workbench/docx-input.ts": [],
+  "packages/workbench/src/client/workbench/validation-client.ts": [["packages/workbench/src/validation/model.ts","import-statement",false]],
+  "packages/workbench/src/client/workbench/handoff-export.ts": [["packages/workbench/src/client/workbench/browser-port.ts","import-statement",false]],
+  "packages/workbench/src/client/workbench/ValidationPane.tsx": [["react","import-statement",true],["packages/workbench/src/validation/model.ts","import-statement",false],["packages/workbench/src/client/workbench/validation-client.ts","import-statement",false],["packages/workbench/src/client/workbench/handoff-export.ts","import-statement",false],["react/jsx-runtime","import-statement",true]],
+  "packages/workbench/src/client/workbench/validation-styles.ts": []
 }
 const hostExternals = Object.freeze(["@deepseek-ai/dsh-agent-default-model", "@deepseek-ai/dsh-session", "@deepseek-ai/dsh-storage-domain", "@deepseek-ai/dsh-tools", "node:crypto"])
 const clientExternals = Object.freeze(["react", "react/jsx-runtime"])
@@ -305,7 +323,17 @@ const outputImports = {
       true
     ],
     [
+      "@deepseek-ai/dsh-storage-domain",
+      "import-statement",
+      true
+    ],
+    [
       "@deepseek-ai/dsh-tools",
+      "import-statement",
+      true
+    ],
+    [
+      "node:crypto",
       "import-statement",
       true
     ],
@@ -353,6 +381,16 @@ const outputImports = {
     ],
     [
       "react",
+      "require-call",
+      true
+    ],
+    [
+      "react",
+      "require-call",
+      true
+    ],
+    [
+      "react/jsx-runtime",
       "require-call",
       true
     ],

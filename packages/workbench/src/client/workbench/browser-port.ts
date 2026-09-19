@@ -58,7 +58,7 @@ function wordZip(parts: Readonly<Record<string, string>>): Uint8Array<ArrayBuffe
 }
 
 /** Format the current renderer's headings, flat lists and literal text as native Word paragraphs. */
-function wordDocument(markdown: string): Blob {
+export function wordDocument(markdown: string): Blob {
   const title = rendererText(markdown.match(/^- 项目名称：(.*)$/m)?.[1]?.trim() || '产品需求文档')
   const paragraph = (text: string, style = 'Normal', bullet = false, pageBreak = false) =>
     `<w:p><w:pPr><w:pStyle w:val="${style}"/>${pageBreak ? '<w:pageBreakBefore/>' : ''}${bullet ? '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>' : ''}</w:pPr><w:r><w:t xml:space="preserve">${xmlText(text)}</w:t></w:r></w:p>`

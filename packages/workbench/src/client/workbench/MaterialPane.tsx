@@ -46,20 +46,21 @@ export function MaterialPane({ store, state, pending, onResult, onReadStart, onR
       && current.saveState !== 'uncertain' && !!value.verified && value.verified === current.materialDraft && value.text === value.verified.text
   }
   return <>
-    <p>支持粘贴或导入 TXT、Markdown 访谈材料</p>
+    <p>支持粘贴或导入 TXT、Markdown、Word 访谈材料</p>
     <button type="button" data-dsh-pm-workbench="load-fixture" disabled={locked}
       onClick={() => { if (!locked) void read({ kind: 'paste', text: BUILT_IN_SYNTHETIC_TEXT, displayName: 'synthetic.txt' }) }}>载入合成测试材料</button>
     <label id={`${id}-text`} htmlFor={`${id}-text-input`}>访谈材料正文</label>
     <textarea id={`${id}-text-input`} aria-labelledby={`${id}-text`} data-dsh-pm-workbench="material-input" disabled={locked}
       value={edit.text} onChange={event => { if (!locked) void read({ kind: 'paste', text: event.currentTarget.value, displayName: 'pasted.txt' }) }} />
-    <label id={`${id}-file`} htmlFor={`${id}-file-input`}>导入 TXT 或 Markdown 文件（UTF-8）</label>
-    <input id={`${id}-file-input`} aria-labelledby={`${id}-file`} type="file" accept=".txt,.md,text/plain,text/markdown"
+    <label id={`${id}-file`} htmlFor={`${id}-file-input`}>导入 TXT、Markdown 或 Word（.docx）</label>
+    <input id={`${id}-file-input`} aria-labelledby={`${id}-file`} type="file" accept=".txt,.md,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
       data-dsh-pm-workbench="material-file" disabled={locked} onChange={event => {
         if (!live()) return
         const file = event.currentTarget.files?.[0]
         if (file && !locked) void read({ kind: 'file', file })
         event.currentTarget.value = ''
       }} />
+    <p className="pmwb-notice">Word 文件最大 10 MB，仅提取正文和表格文字，不含图片、页眉页脚；请在上方预览正文后确认保存。</p>
     {state.materialDraft && <p>当前草稿：{state.materialDraft.displayName}</p>}
     <label><input type="checkbox" data-dsh-pm-workbench="data-use-attestation" checked={validated() && state.importAttested} disabled={locked || !validated()}
       onChange={event => { if (!locked && validated()) onResult(store.setMaterialDraft(visibleEdit.current.verified!, event.currentTarget.checked)) }} />

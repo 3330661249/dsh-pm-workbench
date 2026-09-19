@@ -12,14 +12,16 @@ PRD drafting, and adversarial review. It stops at three human decision gates:
 evidence confirmation, requirement/priority confirmation, and PRD publication
 confirmation.
 
-The current Skill workflow handles readable text. Audio transcription and
-prototype generation are not part of this release. Content submitted in a
+The current Skill workflow handles readable text. Audio transcription is not
+part of this release. The visual panel now includes a controlled Demo and POC
+validation center. Content submitted in a
 Harness conversation is processed by the model provider configured for that
 session; do not submit customer data unless that processing is authorized.
 
 ## Stage 3A Product panel
 
-The Product workflow is materials → requirements → priority review → PRD. Its
+The Product workflow is materials → requirements → priority review → PRD →
+validation → engineering handoff. Its
 Host owns the project aggregate and strict Connection RPC on
 `/dsh-pm-workbench-product-v1`; its Client contributes an additive launcher and
 overlay. The six endpoints are `health`, `projects.list`, `projects.get`,
@@ -27,7 +29,11 @@ overlay. The six endpoints are `health`, `projects.list`, `projects.get`,
 bundled into both outputs; React and the observed public Harness runtime imports
 remain external. There are no runtime dependencies in the package manifest.
 
-The visual workbench panel accepts pasted text, `.txt`, and `.md` material.
+The visual workbench panel accepts pasted text, `.txt`, `.md`, and `.docx` material.
+Word paragraphs and table text are extracted locally for preview; images,
+headers, footers and embedded attachments are not imported. Encrypted or
+malformed archives are rejected. The archive is limited to 10 MB and its
+document XML to 2 MB, with the existing text limits applied after extraction.
 Built-in synthetic material remains available for safe testing. Other text is
 classified as authorized real material and cannot be imported until the user
 explicitly confirms that it may be processed by the model provider currently
@@ -52,7 +58,7 @@ creates a new revision of the current saved baseline; old PRDs remain history. T
 as an editable Word (`.docx`) document locally through the single “下载PRD” button.
 Word export preserves renderer headings, lists, literal source text and traceability
 without uploading to a cloud service or changing the confirmed baseline.
-Audio, DOCX/PDF material import, and multi-interview aggregation are not part of
+Audio, PDF material import, and multi-interview aggregation are not part of
 this release. The deterministic renderer remains available for fixtures and historical data;
 the installed visual panel uses the model drafter.
 Supporting browsers show a save dialog starting on the Desktop; cancelling
@@ -63,6 +69,37 @@ Product data persists in the Harness profile by design. Package removal does
 not erase that profile data. Delete/remove is not secure erasure. Use real
 material only when the organization and participants permit the selected model
 provider to process it; remove direct identifiers when possible.
+
+## Validation center and handoff
+
+The fourth stage uses the selected immutable PRD and a selected subset of its
+confirmed requirements. Create a task in one of three modes:
+
+- **Interactive Demo:** fixed input/result/confirmation controls, clearly labelled
+  simulated output. It supports an interaction walkthrough; it does not test AI quality.
+- **Core capability:** 3–20 editable cases are processed by the configured real model.
+  Expected and actual output are shown together; automatic checks cover structure
+  and literal quotations, while business correctness remains a human judgment.
+- **Runnable POC:** a controlled input → real AI → structured result form inside
+  the workbench. New inputs can be run explicitly; this is not an arbitrary app
+  generator or standalone production deployment.
+
+AI drafts a plan, which the user can edit and confirm. If drafting fails the UI
+explicitly labels the editable fallback template. Execution requires a confirmed
+plan; paid calls are not automatically repeated after a lost response. The task,
+plan snapshots, actual results and model provenance persist in the separate
+`dsh_pm_workbench_validation` storage domain via `/dsh-pm-validation-v1`.
+Changing a plan invalidates its confirmation. Changing the source requirements
+keeps historical results visible but prevents using them as current approval.
+
+After inspecting a completed run, the user chooses pass, partial, fail, or hold.
+Partial/failed conclusions link back to requirement review. A pass enables a ZIP
+containing an editable Word handoff, a readable report, a JSON run configuration
+and usage instructions. Scope is explicit: a selected requirement passing a few
+cases does not certify the rest of the product. Exported POC configuration is a
+readable record; running the POC still requires the original Harness project and
+configured model. Cross-device import and standalone executable export are not
+included in this version.
 
 ## Evidence boundary
 

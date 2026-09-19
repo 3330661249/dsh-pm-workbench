@@ -4,6 +4,7 @@ import { MAX_SOURCE_RAW_UTF8_BYTES, MAX_SOURCE_UTF16_CODE_UNITS, hasUnpairedSurr
 import { decodeMaterialFile } from '../../domain/text.js'
 import type { Sha256Hex } from '../../domain/ids.js'
 import { webSha256Utf8 } from './web-sha256.js'
+import { MAX_DOCX_FILE_BYTES, readDocxText } from './docx-input.js'
 
 export interface MaterialFile {
   readonly name: string
@@ -28,13 +29,16 @@ export async function readMaterialDraft(input: MaterialInput): Promise<MaterialD
     const file = input.file
     const declaredSize = file.size
     displayName = sourceDisplayNameSchema.parse(file.name)
-    const extension = /\.(txt|md)$/i.exec(displayName)?.[1]?.toLowerCase()
-    if (!extension || !['', 'text/plain', 'text/markdown'].includes(file.type)) throw new Error('unsupported-file')
-    if (!Number.isSafeInteger(declaredSize) || declaredSize < 1 || declaredSize > MAX_SOURCE_RAW_UTF8_BYTES) throw new Error('invalid-file-size')
+    const extension = /\.(txt|md|docx)$/i.exec(displayName)?.[1]?.toLowerCase()
+    const isWord = extension === 'docx'
+    const allowedMime = isWord ? ['', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/octet-stream'] : ['', 'text/plain', 'text/markdown']
+    if (!extension || !allowedMime.includes(file.type)) throw new Error('unsupported-file')
+    const maximumFileSize = isWord ? MAX_DOCX_FILE_BYTES : MAX_SOURCE_RAW_UTF8_BYTES
+    if (!Number.isSafeInteger(declaredSize) || declaredSize < 1 || declaredSize > maximumFileSize) throw new Error('invalid-file-size')
     const bytes = new Uint8Array(await file.arrayBuffer())
-    if (bytes.byteLength !== declaredSize || bytes.byteLength > MAX_SOURCE_RAW_UTF8_BYTES) throw new Error('invalid-file-size')
-    format = extension === 'txt' ? 'text/plain' : 'text/markdown'
-    text = decodeMaterialFile(bytes, format, displayName).text
+    if (bytes.byteLength !== declaredSize || bytes.byteLength > maximumFileSize) throw new Error('invalid-file-size')
+    format = extension === 'md' ? 'text/markdown' : 'text/plain'
+    text = isWord ? await readDocxText(bytes) : decodeMaterialFile(bytes, format, displayName).text
   } else {
     displayName = sourceDisplayNameSchema.parse(input.displayName)
     text = input.text

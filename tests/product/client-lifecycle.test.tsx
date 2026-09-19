@@ -19,6 +19,8 @@ import type { ActiveProjectRecord, StoredProjectRecord } from '../../packages/wo
 import type { ProjectId } from '../../packages/workbench/src/domain/ids.js'
 import { createFakeDomainTable } from './helpers/fake-domain-table.js'
 import { makeSmallActiveRecord, SMALL_PROJECT_ID, OTHER_PROJECT_ID } from './helpers/synthetic-records.js'
+import { ControlledDemo, ValidationTaskDetail } from '../../packages/workbench/src/client/workbench/ValidationPane.js'
+import { makeValidationTask, validationRun } from './helpers/validation-fixtures.js'
 
 // Only React's scheduling and native host nodes are faked. Production components,
 // handlers, store, protocol, transport validation and export port execute unchanged.
@@ -132,6 +134,56 @@ class ComponentHarness {
 }
 afterEach(() => { for (const renderer of renderers.splice(0)) renderer.unmount(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 const uuid = (n: number) => `20000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`
+describe('validation interactions', () => {
+  it('requires model consent before confirming and sends the confirmed plan command', () => {
+    const onMutation = vi.fn(), task = makeValidationTask()
+    const ui = new ComponentHarness(<ValidationTaskDetail task={task} disabled={false} onMutation={onMutation} onReview={() => {}} onHandoff={() => {}} />)
+    expect(ui.text()).toContain('我已核对所选 PRD 和验证计划，并允许将本次测试材料发送给当前 Harness 模型。')
+    expect(ui.text(ui.one('validation-confirm'))).toBe('确认 PRD 与验证计划')
+    expect(ui.one('validation-confirm').props.disabled).toBe(true)
+    const checkbox = ui.nodes().find(node => node.type === 'input' && node.props.type === 'checkbox')!
+    checkbox.props.onChange({ target: { checked: true } }); ui.render()
+    expect(ui.one('validation-confirm').props.disabled).toBe(false)
+    ui.click('validation-confirm')
+    expect(onMutation).toHaveBeenCalledWith({ action: 'confirm', payload: { allowModelUse: true } }, '正在确认计划…')
+    expect(ui.one('validation-run').props.disabled).toBe(true)
+  })
+  it('runs a confirmed POC only with nonempty input', () => {
+    const onMutation = vi.fn(), task = makeValidationTask({ mode: 'poc', status: 'confirmed', allowModelUse: true, confirmedPlanVersion: 1 })
+    const ui = new ComponentHarness(<ValidationTaskDetail task={task} disabled={false} onMutation={onMutation} onReview={() => {}} onHandoff={() => {}} />)
+    expect(ui.one('validation-run').props.disabled).toBe(true)
+    const input = ui.nodes().find(node => node.type === 'textarea' && node.props.placeholder?.startsWith('粘贴一段材料'))!
+    input.props.onChange({ target: { value: '需要批量整理会议结论。' } }); ui.render()
+    expect(ui.one('validation-run').props.disabled).toBe(false); ui.click('validation-run')
+    expect(onMutation.mock.calls[0]![0]).toEqual({ action: 'run', payload: { input: '需要批量整理会议结论。' } })
+  })
+  it('states that Demo confirmation covers the PRD scope while simulated results do not prove feature completion', () => {
+    const ui = new ComponentHarness(<ValidationTaskDetail task={makeValidationTask({ mode: 'demo' })} disabled={false}
+      onMutation={() => {}} onReview={() => {}} onHandoff={() => {}} />)
+    expect(ui.text()).toContain('点击确认即表示已核对所选 PRD 范围与验证计划')
+    expect(ui.text()).toContain('不代表功能已经完成')
+    expect(ui.text(ui.one('validation-confirm'))).toBe('确认 PRD 与验证计划')
+  })
+  it('keeps automatic checks distinct from human verdict and routes partial results back to requirements', () => {
+    const onReview = vi.fn(), onMutation = vi.fn()
+    const task = makeValidationTask({ status: 'judged', confirmedPlanVersion: 1, allowModelUse: true, runs: [validationRun],
+      verdict: { value: 'partial', note: '需要补充失败场景', runId: validationRun.id, judgedAt: validationRun.completedAt! } })
+    const ui = new ComponentHarness(<ValidationTaskDetail task={task} disabled={false} onMutation={onMutation} onReview={onReview} onHandoff={() => {}} />)
+    expect(ui.text()).toContain('自动检查仅供参考')
+    expect(ui.text()).toContain('实际输出')
+    ui.click('validation-judge-hold'); expect(onMutation.mock.calls[0]![0]).toEqual({ action: 'judge', payload: { verdict: 'hold', note: '需要补充失败场景' } })
+    ui.clickText('返回需求修改 →'); expect(onReview).toHaveBeenCalledOnce()
+  })
+  it('keeps a controlled Demo visibly simulated while its input, result and reset controls work', () => {
+    const ui = new ComponentHarness(<ControlledDemo demo={{ title: '访谈整理', inputLabel: '访谈材料', actionLabel: '查看整理效果', steps: ['放入材料', '查看结果'], sampleOutput: '模拟需求：减少手工录入' }} />)
+    expect(ui.text()).toContain('模拟数据'); expect(ui.text()).not.toContain('模拟需求：减少手工录入')
+    const input = ui.nodes().find(node => node.type === 'textarea')!
+    input.props.onChange({ target: { value: '示例材料' } }); ui.render(); ui.clickText('查看整理效果'); ui.render()
+    expect(ui.text()).toContain('模拟需求：减少手工录入')
+    expect(ui.text()).toContain('不会根据输入调用模型')
+    ui.clickText('返回重新体验'); ui.render(); expect(ui.text()).not.toContain('模拟需求：减少手工录入')
+  })
+})
 function deferred<T = void>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r }); return { promise, resolve } }
 async function setup(options: { empty?: boolean; included?: boolean; browser?: Partial<WorkbenchBrowserDependencies> } = {}) {
   const table = createFakeDomainTable<ProjectId, StoredProjectRecord>([[SMALL_PROJECT_ID, makeSmallActiveRecord({ name: '合成研究一' })], [OTHER_PROJECT_ID, makeSmallActiveRecord({ projectId: OTHER_PROJECT_ID, name: '合成研究二' })]])
@@ -248,7 +300,7 @@ describe('Product lifecycle and real store handlers', () => {
     const ui = h.ui(); await ui.settle()
     ui.fire('material-file', 'onChange', { files: [{ name: 'PRIVATE_CANARY.pdf', type: 'application/pdf', size: 1, arrayBuffer: async () => new ArrayBuffer(1) }] }); await ui.settle()
     expect(h.store.getSnapshot().materialDraft).toBe(draft); expect(ui.one('material-input').props.value).toBe(BUILT_IN_SYNTHETIC_TEXT)
-    expect(ui.text()).toContain('材料读取失败，请检查 TXT 或 Markdown 文件及 UTF-8 编码后重试'); expect(ui.text()).not.toContain('PRIVATE_CANARY')
+    expect(ui.text()).toContain('材料读取失败，请检查 Word、TXT 或 Markdown 文件；文本请使用 UTF-8 编码，Word 文件请勿加密'); expect(ui.text()).not.toContain('PRIVATE_CANARY')
     const pending = deferred<ArrayBuffer>(); const bytes = new TextEncoder().encode('较早输入')
     ui.fire('material-file', 'onChange', { files: [{ name: 'earlier.txt', type: 'text/plain', size: bytes.length, arrayBuffer: () => pending.promise }] })
     ui.fire('material-input', 'onChange', { value: '较新输入' }); await ui.settle(); pending.resolve(bytes.buffer); await ui.settle()
@@ -568,7 +620,7 @@ describe('Product lifecycle and real store handlers', () => {
     expect.soft(ui.one('material-input').props.value).toBe('校验失败但应保留的可见合成文字')
     expect.soft(ui.one('save-material').props.disabled).toBe(true)
     expect(h.store.getSnapshot().materialDraft).toBe(draft)
-    expect(ui.text()).toContain('材料读取失败，请检查 TXT 或 Markdown 文件及 UTF-8 编码后重试'); expect(ui.text()).not.toContain('HASH_PRIVATE_CANARY')
+    expect(ui.text()).toContain('材料读取失败，请检查 Word、TXT 或 Markdown 文件；文本请使用 UTF-8 编码，Word 文件请勿加密'); expect(ui.text()).not.toContain('HASH_PRIVATE_CANARY')
     ui.click('save-material'); await ui.settle(); expect(h.commands).toHaveLength(0)
   })
   it('does not let an older refresh recovery replace a later historical PRD selection', async () => {
