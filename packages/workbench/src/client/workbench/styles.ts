@@ -124,8 +124,6 @@ body:has(dialog[data-dsh-pm-workbench=overlay][open]) [data-slot=sidebar] * { vi
   display: grid; place-items: center; width: 20px; height: 20px; border: 1px solid rgba(255,255,255,.16);
   border-radius: 50%; font: 600 10px/1 ui-monospace, monospace;
 }
-.pmwb .pmwb-stepper button.is-complete { color: var(--pmwb-muted); }
-.pmwb .pmwb-stepper button.is-complete > span { color: #161616; border-color: #dddddd; background: #dddddd; }
 .pmwb .pmwb-stepper button[aria-current=step] { color: var(--pmwb-text); }
 .pmwb .pmwb-stepper button[aria-current=step]::after { background: rgba(255, 255, 255, .78); }
 .pmwb .pmwb-stepper button[aria-current=step] > span { color: #161616; border-color: var(--pmwb-accent-strong); background: var(--pmwb-accent-strong); }
