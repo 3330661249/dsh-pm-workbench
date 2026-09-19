@@ -305,7 +305,7 @@ export function WorkbenchView({ store, validationClient, createCommandId = () =>
         {recovery && <p className="pmwb-toast" role="status">{pending > 0 ? '正在根据已确认范围起草 PRD，请稍候…' : '基线已确认，PRD 尚未完成，请刷新继续'}</p>}
         {state.selectedProject ? <>
           {activeStage === 0 && <section className="pmwb-surface pmwb-material-surface">
-            <header><div><span>材料</span><h2>{state.selectedProject.header.name}</h2></div>
+            <header><div><span>研究材料</span><h2>导入访谈材料</h2></div>
               <p>{state.selectedProject.header.researchGoal || '导入访谈材料，开始形成有依据的产品需求。'}</p></header>
             <MaterialPane store={store} state={state} pending={pending > 0} onResult={report} onReading={setMaterialReading}
                 onReadStart={() => { const update = ownAlert(); update(undefined); return {
@@ -313,17 +313,17 @@ export function WorkbenchView({ store, validationClient, createCommandId = () =>
                   onReadError: () => update('材料读取失败，请检查 Word、TXT 或 Markdown 文件；文本请使用 UTF-8 编码，Word 文件请勿加密'),
                 } }}
                 onSave={() => mutate(async () => { const result = await store.importMaterial(); if (!result.ok) return result; return store.loadSource() })}
-                onAnalyse={() => mutate(() => localCommand('analysis.runHarnessModel'))} />
+                onAnalyse={() => mutate(() => localCommand('analysis.runHarnessModel'))} onContinue={() => setActiveStage(1)} />
           </section>}
           {activeStage === 1 && <ReviewWorkspace store={store} state={state} confirmation={confirmation} pending={pending > 0}
             onResult={report} onSave={saveRequirements} onEvidence={() => { void run(() => store.loadSource()) }}
             onReview={() => { const token = store.prepareConfirmation(); displayConfirmation(token); report(token.ok ? done : { ok: false, code: token.reason }) }}
             onConfirm={confirm} />}
           {activeStage === 2 && <section className="pmwb-surface pmwb-prd-surface">
-            <header><div><span>PRD</span><h2>{state.selectedProject.header.name}</h2></div><p>基于人工确认的本期范围生成。</p></header>
-            <PrdPane state={state} onSelect={selectPrd} onDownload={exportPrd} onRegenerate={regeneratePrd} pending={pending > 0} />
-            {validationClient && <div className="pmwb-actions"><button type="button" className="pmwb-primary" data-dsh-pm-workbench="continue-to-validation"
-              disabled={!state.selectedMarkdown || pending > 0 || state.dirty} onClick={() => setActiveStage(3)}>进入方案验证 →</button></div>}
+            <header><div><span>已确认的需求范围</span><h2>产品需求文档</h2></div><p>核对文档，下载 PRD，再选择一个核心场景进行验证。</p></header>
+            <PrdPane state={state} onSelect={selectPrd} onDownload={exportPrd} onRegenerate={regeneratePrd} pending={pending > 0}
+              onBack={() => setActiveStage(1)} onContinue={validationClient ? () => setActiveStage(3) : undefined}
+              canContinue={!!state.selectedMarkdown && pending === 0 && !state.dirty} />
           </section>}
           {(activeStage === 3 || activeStage === 4) && validationClient && <ValidationPane key={state.selectedProjectId} state={state} client={validationClient}
             stage={activeStage === 3 ? 'validation' : 'handoff'} onStage={setActiveStage} onReview={() => setActiveStage(1)} onSelectPrd={selectPrd} onDownloadPrd={exportPrd} />}

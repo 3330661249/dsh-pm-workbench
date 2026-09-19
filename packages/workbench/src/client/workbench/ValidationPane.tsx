@@ -51,6 +51,7 @@ export function ValidationPane({ state, client, stage, onStage, onReview, onSele
   const task = stage === 'handoff' ? selected?.verdict?.value === 'pass' ? selected : matchingTasks[0] : selected
   const stale = task ? task.stale || !mutable || !project.prdSummaries.some(prd => prd.prdRevisionId === task.prdRevisionId && prd.status === 'current') : false
   const latestRun = task?.runs.at(-1)
+  const preparedHandoff = task && handoff?.taskId === task.id && handoff.version === task.version && !stale ? handoff.value : undefined
 
   async function create() {
     if (!ready || !summary || !requirements.length || pending) return
@@ -91,7 +92,9 @@ export function ValidationPane({ state, client, stage, onStage, onReview, onSele
   }
 
   return <section className="pmwb-surface pmwb-validation" data-dsh-pm-workbench={stage === 'handoff' ? 'handoff-center' : 'validation-center'}>
-    <header><div><span>{project.header.name}</span><h2>{stage === 'handoff' ? '准备交给研发' : '方案验证'}</h2></div>
+    <div className="pmwb-validation-workspace">
+    <div className="pmwb-validation-main"><div className="pmwb-validation-scroll">
+    <header className="pmwb-validation-heading"><div><h2>{stage === 'handoff' ? '准备交给研发' : '方案验证'}</h2></div>
       <p>{stage === 'handoff' ? '把已确认的范围、验证结果与待解决问题一起交付。' : '先选一段关键场景，再用适合的方式验证。'}</p></header>
     <div className="pmwb-validation-toolbar">
       <label>来源 PRD <select aria-label="验证来源 PRD" value={state.selectedPrdRevisionId ?? ''} disabled={pending}
@@ -99,19 +102,21 @@ export function ValidationPane({ state, client, stage, onStage, onReview, onSele
         {!summary && <option value="">请选择 PRD</option>}
         {project.prdSummaries.map((prd, index) => <option key={prd.prdRevisionId} value={prd.prdRevisionId}>PRD {index + 1} · {prd.status === 'current' ? '当前版本' : '历史版本'}</option>)}
       </select></label>
-      <button type="button" disabled={!!snapshot.busy} onClick={() => { void session.load() }}>刷新验证记录</button>
     </div>
     {snapshot.busy && <p className="pmwb-validation-notice" role="status" aria-live="polite"><span className="pmwb-working-dot" />{snapshot.busy}</p>}
     {snapshot.error && <p className="pmwb-validation-notice" role="alert">{snapshot.error}</p>}
     {snapshot.uncertainRequest && <button type="button" disabled={!!snapshot.busy} onClick={() => { void session.retry() }}>重试原操作</button>}
     {stage === 'validation' && <>
       {!selected && <>
+        <section className="pmwb-validation-methods"><div className="pmwb-validation-section-heading"><h3>验证方式</h3><span>选择最适合当前问题的一种</span></div>
         <div className="pmwb-validation-modes">{modes.map(item => <button type="button" key={item.value} className="pmwb-validation-mode"
           data-dsh-pm-workbench={`validation-mode-${item.value}`} aria-pressed={mode === item.value} disabled={pending} onClick={() => setMode(item.value)}>
-          <ModeIcon mode={item.value} /><strong>{item.title}</strong><span>{item.description}</span><small>{item.label}</small>
+          <ModeIcon mode={item.value} /><strong>{item.title}</strong><small>{item.label}</small>
         </button>)}</div>
+        <p className="pmwb-validation-method-description">{modes.find(item => item.value === mode)?.description}</p></section>
         <div className="pmwb-validation-create">
-          <div><h3>这次验证哪些需求？</h3><p>先选最关键的 1–3 条；验证通过仅代表本次选择的范围。</p></div>
+          <div className="pmwb-validation-section-heading"><h3>这次验证哪些需求？</h3><span>已选 {requirements.length} 条</span></div>
+          <p>先选最关键的 1–3 条；验证通过仅代表本次选择的范围。</p>
           <fieldset disabled={pending || !ready} className="pmwb-validation-scope"><legend className="pmwb-visually-hidden">需求范围</legend>
             {included.map(id => { const human = project.selectedHumanRevisions.find(item => item.requirementId === id)
               const title = human?.title ?? project.generatedRequirements.find(item => item.requirementId === id)?.title ?? '未命名需求'
@@ -119,8 +124,7 @@ export function ValidationPane({ state, client, stage, onStage, onReview, onSele
             })}
           </fieldset>
           {!ready && <p className="pmwb-validation-notice">请先保存需求，并选择与当前已确认范围一致的 PRD。</p>}
-          <div className="pmwb-validation-create-footer"><p>点击后，将所选需求和 PRD 发送给当前 Harness 模型，起草可编辑的验证计划。</p>
-            <button type="button" className="pmwb-primary" data-dsh-pm-workbench="validation-create" disabled={!ready || !requirements.length || pending} onClick={() => { void create() }}>生成验证计划</button></div>
+          {!included.length && <p className="pmwb-validation-muted">尚未纳入需求。请先在“确认优先级”中确定本期范围。</p>}
         </div>
       </>}
       {selected && <div className="pmwb-validation-detail">
@@ -144,29 +148,34 @@ export function ValidationPane({ state, client, stage, onStage, onReview, onSele
             <div><dt>人工结论</dt><dd>{verdicts[task.verdict!.value]} · {task.verdict!.note || '未补充说明'}</dd></div>
             <div><dt>来源 PRD</dt><dd>第 {project.prdSummaries.findIndex(prd => prd.prdRevisionId === task.prdRevisionId) + 1} 版</dd></div>
             <div><dt>已运行案例</dt><dd>{latestRun?.results.length ?? 0} 条</dd></div></dl>
-          <div className="pmwb-handoff-contents"><h3>交付包内容</h3><p>PRD 与需求范围 · 验收标准 · 验证报告 · 实际运行记录 · 未验证范围和风险 · 使用说明</p></div>
+          <section className="pmwb-handoff-scope"><h3>本次交付范围</h3><ul>{task.requirementTitles.map((title, index) => <li key={task.requirementIds[index] ?? index}><span>{String(index + 1).padStart(2, '0')}</span>{title}</li>)}</ul></section>
+          <section className="pmwb-handoff-contents"><h3>交付包内容</h3><ul>{['PRD 与需求范围', '验收标准', '验证报告', '实际运行记录', '未验证范围和风险', '使用说明'].map(item => <li key={item}>{item}</li>)}</ul></section>
           {stale && <p className="pmwb-validation-notice">这次验证对应的需求已变更，请在当前 PRD 下重新验证后交付。</p>}
-          <div className="pmwb-actions">
-            <button type="button" className="pmwb-primary" data-dsh-pm-workbench="validation-handoff" disabled={pending || stale || latestRun?.status !== 'completed'}
-              onClick={() => { setHandoff(undefined); void mutate(task, { action: 'handoff' }, '正在整理研发交付包…') }}>整理研发交付包</button>
-            <button type="button" onClick={() => { session.select(task.id); onStage(3) }}>查看验证依据</button>
-          </div>
-          {handoff?.taskId === task.id && handoff.version === task.version && !stale && <div className="pmwb-handoff-ready">
-            <p>研发交付包已准备好</p><button type="button" className="pmwb-primary" data-dsh-pm-workbench="download-handoff" disabled={downloadState === '正在准备交付包…'} onClick={() => { void download(handoff.value) }}>下载研发交付包</button>
-            <details><summary>预览交付内容</summary><pre>{handoff.value.markdown}</pre></details>
+          {preparedHandoff && <div className="pmwb-handoff-ready">
+            <details><summary>预览交付内容</summary><pre>{preparedHandoff.markdown}</pre></details>
           </div>}
-          {downloadState && <p role="status">{downloadState}</p>}
           {state.selectedPrdRevisionId === task.prdRevisionId && <button type="button" className="pmwb-text-action" onClick={onDownloadPrd}>仅下载来源 PRD</button>}
         </div>}
     </>}
-    <section className="pmwb-validation-history"><header><h3>{stage === 'handoff' ? '已通过的验证' : '验证记录'}</h3><span>{matchingTasks.length} 项</span></header>
+    </div></div>
+    <aside className="pmwb-validation-history" aria-label={stage === 'handoff' ? '已通过的验证' : '验证记录'}><header><h3>{stage === 'handoff' ? '已通过的验证' : '验证记录'}</h3><span>{matchingTasks.length} 项</span></header>
+      <p className="pmwb-validation-history-description">{stage === 'handoff' ? '选择一条已通过的记录，整理对应范围。' : '保留每次计划、运行结果和人工结论。'}</p>
+      <div className="pmwb-validation-history-list">
       {!matchingTasks.length && <p className="pmwb-validation-muted">{snapshot.busy ? '正在读取…' : '每次验证都会保留计划、结果与人工结论。'}</p>}
       {matchingTasks.map(item => <button type="button" className="pmwb-validation-history-row" key={item.id} disabled={pending} aria-pressed={item.id === task?.id}
         onClick={() => { setHandoff(undefined); setDownloadState(''); session.select(item.id) }}>
         <ModeIcon mode={item.mode} /><span><strong>{item.plan.title}</strong><small>{modes.find(mode => mode.value === item.mode)?.title} · {time(item.createdAt)}</small></span>
-        <span className="pmwb-validation-badge">{item.stale ? '历史依据' : item.verdict ? verdicts[item.verdict.value] : statuses[item.status]}</span><span aria-hidden="true">↗</span>
+        <span className="pmwb-validation-badge">{item.stale ? '历史依据' : item.verdict ? verdicts[item.verdict.value] : statuses[item.status]}</span>
       </button>)}
-    </section>
+      </div><button type="button" className="pmwb-validation-refresh" disabled={!!snapshot.busy} onClick={() => { void session.load() }}>刷新验证记录</button>
+    </aside></div>
+    {stage === 'validation' && !selected && <footer className="pmwb-validation-footer"><div><strong>已选择 {requirements.length} 条需求</strong><p>点击后，将所选需求和 PRD 发送给当前 Harness 模型，起草可编辑的验证计划。</p></div>
+      <button type="button" className="pmwb-primary" data-dsh-pm-workbench="validation-create" disabled={!ready || !requirements.length || pending} onClick={() => { void create() }}>生成验证计划</button></footer>}
+    {stage === 'handoff' && task && <footer className="pmwb-validation-footer"><div><strong>{preparedHandoff ? '研发交付包已准备好' : `本次交付 ${task.requirementIds.length} 条需求`}</strong><p role={downloadState ? 'status' : undefined}>{downloadState || '仅包含本次通过的范围，保留验证依据与未解决问题。'}</p></div>
+      <div className="pmwb-validation-footer-actions"><button type="button" onClick={() => { session.select(task.id); onStage(3) }}>查看验证依据</button>
+        {preparedHandoff ? <button type="button" className="pmwb-primary" data-dsh-pm-workbench="download-handoff" disabled={downloadState === '正在准备交付包…'} onClick={() => { void download(preparedHandoff) }}>下载研发交付包</button>
+          : <button type="button" className="pmwb-primary" data-dsh-pm-workbench="validation-handoff" disabled={pending || stale || latestRun?.status !== 'completed'} onClick={() => { setHandoff(undefined); void mutate(task, { action: 'handoff' }, '正在整理研发交付包…') }}>整理研发交付包</button>}
+      </div></footer>}
   </section>
 }
 

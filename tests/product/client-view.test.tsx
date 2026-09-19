@@ -5,6 +5,7 @@ import { PriorityPane } from '../../packages/workbench/src/client/workbench/Prio
 import { PrdPane } from '../../packages/workbench/src/client/workbench/PrdPane.js'
 import { ProjectList } from '../../packages/workbench/src/client/workbench/ProjectList.js'
 import { ReviewWorkspace } from '../../packages/workbench/src/client/workbench/RequirementsPane.js'
+import { MaterialPane } from '../../packages/workbench/src/client/workbench/MaterialPane.js'
 import { launcherCss, workbenchCss } from '../../packages/workbench/src/client/workbench/styles.js'
 import type { WorkbenchState, WorkbenchStore, ConfirmationSnapshot } from '../../packages/workbench/src/client/workbench/store.js'
 import type { ProjectView } from '../../packages/workbench/src/application/project-views.js'
@@ -92,12 +93,36 @@ describe('Product semantic markup', () => {
   })
 
   it('shows the authorized real-data gate in the material stage and three ordinary workflow buttons', () => {
-    const html = render({ ...ready, selectedProject: { ...project, analysis: null } })
+    const html = render({ ...ready, selectedProject: { ...project, source: null, analysis: null }, selectedSource: undefined })
     for (const text of ['支持粘贴或导入 TXT、Markdown、Word 访谈材料', '我确认有权处理这份材料，并理解点击分析后会发送给当前 Harness 模型提供方',
-      '发送给 Harness 模型并分析', '模型结果仍需经过原文引用校验和人工确认', '导入材料', '确认优先级', '生成 PRD', '确认并保存材料']) expect(html).toContain(text)
+      '确认并保存材料', '模型结果仍需经过原文引用校验和人工确认', '导入材料', '确认优先级', '生成 PRD']) expect(html).toContain(text)
     expect(html).not.toContain('当前模型验证仅支持合成测试材料')
     expect(html).not.toContain('role="tab"')
     for (const text of ['API key', 'provider', '发送消息', '选择模型', '发布基线']) expect(html).not.toContain(text)
+  })
+  it('replaces the locked empty material editor with the exact saved source and keeps analysis in a separate footer', () => {
+    const html = renderToStaticMarkup(<MaterialPane store={staticStore()} state={ready} pending={false} onResult={() => {}}
+      onReadStart={() => ({ onResult: () => {}, onReadError: () => {} })} onReading={() => {}} onSave={() => {}} onAnalyse={() => {}} onContinue={() => {}} />)
+    expect(html).toContain('class="pmwb-material-workspace"')
+    expect(html).toContain('class="pmwb-material-content"')
+    expect(html).toContain('class="pmwb-material-sidebar"')
+    expect(tag(html, 'material-input')).toBe('')
+    expect(tag(html, 'save-material')).toBe('')
+    expect(html).toContain(BUILT_IN_SYNTHETIC_TEXT)
+    expect(html).toMatch(/<footer class="pmwb-stage-footer">[\s\S]*data-dsh-pm-workbench="continue-to-review"/)
+    expect(tag(html, 'analyse-model')).toBe('') // review already started; cannot analyse again
+    expect(tag(html, 'continue-to-review')).toContain('class="pmwb-primary"')
+  })
+  it('retains the material authorization and save gates before import and excludes mismatched saved text', () => {
+    const state = { ...ready, selectedProject: { ...project, source: null, analysis: null }, selectedSource: undefined }
+    const pane = (value: WorkbenchState) => renderToStaticMarkup(<MaterialPane store={staticStore(value)} state={value} pending={false}
+      onResult={() => {}} onReadStart={() => ({ onResult: () => {}, onReadError: () => {} })} onReading={() => {}} onSave={() => {}} onAnalyse={() => {}} />)
+    const html = pane(state)
+    expect(tag(html, 'material-input')).not.toContain('disabled')
+    expect(tag(html, 'save-material')).toContain('disabled=""')
+    expect(tag(html, 'data-use-attestation')).toContain('disabled=""')
+    expect(html).toContain('我确认有权处理这份材料')
+    expect(tag(pane({ ...ready, selectedSource: undefined }), 'source-text')).toBe('')
   })
   it('uses a native pointer-active named Workbench dialog and a keyboard button launcher', () => {
     const html = render()
@@ -213,6 +238,33 @@ describe('Product semantic markup', () => {
     expect(pane(current, true)).toContain('disabled')
     expect(pane({ ...current, saveState: 'unsaved', dirty: true })).toContain('disabled')
     expect(pane({ ...current, selectedProject: { ...current.selectedProject, currentBaseline: { ...baseline, contentVersion: header.contentVersion - 1 } } })).toContain('disabled')
+  })
+  it('renders PRD headings and lists safely, keeps technical provenance folded and gates continuing on a verified selection', () => {
+    const summary = { projectId: SMALL_PROJECT_ID, prdRevisionId: prdRevisionIdSchema.parse('70000000-0000-4000-8000-000000000001'),
+      baselineId: baselineIdSchema.parse('80000000-0000-4000-8000-000000000001'), sourceRevisionId: candidate.analysis.sourceRevisionId,
+      baselineContentVersion: 7, rendererVersion: 'pmwb-prd-v1' as const, contentHash: BUILT_IN_SYNTHETIC_HASH, utf8Bytes: 15, createdAt: header.updatedAt, status: 'current' as const }
+    const state: WorkbenchState = { ...ready, selectedProject: { ...project, prdSummaries: [summary] }, selectedPrdRevisionId: summary.prdRevisionId,
+      selectedMarkdown: { ...summary, markdown: '# 产品需求\n\n## 目标\n\n- 减少**重复录入**\n- 保留原文\n\n<script>alert(1)</script>\n\n- \n\n### 可追溯信息\n- projectId=TRACE_CANARY' } }
+    const pane = (value: WorkbenchState, canContinue = true) => renderToStaticMarkup(<PrdPane state={value} onBack={() => {}} onContinue={() => {}} canContinue={canContinue} />)
+    const html = pane(state)
+    expect(html).toContain('class="pmwb-prd-workspace"')
+    expect(html).toContain('class="pmwb-prd-content"')
+    expect(html).toContain('<h1>产品需求</h1>')
+    expect(html).toContain('<h2>目标</h2>')
+    expect(html).toContain('<ul><li>减少<strong>重复录入</strong></li><li>保留原文</li></ul>')
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
+    expect(html).not.toContain('<script>')
+    expect(html).toContain('<p>- </p>')
+    expect(html.slice(html.indexOf('class="pmwb-prd-rich-text"'), html.indexOf('class="pmwb-prd-raw"'))).not.toContain('TRACE_CANARY')
+    expect(html).toContain('projectId=TRACE_CANARY')
+    expect(html).toMatch(/<details class="pmwb-prd-provenance">[\s\S]*data-dsh-pm-workbench="baseline-trace"/)
+    expect(html).toMatch(/<footer class="pmwb-stage-footer">[\s\S]*data-dsh-pm-workbench="download-prd"/)
+    expect(tag(html, 'continue-to-validation')).not.toContain('disabled')
+    expect(tag(pane(state, false), 'continue-to-validation')).toContain('disabled=""')
+    const unverified = pane({ ...state, selectedMarkdown: { ...state.selectedMarkdown!, projectId: OTHER_PROJECT_ID } })
+    expect(tag(unverified, 'download-prd')).toContain('disabled=""')
+    expect(tag(unverified, 'continue-to-validation')).toContain('disabled=""')
+    expect(unverified).not.toContain('alert(1)')
   })
   it('keeps every free-text canary out of all Product witness, title, hidden and accessibility attributes', () => {
     const html = render()
