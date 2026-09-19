@@ -21,6 +21,8 @@ import { createFakeDomainTable } from './helpers/fake-domain-table.js'
 import { makeSmallActiveRecord, SMALL_PROJECT_ID, OTHER_PROJECT_ID } from './helpers/synthetic-records.js'
 import { ControlledDemo, ValidationTaskDetail } from '../../packages/workbench/src/client/workbench/ValidationPane.js'
 import { makeValidationTask, validationRun } from './helpers/validation-fixtures.js'
+import { ReviewWorkspace } from '../../packages/workbench/src/client/workbench/RequirementsPane.js'
+import { generatedDraftIdSchema, requirementIdSchema } from '../../packages/workbench/src/domain/ids.js'
 
 // Only React's scheduling and native host nodes are faked. Production components,
 // handlers, store, protocol, transport validation and export port execute unchanged.
@@ -321,6 +323,59 @@ describe('Product lifecycle and real store handlers', () => {
     ui.click('save-requirements'); await ui.settle()
     expect(h.commands.map(command => command.payload.kind)).toEqual(['requirement.update', 'requirement.update', 'requirement.update', 'requirement.update', 'requirement.update', 'requirement.update', 'requirements.reorder'])
     expect(h.store.getSnapshot().saveState).toBe('saved'); expect(ui.one('requirement-title').props.value).toBe('新的标题')
+  })
+  it('preserves the AI priority while human priority changes before and after saving', async () => {
+    const h = await setup(); const ui = h.ui(); await ui.settle()
+    const recommendation = () => ui.nodes().find(node => node.props.className === 'pmwb-ai-recommendation')!
+    expect(ui.text(recommendation())).toContain('AI 建议：P0')
+    ui.clickTextStartingWith('P2'); ui.render()
+    expect(ui.text(recommendation())).toContain('AI 建议：P0')
+    expect(ui.nodes().find(node => node.type === 'button' && ui.text(node).startsWith('P2'))!.props['aria-pressed']).toBe(true)
+    ui.click('save-requirements'); await ui.settle()
+    expect(ui.text(recommendation())).toContain('AI 建议：P0')
+    expect(h.record().humanDecisions[0]!.priority).toBe('low')
+    expect(h.record().generatedRequirements[0]!.suggestedPriority).toBe('high')
+  })
+  it('keeps every source witness available with only the first witness outside the collapsed evidence list', async () => {
+    const h = await setup(); const ui = h.ui(); await ui.settle()
+    const expected = h.record().generatedRequirements[0]!.evidenceIds.map(id => h.record().evidence.find(item => item.id === id)!.quote)
+    expect(ui.all('evidence-quote').map(node => ui.text(node))).toEqual(expected.map(quote => `“${quote}”`))
+    const more = ui.nodes().find(node => node.type === 'details' && node.props.className === 'pmwb-more-evidence')!
+    expect(more).toBeDefined()
+    expect(more.props.open).not.toBe(true)
+    expect(ui.text(more)).not.toContain(expected[0])
+    for (const quote of expected.slice(1)) expect(ui.text(more)).toContain(quote)
+  })
+  it('opens the exact complete source inside the review panel after the source entry is clicked', async () => {
+    const h = await setup(); const ui = h.ui(); await ui.settle()
+    expect(ui.all('review-source-text')).toHaveLength(0)
+    ui.clickText('查看全部原文'); await ui.settle()
+    expect(ui.one('review-source').type).toBe('details')
+    expect(ui.one('review-source').props.open).toBe(true)
+    expect(ui.text(ui.one('review-source-text'))).toBe(BUILT_IN_SYNTHETIC_TEXT)
+    ui.fire('review-source', 'onToggle', { open: false }); ui.render()
+    expect(ui.all('review-source-text')).toHaveLength(0)
+  })
+  it('switches the selected comparison row and binds its evidence, detail edits and human decision to that requirement', async () => {
+    const h = await setup(), snapshot = h.store.getSnapshot(), project = snapshot.selectedProject!, original = project.generatedRequirements[0]!
+    const secondId = requirementIdSchema.parse(uuid(9500)), secondQuote = project.evidence[2]!
+    const second = { ...original, id: generatedDraftIdSchema.parse(uuid(9501)), requirementId: secondId, title: '第二条待核对需求',
+      suggestedPriority: 'medium' as const, evidenceIds: [secondQuote.id] }
+    const state = { ...snapshot, selectedProject: { ...project, generatedRequirements: [...project.generatedRequirements, second], requirementOrder: [...project.requirementOrder, secondId] } }
+    const edit = vi.spyOn(h.store, 'editRequirement')
+    const ui = new ComponentHarness(<ReviewWorkspace store={h.store} state={state} confirmation={{ ok: false, reason: 'unsaved' }} pending={false}
+      onResult={() => {}} onSave={() => {}} onEvidence={() => {}} onReview={() => {}} onConfirm={() => {}} />)
+    const row = ui.nodes().find(node => node.type === 'button' && node.props['data-requirement-id'] === secondId)!
+    row.props.onClick(); ui.render()
+    expect(ui.one('requirement-card').props['data-requirement-id']).toBe(secondId)
+    expect(ui.one('requirement-title').props.value).toBe(second.title)
+    expect(ui.text(ui.one('evidence-quote'))).toBe(`“${secondQuote.quote}”`)
+    expect(ui.nodes().filter(node => node.type === 'button' && node.props['data-requirement-id'] && node.props['aria-pressed'])).toHaveLength(1)
+    expect(ui.text(ui.nodes().find(node => node.props.className === 'pmwb-ai-recommendation')!)).toContain('AI 建议：P1')
+    ui.clickTextStartingWith('纳入本期')
+    expect(edit).toHaveBeenLastCalledWith(secondId, { decision: 'include' })
+    ui.fire('requirement-title', 'onChange', { value: '人工补充的第二条' })
+    expect(edit).toHaveBeenLastCalledWith(secondId, { title: '人工补充的第二条' })
   })
   it('passes the exact rendered token once, latches before awaits, and never implicitly saves during confirmation', async () => {
     const h = await setup({ included: true }); const ui = h.ui(); await ui.settle()

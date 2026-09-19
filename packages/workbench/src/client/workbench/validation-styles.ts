@@ -1,7 +1,5 @@
 export const validationCss = `
-.pmwb .pmwb-stepper { grid-template-columns: repeat(5, minmax(0, 1fr)); width: min(740px, calc(100% - 80px)); }
-.pmwb .pmwb-stepper button { padding-inline: 12px; font-size: 12px; white-space: nowrap; }
-.pmwb .pmwb-validation { width: 100%; max-width: 1160px; padding: 28px 32px; }
+.pmwb .pmwb-validation { width: 100%; max-width: none; padding: 28px 32px; }
 .pmwb-validation > header { margin-bottom: 18px; }
 .pmwb-validation h3 { font-size: 17px; font-weight: 590; letter-spacing: -.02em; }
 .pmwb-validation h4 { margin: 14px 0 7px; color: var(--pmwb-muted); font-size: 12px; font-weight: 550; }
@@ -92,11 +90,8 @@ export const validationCss = `
 .pmwb-handoff-ready { display: grid; gap: 15px; margin: 18px 0; padding: 20px; border: 1px solid var(--pmwb-line); border-radius: 12px; background: rgba(255,255,255,.045); }
 .pmwb-handoff-ready > button { justify-self: start; }
 .pmwb-handoff-ready pre { font-size: 12px; }
-@media (max-width: 1150px) { .pmwb .pmwb-stepper button { font-size: 10px; padding-inline: 7px; } .pmwb .pmwb-stepper button > span { width: 20px; height: 20px; font-size: 10px; } }
-@media (max-width: 1100px) { .pmwb .pmwb-stepper { width: 100%; } }
 @media (max-width: 900px) { .pmwb .pmwb-validation { padding: 22px; } .pmwb-validation-modes { gap: 9px; } .pmwb .pmwb-validation-mode { padding: 18px 14px; } .pmwb-validation-create > div:first-child { align-items: flex-start; flex-direction: column; gap: 7px; } .pmwb-validation-result-grid { grid-template-columns: 1fr; } }
 @media (max-width: 640px) {
-  .pmwb .pmwb-stepper button { flex-direction: column; gap: 5px; padding: 6px 4px; }
   .pmwb .pmwb-validation { padding: 19px 16px; }
   .pmwb-validation-modes { grid-template-columns: 1fr; }
   .pmwb .pmwb-validation-mode { min-height: auto; }

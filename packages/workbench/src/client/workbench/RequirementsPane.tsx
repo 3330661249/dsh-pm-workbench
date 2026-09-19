@@ -135,13 +135,17 @@ export function ReviewWorkspace({ store, state, confirmation, pending, onResult,
 }) {
   const id = useId()
   const items = state.selectedProject ? selectedRequirements(state.selectedProject, state.drafts) : []
+  const suggestions = new Map(state.selectedProject?.generatedRequirements.map(item => [item.requirementId, item.suggestedPriority]))
   const [selectedId, setSelectedId] = useState<RequirementId | undefined>(() => items[0]?.requirementId)
+  const [sourceExpanded, setSourceExpanded] = useState(false)
   const selectedIndex = Math.max(0, items.findIndex(item => item.requirementId === selectedId))
   const selected = items[selectedIndex]
+  const source = state.selectedSource?.sourceRevisionId === state.selectedProject?.source?.sourceRevisionId ? state.selectedSource : undefined
 
   useEffect(() => {
     if (!items.some(item => item.requirementId === selectedId)) setSelectedId(items[0]?.requirementId)
   }, [state.selectedProjectId, items.length, selectedId])
+  useEffect(() => { setSourceExpanded(false) }, [state.selectedProjectId, state.selectedProject?.source?.sourceRevisionId])
 
   const valid = confirmation.ok === true && state.saveState === 'saved' && !state.dirty && !pending
     && confirmation.project === state.selectedProject
@@ -174,103 +178,127 @@ export function ReviewWorkspace({ store, state, confirmation, pending, onResult,
   </section>
 
   return <section className="pmwb-review" data-dsh-pm-workbench="review-workspace">
-    <article className="pmwb-focus-panel" data-dsh-pm-workbench="requirement-card" data-requirement-id={selected.requirementId}>
-      {state.selectedProject?.analysis?.kind === 'harness-model' && <p className="pmwb-model-route" data-dsh-pm-workbench="model-route">
-        Harness 模型分析 · {state.selectedProject.analysis.provider} / {state.selectedProject.analysis.model}
-      </p>}
-      <header className="pmwb-focus-header">
-        <div>
-          <span>需求 {selectedIndex + 1} / {items.length}</span>
-          <textarea id={`${id}-title`} data-dsh-pm-workbench="requirement-title" value={selected.title} disabled={!editable}
-            onChange={event => edit({ title: event.currentTarget.value })} />
-        </div>
-        <label className="pmwb-rank-control" htmlFor={`${id}-order`}>
-          <span>排序</span>
-          <select id={`${id}-order`} data-dsh-pm-workbench="requirement-order" value={selectedIndex + 1} disabled={!editable}
-            onChange={event => move(Number(event.currentTarget.value))}>
-            {items.map((_, index) => <option key={index} value={index + 1}>第 {index + 1} 位</option>)}
-          </select>
-        </label>
+    <div className="pmwb-review-content">
+    <section className="pmwb-review-dock" data-dsh-pm-workbench="review-navigator">
+      <header className="pmwb-review-nav-header">
+        <div><h2>确认本期需求</h2><p>先核对依据，再决定优先级与本期范围。</p></div>
+        <span>{items.length} 条需求</span>
       </header>
-
-      <textarea className="pmwb-focus-description" data-dsh-pm-workbench="requirement-description" value={selected.description}
-        disabled={!editable} onChange={event => edit({ description: event.currentTarget.value })} />
-
-      <div className="pmwb-insight-grid">
-        <section>
-          <h3>用户问题</h3>
-          <textarea data-dsh-pm-workbench="requirement-pain-point" value={selected.painPoint} disabled={!editable}
-            onChange={event => edit({ painPoint: event.currentTarget.value })} />
-        </section>
-        <section>
-          <h3>AI 优先级依据</h3>
-          <p>{selected.rationale}</p>
-        </section>
+      <div className="pmwb-review-columns"><span>需求</span><span>AI 建议</span><span>人工决定</span></div>
+      <div className="pmwb-requirement-strip">
+        {items.map((item, index) => {
+          const quote = item.evidence[0]?.quote
+          // Display a contiguous sentence from the real quote; never paraphrase text inside quotation marks.
+          const sentence = quote?.match(/^[\s\S]*?[。！？.!?](?:[”’」』"])?|^[\s\S]+$/u)?.[0] ?? quote
+          const suggested = suggestions.get(item.requirementId)
+          return <button type="button" key={item.requirementId} data-requirement-id={item.requirementId}
+            className={item.requirementId === selected.requirementId ? 'is-selected' : undefined}
+            aria-pressed={item.requirementId === selected.requirementId} onClick={() => setSelectedId(item.requirementId)}>
+            <span className="pmwb-requirement-number">{String(index + 1).padStart(2, '0')}</span>
+            <span className="pmwb-requirement-summary"><strong>{item.title}</strong><small>{sentence ? `“${sentence}”` : '暂无原文依据'}</small></span>
+            <span className="pmwb-requirement-ai">{suggested ? priorityBadge[suggested] : '未提供'}</span>
+            <span className="pmwb-requirement-decision">{item.decision === 'pending' ? decisionBadge.pending : `${priorityBadge[item.priority]} · ${decisionBadge[item.decision]}`}</span>
+          </button>
+        })}
       </div>
+    </section>
 
+    <aside className="pmwb-focus-panel" data-dsh-pm-workbench="requirement-card" data-requirement-id={selected.requirementId}>
       <section className="pmwb-evidence-section">
-        <header><div><h3>典型用户原话</h3><span>{selected.evidence.length} 条依据</span></div>
-          <button type="button" className="pmwb-text-action" onClick={onEvidence}>查看全部原文</button></header>
+        <header><div><h3>原文依据</h3><span>{selected.evidence.length} 条依据</span></div>
+          <button type="button" className="pmwb-text-action" aria-expanded={sourceExpanded}
+            onClick={() => { setSourceExpanded(true); onEvidence() }}>查看全部原文</button></header>
         <div className="pmwb-evidence-list">
-          {selected.evidence.slice(0, 2).map(evidence => <Evidence key={evidence.id} evidence={evidence} source={state.selectedSource} onOpen={onEvidence} />)}
+          {selected.evidence.slice(0, 1).map(evidence => <Evidence key={evidence.id} evidence={evidence} source={source} onOpen={onEvidence} />)}
+          {selected.evidence.length > 1 && <details className="pmwb-more-evidence" key={selected.requirementId}>
+            <summary>更多原文依据（{selected.evidence.length - 1} 条）</summary>
+            {selected.evidence.slice(1).map(evidence => <Evidence key={evidence.id} evidence={evidence} source={source} onOpen={onEvidence} />)}
+          </details>}
           {selected.evidence.length === 0 && <p className="pmwb-muted-copy">这条需求暂时没有可展示的原文依据。</p>}
         </div>
+        {sourceExpanded && <details className="pmwb-source-details" data-dsh-pm-workbench="review-source" open={sourceExpanded}
+          onToggle={event => setSourceExpanded(event.currentTarget.open)}>
+          <summary>完整访谈原文</summary>
+          {source ? <pre className="pmwb-source-text" data-dsh-pm-workbench="review-source-text">{source.text}</pre>
+            : <p>正在读取原文；读取失败时可重试上方按钮。</p>}
+        </details>}
       </section>
-
-      <section className="pmwb-unknowns">
-        <h3>仍需确认</h3>
-        <p>{selected.unknowns.join('；') || selected.assumptions.join('；') || '暂无额外不确定项。'}</p>
-      </section>
-    </article>
-
-    <aside className="pmwb-decision-palette">
-      <section>
-        <h2>优先级</h2>
-        <div className="pmwb-priority-options" data-dsh-pm-workbench="priority">
-          {priorities.map(option => <button key={option.value} type="button" className={selected.priority === option.value ? 'is-selected' : undefined}
-            aria-pressed={selected.priority === option.value} disabled={!editable} onClick={() => edit({ priority: option.value as HumanDecision['priority'] })}>
-            <strong>{option.label}</strong><span>{option.hint}</span>
-          </button>)}
+      <div className="pmwb-ai-recommendation">
+        <strong>AI 建议：{suggestions.get(selected.requirementId) ? priorityBadge[suggestions.get(selected.requirementId)!] : '未提供'}</strong>
+        <span>{selected.rationale}</span>
+      </div>
+      <section className="pmwb-decision-palette">
+        <h2>你的判断</h2>
+        <div className="pmwb-priority-row">
+          <h3>优先级</h3>
+          <div className="pmwb-priority-options" data-dsh-pm-workbench="priority">
+            {priorities.map(option => <button key={option.value} type="button" className={selected.priority === option.value ? 'is-selected' : undefined}
+              aria-pressed={selected.priority === option.value} disabled={!editable} onClick={() => edit({ priority: option.value as HumanDecision['priority'] })}>
+              <strong>{option.label}</strong><span>{option.hint}</span>
+            </button>)}
+          </div>
         </div>
-        <div className="pmwb-ai-recommendation">
-          <strong>AI 建议：{priorityBadge[selected.priority]}</strong>
-          <span>{selected.rationale}</span>
-        </div>
-      </section>
-      <section>
-        <h2>你的决定</h2>
-        <div className="pmwb-decision-options" data-dsh-pm-workbench="decision">
-          {decisions.map(option => <button key={option.value} type="button" className={selected.decision === option.value ? 'is-selected' : undefined}
-            aria-pressed={selected.decision === option.value} disabled={!editable} onClick={() => edit({ decision: option.value as HumanDecision['decision'] })}>
-            <strong>{option.label}</strong><span>{option.hint}</span>
-          </button>)}
+        <div className="pmwb-scope-row">
+          <h3>本期范围</h3>
+          <div className="pmwb-decision-options" data-dsh-pm-workbench="decision">
+            {decisions.map(option => <button key={option.value} type="button" className={selected.decision === option.value ? 'is-selected' : undefined}
+              aria-pressed={selected.decision === option.value} disabled={!editable} onClick={() => edit({ decision: option.value as HumanDecision['decision'] })}>
+              <strong>{option.label}</strong><span>{option.hint}</span>
+            </button>)}
+          </div>
         </div>
         <label className="pmwb-reason" htmlFor={`${id}-reason`}><span>决定理由</span>
           <textarea id={`${id}-reason`} data-dsh-pm-workbench="human-reason" value={selected.humanReason} disabled={!editable}
             placeholder="可选：记录调整依据" onChange={event => edit({ humanReason: event.currentTarget.value })} />
         </label>
       </section>
-      <div className="pmwb-review-actions">
-        <p><strong>已纳入 {included}</strong><span>待确认 {waiting}</span><span>暂缓 {deferred}</span></p>
-        {canSave ? <button type="button" className="pmwb-primary" data-dsh-pm-workbench="save-requirements" disabled={pending} onClick={onSave}>保存修改</button>
-          : !valid ? <button type="button" className="pmwb-primary" data-dsh-pm-workbench="confirm-scope"
-              disabled={!hasIncluded || pending || state.saveState === 'uncertain' || state.saveState === 'saving'} onClick={onReview}>核对本期范围</button>
-            : <button type="button" className="pmwb-primary" data-dsh-pm-workbench="confirm-scope" disabled={!hasIncluded || !!state.baselineChain} onClick={onConfirm}>确认范围并生成 PRD</button>}
-      </div>
+      <details className="pmwb-requirement-details">
+        <summary>需求详情</summary>
+        {state.selectedProject?.analysis?.kind === 'harness-model' && <p className="pmwb-model-route" data-dsh-pm-workbench="model-route">
+          Harness 模型分析 · {state.selectedProject.analysis.provider} / {state.selectedProject.analysis.model}
+        </p>}
+        <header className="pmwb-focus-header">
+          <div>
+            <label htmlFor={`${id}-title`}>需求标题</label>
+            <textarea id={`${id}-title`} data-dsh-pm-workbench="requirement-title" value={selected.title} disabled={!editable}
+              onChange={event => edit({ title: event.currentTarget.value })} />
+          </div>
+          <label className="pmwb-rank-control" htmlFor={`${id}-order`}>
+            <span>排序</span>
+            <select id={`${id}-order`} data-dsh-pm-workbench="requirement-order" value={selectedIndex + 1} disabled={!editable}
+              onChange={event => move(Number(event.currentTarget.value))}>
+              {items.map((_, index) => <option key={index} value={index + 1}>第 {index + 1} 位</option>)}
+            </select>
+          </label>
+        </header>
+        <label htmlFor={`${id}-description`}>需求描述</label>
+        <textarea id={`${id}-description`} className="pmwb-focus-description" data-dsh-pm-workbench="requirement-description" value={selected.description}
+          disabled={!editable} onChange={event => edit({ description: event.currentTarget.value })} />
+        <div className="pmwb-insight-grid">
+          <section>
+            <label htmlFor={`${id}-pain-point`}>用户问题</label>
+            <textarea id={`${id}-pain-point`} data-dsh-pm-workbench="requirement-pain-point" value={selected.painPoint} disabled={!editable}
+              onChange={event => edit({ painPoint: event.currentTarget.value })} />
+          </section>
+        </div>
+        <section className="pmwb-unknowns">
+          <h3>仍需确认</h3>
+          <p>{selected.unknowns.join('；') || '暂无额外不确定项。'}</p>
+          {!!selected.assumptions.length && <p>假设：{selected.assumptions.join('；')}</p>}
+        </section>
+      </details>
     </aside>
+    </div>
 
-    <footer className="pmwb-review-dock" data-dsh-pm-workbench="review-navigator">
-      <header className="pmwb-review-nav-header">
-        <strong>{state.selectedProject?.header.name}</strong>
-        <span>{items.length} 个需求</span>
-      </header>
-      <div className="pmwb-requirement-strip">
-        {items.map((item, index) => <button type="button" key={item.requirementId} data-requirement-id={item.requirementId}
-          className={item.requirementId === selected.requirementId ? 'is-selected' : undefined}
-          aria-pressed={item.requirementId === selected.requirementId} onClick={() => setSelectedId(item.requirementId)}>
-          <span>{index + 1}</span><strong>{item.title}</strong><small>{priorityBadge[item.priority]} · {decisionBadge[item.decision]}</small>
-        </button>)}
+    <footer className="pmwb-review-actions">
+      <div className="pmwb-review-summary">
+        <p><strong>已纳入 {included} 条</strong><span>待确认 {waiting} 条</span>{deferred > 0 && <span>暂缓 / 不采纳 {deferred} 条</span>}</p>
+        <small>仅已纳入的需求进入本期 PRD</small>
       </div>
+      {canSave ? <button type="button" className="pmwb-primary" data-dsh-pm-workbench="save-requirements" disabled={pending} onClick={onSave}>保存修改</button>
+        : !valid ? <button type="button" className="pmwb-primary" data-dsh-pm-workbench="confirm-scope"
+            disabled={!hasIncluded || pending || state.saveState === 'uncertain' || state.saveState === 'saving'} onClick={onReview}>核对本期范围</button>
+          : <button type="button" className="pmwb-primary" data-dsh-pm-workbench="confirm-scope" disabled={!hasIncluded || !!state.baselineChain} onClick={onConfirm}>确认范围并生成 PRD</button>}
     </footer>
 
     {confirmedProject && <div className="pmwb-visually-hidden" data-dsh-pm-workbench="confirmation-summary"

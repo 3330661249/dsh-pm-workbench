@@ -4,6 +4,7 @@ import { WorkbenchLauncher, WorkbenchView } from '../../packages/workbench/src/c
 import { PriorityPane } from '../../packages/workbench/src/client/workbench/PriorityPane.js'
 import { PrdPane } from '../../packages/workbench/src/client/workbench/PrdPane.js'
 import { ProjectList } from '../../packages/workbench/src/client/workbench/ProjectList.js'
+import { ReviewWorkspace } from '../../packages/workbench/src/client/workbench/RequirementsPane.js'
 import { launcherCss, workbenchCss } from '../../packages/workbench/src/client/workbench/styles.js'
 import type { WorkbenchState, WorkbenchStore, ConfirmationSnapshot } from '../../packages/workbench/src/client/workbench/store.js'
 import type { ProjectView } from '../../packages/workbench/src/application/project-views.js'
@@ -36,13 +37,18 @@ function tag(html: string, marker: string) { return html.match(new RegExp(`<[^>]
 function dataNames(element: string) { return [...element.matchAll(/\b(data-[a-z-]+)=/g)].map(m => m[1]).filter(n => n !== 'data-dsh-pm-workbench').sort() }
 
 describe('Product semantic markup', () => {
-  it('renders the native monochrome three-column review composition', () => {
+  it('renders a comparison list and evidence/decision panel with a separate review footer', () => {
     const html = render()
-    expect(tag(html, 'review-navigator')).toMatch(/^<footer/)
-    expect(html).toMatch(/<aside class="pmwb-decision-palette">[\s\S]*class="pmwb-review-actions"/)
+    expect(tag(html, 'review-navigator')).toMatch(/^<section/)
+    expect(tag(html, 'requirement-card')).toMatch(/^<aside class="pmwb-focus-panel"/)
+    expect(html).toContain('<div class="pmwb-review-content"><section class="pmwb-review-dock"')
+    expect(html).toMatch(/<section class="pmwb-decision-palette">[\s\S]*<\/aside><\/div><footer class="pmwb-review-actions">/)
+    expect(html).toContain('确认本期需求')
+    expect(html).toContain('先核对依据，再决定优先级与本期范围。')
+    expect(html).toContain('class="pmwb-review-columns"')
+    expect(html).toContain('<details class="pmwb-requirement-details">')
+    expect(html).toContain('仅已纳入的需求进入本期 PRD')
     expect(html).toContain('AI 建议')
-    expect(workbenchCss).toContain('grid-template-columns: 240px minmax(0, 1fr) 320px')
-    expect(workbenchCss).toContain('.pmwb-project-switcher { display: block')
     expect(workbenchCss).toContain('backdrop-filter: grayscale(1)')
     const monochromeCss = `${workbenchCss}\n${launcherCss}`
     expect(monochromeCss).not.toContain('linear-gradient')
@@ -56,6 +62,25 @@ describe('Product semantic markup', () => {
       expect(match[1], match[0]).toBe(match[2])
       expect(match[2], match[0]).toBe(match[3])
     }
+  })
+
+  it('keeps the original AI recommendation distinct from a saved human priority in the list and detail', () => {
+    const changed: ProjectView = { ...project, humanDecisions: project.humanDecisions.map(item => ({ ...item, priority: 'low' })) }
+    const html = render({ ...ready, selectedProject: changed })
+    expect(html).toContain('class="pmwb-requirement-ai">P0</span>')
+    expect(html).toContain('class="pmwb-requirement-decision">P2 · 已纳入</span>')
+    expect(html).toContain('<strong>AI 建议：P0</strong>')
+    expect(html).not.toContain('AI 建议：P2')
+    const quote = candidate.evidence.find(item => item.id === generated.evidenceIds[0])!.quote
+    expect(html).toContain(`<small>“${quote.match(/^[\s\S]*?[。！？.!?](?:[”’」』"]|$)?|^[\s\S]+$/)?.[0] ?? quote}”</small>`)
+  })
+
+  it.each(['pending-operation', 'uncertain', 'saving', 'no-included'] as const)('keeps the review footer confirmation disabled for %s', condition => {
+    const state: WorkbenchState = { ...ready, saveState: condition === 'uncertain' ? 'uncertain' : condition === 'saving' ? 'saving' : 'saved',
+      selectedProject: condition === 'no-included' ? { ...project, humanDecisions: project.humanDecisions.map(item => ({ ...item, decision: 'pending' })) } : project }
+    const html = renderToStaticMarkup(<ReviewWorkspace store={staticStore(state)} state={state} confirmation={token(state)} pending={condition === 'pending-operation'}
+      onResult={() => {}} onSave={() => {}} onEvidence={() => {}} onReview={() => {}} onConfirm={() => {}} />)
+    expect(tag(html, 'confirm-scope')).toContain('disabled=""')
   })
 
   it('shows the exact Harness provider and model for a model-generated analysis', () => {
