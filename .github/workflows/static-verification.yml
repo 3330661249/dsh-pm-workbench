@@ -14,23 +14,38 @@ concurrency:
 jobs:
   workbench-static:
     name: Workbench static checks
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Historical acceptance pins the official macOS universal Node binary.
+    runs-on: macos-15
+    timeout-minutes: 30
     steps:
       - name: Check out repository without persisted credentials
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
 
-      - name: Set up exact Node runtime
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 24.14.0
-          cache: npm
-          cache-dependency-path: package-lock.json
+      - name: Extract the pinned official macOS runtime without installing globally
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/node-v24.14.0.pkg"
+          expanded="$RUNNER_TEMP/node-pkg"
+          runtime="$RUNNER_TEMP/workbench-node"
+          curl --fail --location --silent --show-error --retry 3 \
+            https://nodejs.org/dist/v24.14.0/node-v24.14.0.pkg -o "$archive"
+          echo "5514f833980f172088ce22883000d1aea9db9eea41cb1a306154eb4f333ec1c0  $archive" | shasum -a 256 -c -
+          pkgutil --expand-full "$archive" "$expanded"
+          mkdir -p "$runtime/bin" "$runtime/lib/node_modules"
+          cp "$expanded/node-v24.14.0.pkg/Payload/usr/local/bin/node" "$runtime/bin/node"
+          cp -R "$expanded/npm-v11.9.0.pkg/Payload/usr/local/lib/node_modules/npm" "$runtime/lib/node_modules/npm"
+          ln -s ../lib/node_modules/npm/bin/npm-cli.js "$runtime/bin/npm"
+          echo "9e831e9b13aa47c5e5eaa3904d232aa527124e8abba7ca5d72b67b46cfb10ae8  $runtime/bin/node" | shasum -a 256 -c -
+          echo "8e5f6f3429f8cdbe693cdc29904e9d5a7b127a494bd15c804bd54c7403bfcbe7  $runtime/lib/node_modules/npm/bin/npm-cli.js" | shasum -a 256 -c -
+          echo "$runtime/bin" >> "$GITHUB_PATH"
 
-      - name: Verify exact Node runtime
-        run: node --input-type=module -e "if (process.versions.node !== '24.14.0') throw new Error('unexpected Node runtime')"
+      - name: Verify exact Node and npm runtime
+        run: |
+          node --input-type=module -e "if (process.versions.node !== '24.14.0') throw new Error('unexpected Node runtime')"
+          npm --version | grep -Fx '11.9.0'
 
       - name: Install locked workbench dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund

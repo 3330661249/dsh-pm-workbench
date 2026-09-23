@@ -47,7 +47,9 @@ npm run build
 npm run verify:package
 ```
 
-需要 Node.js **24.14.0**。构建输出在 `packages/workbench/lib/`。
+需要 Node.js **24.14.0**。构建输出在 `packages/workbench/lib/`。完整套件中的历史安全验收还绑定了官方 macOS `.pkg` 内的通用 Node 二进制和 npm 11.9.0；同版本的 Linux 或架构专用归档不能替代它。CI 使用固定 SHA-256 的官方安装包，在临时目录解包后运行，不修改系统 Node。
+
+测试搬移过程会验证原目录未变；请不要在同一 checkout 同时运行多套测试、安装依赖或修改源码。Linux 继续运行独立的离线版本矩阵检查，不代表已验证 Linux 安装版工作台。
 
 `npm run demo:serve` 提供单独的旧版浏览器学习 Demo：固定规则、内存状态、无真实模型，**不是安装版工作台**。
 
