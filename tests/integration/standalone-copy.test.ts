@@ -534,6 +534,9 @@ test.skipIf(process.env.WORKBENCH_STANDALONE_COPY_CHILD === '1')(
       await rm(fixtureRoot, { recursive: true, force: true })
     }
   },
-  // The relocated child runs the complete suite before its build and package checks.
-  600_000,
+  // The relocated child runs the suite before build/package checks; the hosted
+  // macOS 26 runner exceeded 10 minutes while the outer 1410 assertions passed.
+  // Keep every inventory and containment assertion; allow 15 minutes for this
+  // nested verification only (the CI job itself remains bounded at 30 minutes).
+  900_000,
 )
