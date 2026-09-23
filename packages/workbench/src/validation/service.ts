@@ -6,7 +6,7 @@ import type { ActiveProjectRecord } from '../domain/model.js'
 import { canonicalJson } from '../protocol/canonical-json.js'
 import { defaultValidationPlan, type ValidationRunner, type ValidationSource } from './runner.js'
 import {
-  validationRecordSchema, validationRequestSchema, validationResponseSchema,
+  MAX_VALIDATION_RECORD_BYTES, MAX_VALIDATION_ACTUAL_JSON_BYTES, validationRecordSchema, validationRequestSchema, validationResponseSchema,
   type ValidationErrorCode, type ValidationRecord, type ValidationRequest, type ValidationResponse, type ValidationTask,
   type ValidationHandoff, type ValidationRun,
 } from './model.js'
@@ -19,7 +19,7 @@ const messages: Record<ValidationErrorCode, string> = {
   'plan-unconfirmed': '请先确认当前验证计划。', 'stage-unavailable': '当前状态不能执行此操作。',
   'model-not-authorized': '执行前请确认允许使用当前模型处理测试输入。',
   'run-failed': '验证执行未完成，请查看记录后决定是否重试。', 'limit-exceeded': '验证内容或历史记录已达到当前上限。',
-  'storage-failed': '保存未完成，请刷新核对记录。', 'cancelled': '执行已中断，请查看记录后决定是否重试。',
+  'storage-failed': '保存未完成，请刷新核对记录。', 'cancelled': '执行已中断；已完成案例保留在历史记录中。显式重新运行会执行整轮案例。',
 }
 class ValidationFailure extends Error { constructor(readonly code: ValidationErrorCode) { super(code) } }
 const fail = (code: ValidationErrorCode): never => { throw new ValidationFailure(code) }
@@ -34,6 +34,9 @@ export class ValidationService {
   private readonly projectOperations = new Map<string, Set<Promise<unknown>>>()
   private readonly projectControllers = new Map<string, Set<AbortController>>()
   private readonly deletingProjects = new Set<string>()
+  private writeTail: Promise<void> = Promise.resolve()
+  // Absolute record ceilings; growth consumes the unused part without double-counting stored bytes.
+  private readonly runReservations = new Map<string, number>()
   private closing = false
   constructor(private readonly table: KvTable<string, ValidationRecord>, private readonly projects: Pick<ProjectRepository, 'get'>,
     private readonly runner: ValidationRunner, private readonly clock = { now: () => new Date().toISOString() }) {}
@@ -45,14 +48,14 @@ export class ValidationService {
       const owner = await this.projects.get(projectIdSchema.parse(record.task.projectId))
       if (!owner || owner.kind !== 'active') { await this.table.delete(id); continue }
       if (record.task.status === 'draft' && record.task.planProvenance.kind === 'template' && record.task.lastError?.startsWith('正在生成')) {
-        await this.save({ ...record, task: { ...record.task, version: record.task.version + 1,
+        await this.saveRecovery(record, { ...record, task: { ...record.task, version: record.task.version + 1,
           lastError: '计划生成在服务重启时中断；当前为可编辑通用模板，请修改后确认。', updatedAt: this.clock.now() } })
         continue
       }
       if (record.task.status !== 'running') continue
       const task = record.task
-      await this.save({ ...record, task: { ...task, version: task.version + 1, status: 'failed', updatedAt: this.clock.now(),
-        lastError: '上次运行在服务重启前中断；结果未知。请检查后显式重试。',
+      await this.saveRecovery(record, { ...record, task: { ...task, version: task.version + 1, status: 'failed', updatedAt: this.clock.now(),
+        lastError: '上次运行在服务重启前中断；已完成案例保留在历史记录中。显式重新运行会执行整轮案例。',
         runs: task.runs.map(run => run.status === 'running' ? { ...run, status: 'failed', completedAt: this.clock.now(), error: '运行中断，结果未知' } : run) } })
     }
   }
@@ -123,13 +126,60 @@ export class ValidationService {
     return structuredClone({ ...task, stale })
   }
 
-  private async save(record: ValidationRecord): Promise<void> {
-    if (this.deletingProjects.has(record.task.projectId)) fail('cancelled')
-    const valid = validationRecordSchema.parse(record)
-    if (Buffer.byteLength(JSON.stringify(valid)) > 4 * 1024 * 1024) fail('limit-exceeded')
-    const total = [...this.table.entries()].reduce((sum, [id, stored]) => sum + (id === valid.task.id ? 0 : Buffer.byteLength(JSON.stringify(stored))), 0)
-    if (total + Buffer.byteLength(JSON.stringify(valid)) > 32 * 1024 * 1024) fail('limit-exceeded')
-    await this.table.put(valid.task.id, structuredClone(valid))
+  private serializeWrite(operation: () => Promise<void>): Promise<void> {
+    const pending = this.writeTail.then(operation)
+    this.writeTail = pending.catch(() => undefined)
+    return pending
+  }
+
+  private assertCapacity(record: ValidationRecord, reservedBytes = 0): void {
+    const bytes = Buffer.byteLength(JSON.stringify(record)) + reservedBytes
+    if (bytes > MAX_VALIDATION_RECORD_BYTES) fail('limit-exceeded')
+    const total = [...this.table.entries()].reduce((sum, [id, stored]) => sum + (id === record.task.id ? 0
+      : Math.max(Buffer.byteLength(JSON.stringify(stored)), this.runReservations.get(id) ?? 0)), 0)
+    if (total + Math.max(bytes, this.runReservations.get(record.task.id) ?? 0) > 32 * 1024 * 1024) fail('limit-exceeded')
+  }
+
+  private save(record: ValidationRecord, reservedBytes = 0): Promise<void> {
+    return this.serializeWrite(async () => {
+      if (this.deletingProjects.has(record.task.projectId)) fail('cancelled')
+      const valid = validationRecordSchema.parse(record)
+      this.assertCapacity(valid, reservedBytes)
+      await this.table.put(valid.task.id, structuredClone(valid))
+      if (reservedBytes) this.runReservations.set(valid.task.id, Buffer.byteLength(JSON.stringify(valid)) + reservedBytes)
+    })
+  }
+
+  private saveRecovery(previous: ValidationRecord, next: ValidationRecord): Promise<void> {
+    return this.serializeWrite(async () => {
+      const valid = validationRecordSchema.parse(next)
+      try { this.assertCapacity(valid) }
+      catch (error) {
+        if (!(error instanceof ValidationFailure) || error.code !== 'limit-exceeded') throw error
+        // Older versions could fill or exceed the budget. Mark interruption without enlarging
+        // the record; keep all evidence/receipts and omit new timestamps/diagnostic prose.
+        const compact: ValidationRecord = { ...previous, task: { ...previous.task, lastError: null,
+          status: previous.task.status === 'running' ? 'failed' : previous.task.status,
+          runs: previous.task.runs.map(run => run.status === 'running' ? { ...run, status: 'failed' } : run) } }
+        validationRecordSchema.parse(compact)
+        if (Buffer.byteLength(JSON.stringify(compact)) > Buffer.byteLength(JSON.stringify(previous))) throw error
+        // Preserve optional legacy fields verbatim rather than materializing schema defaults.
+        await this.table.put(compact.task.id, structuredClone(compact))
+        return
+      }
+      await this.table.put(valid.task.id, structuredClone(valid))
+    })
+  }
+
+  private reserveRunBytes(task: ValidationTask, input: string | undefined): number {
+    // Reserve the runner's bounded output, JSON escaping, provenance, checks, and a future human verdict.
+    // This remains small enough for twenty ordinary cases, but blocks expensive work when history is full.
+    const cases = task.mode === 'poc' ? [{ ...task.plan.cases[0]!, id: 'poc-input', input: input ?? task.plan.cases[0]!.input,
+      expected: [task.plan.goal, ...task.plan.criteria].join('\n').slice(0, 6000) }] : task.plan.cases
+    const resultBytes = task.mode === 'demo' ? 100_000 : cases.reduce((sum, item) => sum
+      + Buffer.byteLength(JSON.stringify({ caseId: item.id, input: item.input, expected: item.expected }))
+      + MAX_VALIDATION_ACTUAL_JSON_BYTES + 30 * (6 * 200 + 64) + 2 * 6 * 200 + 6 * 500 + 256, 0)
+    return resultBytes + 2 * 6 * 6000 + 4096
   }
 
   private async mutate(input: Mutation, signal: AbortSignal): Promise<ValidationResponse> {
@@ -176,27 +226,35 @@ export class ValidationService {
         const run: ValidationRun = { id: randomUUID(), planVersion: task.planVersion, plan: structuredClone(task.plan), status: 'running',
           startedAt: this.clock.now(), completedAt: null, results: [], demo: null, error: null, verdict: null }
         next = changed({ status: 'running', runs: [...task.runs, run], verdict: null, lastError: null })
-        // Persist admission and receipt before making any external model request.
-        await this.save(next)
         try {
-          const output = await this.runner.execute(source, task.mode, run.plan, input.payload.input, signal)
-          signal.throwIfAborted()
-          const expectedIds = task.mode === 'poc' ? ['poc-input'] : run.plan.cases.map(item => item.id)
-          const completed = task.mode === 'demo' ? output.demo !== null && output.results.length === 0
-            : output.results.length === expectedIds.length && new Set(output.results.map(item => item.caseId)).size === expectedIds.length
-              && output.results.every(item => item.status === 'completed' && item.provenance.kind === 'harness-model' && expectedIds.includes(item.caseId))
-          const ended: ValidationRun = { ...run, ...output, status: completed ? 'completed' : 'failed', completedAt: this.clock.now(),
-            error: completed ? null : messages['run-failed'] }
-          next = { ...next, task: { ...next.task, version: next.task.version + 1, status: ended.status, updatedAt: this.clock.now(),
-            lastError: ended.error, runs: [...task.runs, ended] } }
-          await this.save(next)
-        } catch {
-          next = { ...next, task: { ...next.task, version: next.task.version + 1, status: 'failed', updatedAt: this.clock.now(),
-            lastError: signal.aborted ? messages.cancelled : messages['run-failed'],
-            runs: [...task.runs, { ...run, status: 'failed', completedAt: this.clock.now(), error: signal.aborted ? messages.cancelled : messages['run-failed'] }] } }
-          await this.save(next)
-        }
-        return accepted(this.view(next.task, await this.project(input.projectId)))
+          // Atomically reserve capacity and persist admission/receipt before any model request.
+          await this.save(next, this.reserveRunBytes(task, input.payload.input))
+          let progress = run
+          try {
+            const output = await this.runner.execute(source, task.mode, run.plan, input.payload.input, signal, async output => {
+              progress = { ...progress, ...output }
+              const checkpoint = { ...next, task: { ...next.task, runs: [...task.runs, progress], updatedAt: this.clock.now() } }
+              await this.save(checkpoint)
+              next = checkpoint
+            })
+            signal.throwIfAborted()
+            const expectedIds = task.mode === 'poc' ? ['poc-input'] : run.plan.cases.map(item => item.id)
+            const completed = task.mode === 'demo' ? output.demo !== null && output.results.length === 0
+              : output.results.length === expectedIds.length && new Set(output.results.map(item => item.caseId)).size === expectedIds.length
+                && output.results.every(item => item.status === 'completed' && item.provenance.kind === 'harness-model' && expectedIds.includes(item.caseId))
+            const ended: ValidationRun = { ...run, ...output, status: completed ? 'completed' : 'failed', completedAt: this.clock.now(),
+              error: completed ? null : messages['run-failed'] }
+            next = { ...next, task: { ...next.task, version: next.task.version + 1, status: ended.status, updatedAt: this.clock.now(),
+              lastError: ended.error, runs: [...task.runs, ended] } }
+            await this.save(next)
+          } catch {
+            next = { ...next, task: { ...next.task, version: next.task.version + 1, status: 'failed', updatedAt: this.clock.now(),
+              lastError: signal.aborted ? messages.cancelled : messages['run-failed'],
+              runs: [...task.runs, { ...progress, status: 'failed', completedAt: this.clock.now(), error: signal.aborted ? messages.cancelled : messages['run-failed'] }] } }
+            await this.save(next)
+          }
+          return accepted(this.view(next.task, await this.project(input.projectId)))
+        } finally { this.runReservations.delete(task.id) }
       }
       case 'judge': {
         const run = task.runs.at(-1)
@@ -267,6 +325,6 @@ export class ValidationService {
       '', '## 版本追溯', `PRD：${task.prdRevisionId}；验证任务：${task.id}；运行：${run.id}；计划版本：${run.planVersion}`,
     ]
     return { filename: `${source.baseline.projectName.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0, 80)}-研发交付包.md`,
-      markdown: lines.join('\n\n'), configuration: JSON.stringify({ format: 'pmwb-validation-handoff-v1', task, run }, null, 2) }
+      markdown: lines.join('\n\n'), configuration: JSON.stringify({ format: 'pmwb-validation-handoff-v2', task, runId: run.id }) }
   }
 }

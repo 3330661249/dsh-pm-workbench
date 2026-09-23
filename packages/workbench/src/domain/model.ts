@@ -174,6 +174,17 @@ export interface RequirementBaselineItem {
   readonly priority: 'high' | 'medium' | 'low'
   readonly humanReason: string
   readonly evidence: readonly EvidenceExcerpt[]
+  /** Absent in historical schemaVersion 1 baselines; never default on parse. */
+  readonly assumptions?: readonly string[]
+  readonly unknowns?: readonly string[]
+}
+
+export interface ExcludedRequirement {
+  readonly requirementId: RequirementId
+  readonly title: string
+  readonly description: string
+  readonly decision: 'pending' | 'defer' | 'reject'
+  readonly humanReason: string
 }
 
 export interface RequirementBaseline {
@@ -186,6 +197,8 @@ export interface RequirementBaseline {
   readonly projectVersion: number
   readonly contentVersion: number
   readonly items: readonly RequirementBaselineItem[]
+  /** Absent in historical baselines; no inferred/default exclusions on read. */
+  readonly excludedRequirements?: readonly ExcludedRequirement[]
   readonly createdAt: string
 }
 
@@ -217,6 +230,7 @@ export const PROJECT_BUSINESS_ERROR_CODES = Object.freeze([
   'no-included-requirements',
   'baseline-stale',
   'stage-unavailable',
+  'model-output-incomplete',
 ] as const)
 
 export type ProjectBusinessErrorCode = typeof PROJECT_BUSINESS_ERROR_CODES[number]
@@ -469,6 +483,12 @@ export const requirementBaselineItemSchema: z.ZodType<RequirementBaselineItem> =
   priority: prioritySchema,
   humanReason: humanReasonSchema,
   evidence: z.array(evidenceExcerptSchema).max(MAX_EVIDENCE_PER_ANALYSIS),
+  assumptions: z.array(assumptionOrUnknownSchema).max(MAX_ASSUMPTIONS_PER_REQUIREMENT)
+    .refine(values => values.reduce((sum, value) => sum + utf8ByteLength(value), 0)
+      <= MAX_ASSUMPTIONS_UTF8_BYTES_PER_REQUIREMENT, 'limit-exceeded').optional(),
+  unknowns: z.array(assumptionOrUnknownSchema).max(MAX_UNKNOWNS_PER_REQUIREMENT)
+    .refine(values => values.reduce((sum, value) => sum + utf8ByteLength(value), 0)
+      <= MAX_UNKNOWNS_UTF8_BYTES_PER_REQUIREMENT, 'limit-exceeded').optional(),
 })
 
 const requirementBaselineDefinition = z.strictObject({
@@ -481,9 +501,17 @@ const requirementBaselineDefinition = z.strictObject({
   projectVersion: positiveSafeIntegerSchema,
   contentVersion: safeIntegerSchema,
   items: z.array(requirementBaselineItemSchema).min(1).max(MAX_REQUIREMENTS_PER_ANALYSIS),
+  excludedRequirements: z.array(z.strictObject({
+    requirementId: requirementIdSchema, title: requirementTextSchema, description: requirementTextSchema,
+    decision: z.enum(['pending', 'defer', 'reject']), humanReason: humanReasonSchema,
+  })).max(MAX_REQUIREMENTS_PER_ANALYSIS).optional(),
   createdAt: dateTimeSchema,
 }).superRefine((value, context) => {
-  if (new Set(value.items.map(item => item.requirementId)).size !== value.items.length) {
+  const allIds = [...value.items, ...(value.excludedRequirements ?? [])].map(item => item.requirementId)
+  if (allIds.length > MAX_REQUIREMENTS_PER_ANALYSIS) {
+    context.addIssue({ code: 'custom', path: ['excludedRequirements'], message: 'limit-exceeded' })
+  }
+  if (new Set(allIds).size !== allIds.length) {
     context.addIssue({ code: 'custom', path: ['items'], message: 'duplicate-requirement' })
   }
   value.items.forEach((item, index) => {

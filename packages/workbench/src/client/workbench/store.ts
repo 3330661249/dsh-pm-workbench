@@ -82,7 +82,11 @@ export interface WorkbenchStore {
   copySelectedMarkdown(): Promise<StoreResult>
   downloadSelectedMarkdown(): Promise<StoreResult>
 }
-interface Intent extends DraftIntent { command?: Stage3aProjectCommand; accepted?: Accepted; failure?: StoreErrorCode; material?: MaterialDraft }
+interface Intent extends DraftIntent {
+  readonly startRevision: number
+  sealed?: boolean
+  command?: Stage3aProjectCommand; accepted?: Accepted; failure?: StoreErrorCode; material?: MaterialDraft
+}
 interface Active { readonly intent: Intent; admitted: boolean }
 const api = { apiVersion: PRODUCT_API_VERSION }
 const fail = (code: StoreErrorCode) => ({ ok: false, code } as const)
@@ -139,7 +143,7 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
     if (state.pendingRetry || !state.selectedProject || state.selectedProject.header.projectVersion < state.acceptedVersionFloor) return
     let saved = state.savedDraftRevision
     for (const intent of intents) {
-      if (!intent.accepted || intent.revision !== saved + 1) break
+      if (!intent.accepted || intent.startRevision !== saved + 1) break
       saved = intent.revision
       if (intent.payload.kind === 'source.importText' && intent.material === state.materialDraft) {
         publish({ materialDirty: false })
@@ -217,7 +221,18 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
       const checked = parseProductInput('projects.command', command ?? { ...api, projectId: id, commandId: '00000000-0000-4000-8000-000000000001',
         expectedVersion: payload.kind === 'project.create' ? 0 : Math.max(1, state.selectedProject?.header.projectVersion ?? 1), payload })
       const revision = state.dirtyRevision + 1
-      intents.push({ projectId: id, selectionGeneration, revision, payload: checked.payload, command, ...(checked.payload.kind === 'source.importText' ? { material: state.materialDraft } : {}) })
+      const previous = intents.at(-1)
+      // Fold typing in one field into its latest value. Never rewrite a save snapshot,
+      // a dispatched identity, or edits separated by a different business operation.
+      const sameField = !command && previous && !previous.sealed && !previous.command && !previous.failure && !previous.accepted
+        && previous.payload.kind === 'requirement.update' && checked.payload.kind === 'requirement.update'
+        && previous.payload.requirementId === checked.payload.requirementId
+        && Object.keys(previous.payload).sort().join(',') === Object.keys(checked.payload).sort().join(',')
+      const next: Intent = { projectId: id, selectionGeneration, revision,
+        startRevision: sameField ? previous.startRevision : revision, payload: checked.payload, command,
+        ...(checked.payload.kind === 'source.importText' ? { material: state.materialDraft } : {}) }
+      if (sameField) intents[intents.length - 1] = next
+      else intents.push(next)
       if (affectsContent(checked.payload)) invalidateChain()
       publish({ dirtyRevision: revision })
       return success(revision)
@@ -308,6 +323,8 @@ export function createWorkbenchStore(transport: WorkbenchTransport, ids: Workben
   function flushProjectEdits(): Promise<StoreResult<ProjectView>> {
     const unavailable = available(); if (unavailable) return Promise.resolve(fail(unavailable))
     const barrier = state.dirtyRevision
+    // Seal synchronously: another keystroke can arrive before the queued work starts.
+    for (const intent of intents) if (intent.revision <= barrier) intent.sealed = true
     return serialized(() => drain(barrier), fail('cancelled'))
   }
   function finalizeAcceptedDelete(receipt: Accepted): StoreResult<null> {

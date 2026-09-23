@@ -613,6 +613,27 @@ describe('Product lifecycle and real store handlers', () => {
     expect(h.commands).toHaveLength(1); expect(h.store.getSnapshot().saveState).toBe('saved')
     ui.clickText('合成研究二'); await ui.settle(); expect(h.store.getSnapshot().selectedProjectId).toBe(OTHER_PROJECT_ID)
   })
+  it('does not read a newly allocated project before its creation is saved or leave a false not-found alert', async () => {
+    const h = await setup({ empty: true }); const ui = h.ui(); await ui.settle()
+    const gate = deferred(), entered = deferred(); let creatingId: string | undefined; let prematureReads = 0
+    h.intercept(async (endpoint, input, next) => {
+      if (endpoint === 'projects.command' && (input as Stage3aProjectCommand).payload.kind === 'project.create') {
+        creatingId = (input as Stage3aProjectCommand).projectId; entered.resolve(); await gate.promise
+        return next()
+      }
+      if (endpoint === 'projects.get' && (input as { projectId: string }).projectId === h.store.getSnapshot().selectedProjectId
+        && !h.store.getSnapshot().selectedProject) prematureReads++
+      return next()
+    })
+    ui.click('new-project'); ui.render(); ui.fire('project-name', 'onChange', { value: '独立合成验收' })
+    ui.fire('create-data-use-attestation', 'onChange', { checked: true }); ui.render(); ui.click('confirm-create'); ui.render()
+    await entered.promise; await new Promise(resolve => setTimeout(resolve, 0)); ui.render()
+    expect.soft(prematureReads).toBe(0)
+    expect.soft(ui.text()).not.toContain('内容暂未找到')
+    gate.resolve(); await ui.settle(() => h.store.getSnapshot().selectedProject?.header.id === creatingId)
+    expect(h.store.getSnapshot().selectedProject?.header.name).toBe('独立合成验收')
+    expect(ui.text()).not.toContain('内容暂未找到')
+  })
   it('shows creation failures inside the active native dialog and makes uncertainty return to exact retry', async () => {
     const h = await setup({ empty: true }); const ui = h.ui(); await ui.settle()
     h.intercept(async (endpoint, _input, next) => endpoint === 'projects.command' ? { ok: false, error: { code: 'internal', message: 'RAW_CREATE_CANARY', details: {} } } : next())

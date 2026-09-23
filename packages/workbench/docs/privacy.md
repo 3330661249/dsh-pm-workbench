@@ -1,6 +1,6 @@
 # Privacy
 
-Stage 3C accepts pasted text, `.txt`, and `.md` material. One built-in synthetic
+The preview accepts pasted text, `.txt`, `.md`, and `.docx` material. Word text extraction runs locally before preview and authorization. One built-in synthetic
 Fixture remains available for testing. Other text is classified as authorized
 real material and requires a separate, explicit confirmation before import.
 Model execution sends the selected source text and research goal to the model

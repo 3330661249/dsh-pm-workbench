@@ -27,6 +27,7 @@ const errors: Record<StoreErrorCode, string> = {
   'fixture-not-allowed': '材料校验失败，请重新载入后重试',
   'source-locked': '材料已锁定，请新建项目使用另一份合成材料', 'analysis-already-reviewed': '需求已进入人工审核，无法重新生成草稿',
   'no-included-requirements': '请至少选择一项纳入本期的需求并保存修改', 'stage-unavailable': '当前阶段暂不支持此操作',
+  'model-output-incomplete': '模型已达到本次输出上限，未生成完整结果。原材料已保留，未自动重试；再次分析会消耗模型额度。',
   cancelled: '操作观察已结束，请刷新确认', 'storage-failed': '保存失败，请刷新确认后重试',
   unsaved: '请先保存修改', saving: '保存中，请等待结果',
   failed: '保存失败，请检查修改并刷新确认', uncertain: '结果待确认，请重试原操作或刷新',
@@ -134,9 +135,9 @@ export function WorkbenchView({ store, validationClient, createCommandId = () =>
   }
   useEffect(() => {
     if (!state.isOpen) return
-    // A lost creation receipt is retried under its original identity; do not replace
-    // that failure with an expected not-found read of the unconfirmed project.
-    if (!state.selectedProject && state.pendingRetry) return
+    // Creation allocates the selection before persistence. Do not read that ID
+    // until creation settles, or mask an uncertain receipt with a not-found read.
+    if (!state.selectedProject && (state.pendingRetry || state.drafts.some(draft => draft.payload.kind === 'project.create'))) return
     let active = true
     const sameSelection = capturePrdSelection(), current = () => active && sameSelection()
     void run(async () => {

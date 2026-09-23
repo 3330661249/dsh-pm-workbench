@@ -5,7 +5,7 @@ import { describe, expect, test } from 'vitest'
 const manifestPath = resolve(import.meta.dirname, '../../packages/workbench/package.json')
 
 describe('workbench bundle manifest', () => {
-  test('declares the single private rc.6 Host and Client bundle contract', async () => {
+  test('declares the MIT rc.6 bundle while blocking accidental npm publication', async () => {
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
 
     expect(manifest.name).toBe('@knight/dsh-pm-workbench')
@@ -13,7 +13,7 @@ describe('workbench bundle manifest', () => {
     expect(manifest.version).toBe('0.1.0')
     expect(manifest.main).toBe('./lib/index.js')
     expect(manifest).not.toHaveProperty('optionalDependencies')
-    expect(manifest.license).toBe('UNLICENSED')
+    expect(manifest.license).toBe('MIT')
     expect(manifest.exports['.']).toBe('./lib/index.js')
     expect(manifest.exports['./client']).toBe('./lib/client.js')
     expect(manifest.dsh.bundle.patch).toBe('./cordis.patch.yml')

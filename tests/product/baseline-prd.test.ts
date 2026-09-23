@@ -21,7 +21,8 @@ import {
   MAX_PRD_REVISIONS_PER_PROJECT,
   utf8ByteLength,
 } from '../../packages/workbench/src/domain/limits.js'
-import type { ActiveProjectRecord, RequirementBaseline } from '../../packages/workbench/src/domain/model.js'
+import { requirementBaselineSchema, storedProjectRecordSchema, type ActiveProjectRecord, type RequirementBaseline } from '../../packages/workbench/src/domain/model.js'
+import { canonicalJson } from '../../packages/workbench/src/protocol/canonical-json.js'
 import {
   DeterministicPrdRenderer,
   PRD_RENDERER_VERSION,
@@ -95,6 +96,78 @@ function publish(project: ActiveProjectRecord = includedProject(), baselineId = 
 }
 
 describe('immutable requirement baseline', () => {
+  it('freezes excluded decisions and selected text alongside included scope', () => {
+    const project = includedProject()
+    const excluded = { ...project.generatedRequirements[0]!,
+      id: generatedDraftIdSchema.parse('50000000-0000-4000-8000-000000000552'),
+      requirementId: requirementIdSchema.parse('40000000-0000-4000-8000-000000000552'), title: '自动排期' }
+    const excludedDecision = { ...project.humanDecisions[0]!, requirementId: excluded.requirementId,
+      selectedText: { kind: 'human-revision' as const, revisionId: REVISION_ID }, decision: 'defer' as const,
+      humanReason: '先验证文本能力，不做排期' }
+    const baseline = publish({ ...project, generatedRequirements: [...project.generatedRequirements, excluded],
+      humanRevisions: [{ id: REVISION_ID, requirementId: excluded.requirementId, basedOnDraftId: excluded.id,
+        title: '人工修订的自动排期', painPoint: '排期费时', description: '自动安排交付时间' }],
+      humanDecisions: [...project.humanDecisions, excludedDecision], requirementOrder: [REQUIREMENT_ID, excluded.requirementId] })
+    excludedDecision.humanReason = '不应污染快照'
+    expect(Reflect.get(baseline, 'excludedRequirements')).toEqual([{ requirementId: excluded.requirementId,
+      title: '人工修订的自动排期', description: '自动安排交付时间', decision: 'defer', humanReason: '先验证文本能力，不做排期' }])
+    expect(Object.isFrozen(Reflect.get(baseline, 'excludedRequirements'))).toBe(true)
+    expect(baseline.items).toHaveLength(1)
+    expect(requirementBaselineSchema.safeParse({ ...baseline, excludedRequirements: [{
+      requirementId: REQUIREMENT_ID, title: '冲突', description: '冲突', decision: 'reject', humanReason: '' } ] }).success).toBe(false)
+  })
+
+  it.each(['generated', 'human-revision'] as const)('retains analysis assumptions and unknowns after selecting %s text', kind => {
+    const project = includedProject()
+    const assumptions = ['审批人拥有对应权限']
+    const unknowns = ['尚未确认 37 号接口的并发容量']
+    const baseline = publish({
+      ...project,
+      generatedRequirements: [{ ...project.generatedRequirements[0]!, assumptions, unknowns }],
+      humanRevisions: [{ id: REVISION_ID, requirementId: REQUIREMENT_ID, basedOnDraftId: DRAFT_ID,
+        title: '人工标题', painPoint: '人工痛点', description: '人工描述' }],
+      humanDecisions: [{ ...project.humanDecisions[0]!, selectedText: kind === 'generated'
+        ? { kind, draftId: DRAFT_ID } : { kind, revisionId: REVISION_ID } }],
+    })
+    assumptions[0] = '后续修改不能污染基线'
+    unknowns[0] = '后续修改不能污染基线'
+    expect(baseline.items[0]).toMatchObject({
+      assumptions: ['审批人拥有对应权限'], unknowns: ['尚未确认 37 号接口的并发容量'],
+    })
+    expect(Object.isFrozen(Reflect.get(baseline.items[0]!, 'assumptions'))).toBe(true)
+    expect(Object.isFrozen(Reflect.get(baseline.items[0]!, 'unknowns'))).toBe(true)
+  })
+
+  it('reads schemaVersion 1 records without adding missing context or changing historical baseline and PRD bytes', () => {
+    const legacyBaseline = structuredClone(publish())
+    Reflect.deleteProperty(legacyBaseline, 'excludedRequirements')
+    Reflect.deleteProperty(legacyBaseline.items[0]!, 'assumptions')
+    Reflect.deleteProperty(legacyBaseline.items[0]!, 'unknowns')
+    const legacyPrd = new DeterministicPrdRenderer(nodeSha256Utf8).render({
+      baseline: legacyBaseline, prdRevisionId: PRD_ID, createdAt: CREATED_AT,
+    })
+    const legacyRecord = includedProject({ baselines: [legacyBaseline], currentBaselineId: BASELINE_ID,
+      prdRevisions: [legacyPrd] })
+    const parsed = storedProjectRecordSchema.parse(legacyRecord)
+    expect(canonicalJson(parsed)).toBe(canonicalJson(legacyRecord))
+    expect(canonicalJson(requirementBaselineSchema.parse(legacyBaseline))).toBe(canonicalJson(legacyBaseline))
+    if (parsed.kind !== 'active') throw new Error('expected active record')
+    expect(parsed.baselines[0]).not.toHaveProperty('excludedRequirements')
+    expect(parsed.baselines[0]!.items[0]).not.toHaveProperty('assumptions')
+    expect(parsed.baselines[0]!.items[0]).not.toHaveProperty('unknowns')
+    expect(parsed.prdRevisions[0]!.markdown).toBe(legacyPrd.markdown)
+    expect(parsed.prdRevisions[0]!.contentHash).toBe(legacyPrd.contentHash)
+  })
+
+  it.each(['assumptions', 'unknowns'])('keeps the analysis count, text and byte limits for baseline %s', field => {
+    const baseline = publish()
+    const withValues = (values: string[]) => ({ ...baseline, items: [{ ...baseline.items[0]!, [field]: values }] })
+    expect(requirementBaselineSchema.safeParse(withValues(['待验证'])).success).toBe(true)
+    expect(requirementBaselineSchema.safeParse(withValues(Array(21).fill('待验证'))).success).toBe(false)
+    expect(requirementBaselineSchema.safeParse(withValues(['字'.repeat(501)])).success).toBe(false)
+    expect(requirementBaselineSchema.safeParse(withValues(Array(6).fill('字'.repeat(500)))).success).toBe(false)
+  })
+
   it('deep copies every included generated identity and PRD input into a frozen baseline', () => {
     const project = includedProject()
     const baseline = publish(project)
@@ -381,6 +454,105 @@ describe('create-prd model drafting', () => {
       releasePlan: ['先用少量已授权材料完成 POC，再决定是否推广。'],
       assumptions: ['集中入口能够减少查找步骤，尚需验证。'], openQuestions: ['哪些角色参与验收？'] }
   }
+  it('resolves known context by identity without appending paraphrases or losing original questions', async () => {
+    const { HarnessSkillPrdRenderer } = await import('../../packages/workbench/src/analysis/create-prd-renderer.js')
+    const project = includedProject()
+    const baseline = publish({ ...project, generatedRequirements: [{ ...project.generatedRequirements[0]!,
+      assumptions: ['审批人拥有权限'], unknowns: ['并发量是多少？', '是否允许离线？'] }] })
+    const candidate = { ...draft(baseline), assumptions: [{ existingKey: 'A1.1', newText: '' }], openQuestions: [
+      { existingKey: 'Q1.1', newText: '' }, { existingKey: 'Q-responsibility', newText: '' },
+      { existingKey: '', newText: '是否禁止离线？' },
+    ] }
+    const renderer = new HarnessSkillPrdRenderer({ run: async () => ({ stopReason: 'completed',
+      structured: candidate, provider: 'p', model: 'm' }) }, nodeSha256Utf8)
+    const result = await renderer.render({ baseline, prdRevisionId: PRD_ID, createdAt: CREATED_AT })
+    expect(result.markdown.match(/并发量是多少/g)).toHaveLength(1)
+    expect(result.markdown).toContain('是否允许离线')
+    expect(result.markdown).toContain('是否禁止离线')
+    expect(result.markdown).toContain('审批人拥有权限')
+    expect(result.markdown).not.toContain('Q1.1')
+  })
+  it.each([
+    [{ existingKey: 'Q99.1', newText: '' }],
+    [{ existingKey: 'A1.1', newText: '' }],
+    [{ existingKey: 'Q-responsibility', newText: '不能同时改写原文' }],
+    [{ existingKey: '', newText: '' }],
+    Array.from({ length: 7 }, (_, i) => ({ existingKey: '', newText: `新增问题${i}` })),
+  ])('rejects invalid question references or excessive new questions', async entries => {
+    const { HarnessSkillPrdRenderer } = await import('../../packages/workbench/src/analysis/create-prd-renderer.js')
+    const baseline = publish()
+    const renderer = new HarnessSkillPrdRenderer({ run: async () => ({ stopReason: 'completed',
+      structured: { ...draft(baseline), openQuestions: entries }, provider: 'p', model: 'm' }) }, nodeSha256Utf8)
+    await expect(renderer.render({ baseline, prdRevisionId: PRD_ID, createdAt: CREATED_AT })).rejects.toThrow('invalid-evidence')
+  })
+  it.each(['环\ufffd\ufffd', '环\ud800', '环\udc00'])('rejects damaged generated PRD text without silently repairing it', async summary => {
+    const { HarnessSkillPrdRenderer } = await import('../../packages/workbench/src/analysis/create-prd-renderer.js')
+    const baseline = publish()
+    const renderer = new HarnessSkillPrdRenderer({ run: async () => ({ stopReason: 'completed',
+      structured: { ...draft(baseline), summary }, provider: 'p', model: 'm' }) }, nodeSha256Utf8)
+    await expect(renderer.render({ baseline, prdRevisionId: PRD_ID, createdAt: CREATED_AT })).rejects.toThrow('invalid-evidence')
+  })
+  it('merges repeated assumptions without losing source references or opposite claims', async () => {
+    const { HarnessSkillPrdRenderer } = await import('../../packages/workbench/src/analysis/create-prd-renderer.js')
+    const base = publish(), first = base.items[0]!
+    const baseline = { ...base, items: [{ ...first, assumptions: ['审批人拥有权限'], unknowns: ['容量是多少？'] },
+      { ...first, rank: 2, requirementId: requirementIdSchema.parse('40000000-0000-4000-8000-000000000552'),
+        assumptions: ['审批人拥有权限。'], unknowns: ['容量是多少？'] }] }
+    const renderer = new HarnessSkillPrdRenderer({ run: async () => ({ stopReason: 'completed',
+      structured: { ...draft(baseline), assumptions: ['审批人拥有权限。', '审批人没有权限', '新增假设', '新增假设。'],
+        openQuestions: ['容量是多少？', '数据保留多久？', '数据保留多久？'] }, provider: 'p', model: 'm',
+    }) }, nodeSha256Utf8)
+    const result = await renderer.render({ baseline, prdRevisionId: PRD_ID, createdAt: CREATED_AT })
+    const section = result.markdown.split('## 假设与待确认问题')[1]!.split('## 附录')[0]!
+    expect(section.match(/审批人拥有权限/g)).toHaveLength(1)
+    expect(section).toContain('R1、R2（分析阶段，待验证）')
+    expect(section).toContain('审批人没有权限')
+    expect(section.match(/新增假设/g)).toHaveLength(1)
+    expect(section.match(/容量是多少/g)).toHaveLength(1)
+    expect(section.match(/数据保留多久/g)).toHaveLength(1)
+  })
+
+  it('renders excluded scope directly from frozen decisions without trusting model prose', async () => {
+    const { HarnessSkillPrdRenderer } = await import('../../packages/workbench/src/analysis/create-prd-renderer.js')
+    const baseline = { ...publish(), excludedRequirements: [{
+      requirementId: requirementIdSchema.parse('40000000-0000-4000-8000-000000000552'),
+      title: '自动排期 <外部>', description: '自动安排', decision: 'defer' as const, humanReason: '本期只核对原文' }] }
+    const renderer = new HarnessSkillPrdRenderer({ run: async () => ({ stopReason: 'completed',
+      structured: draft(baseline), provider: 'p', model: 'm' }) }, nodeSha256Utf8)
+    const result = await renderer.render({ baseline, prdRevisionId: PRD_ID, createdAt: CREATED_AT })
+    expect(result.markdown).toContain('自动排期 &lt;外部&gt;（暂缓）：本期只核对原文')
+  })
+
+  it('preserves analysis assumptions and unknowns in the final PRD even when the model omits them', async () => {
+    const { HarnessSkillPrdRenderer } = await import('../../packages/workbench/src/analysis/create-prd-renderer.js')
+    const project = includedProject()
+    const baseline = publish({ ...project, generatedRequirements: [{ ...project.generatedRequirements[0]!,
+      assumptions: ['审批人拥有对应权限'], unknowns: ['尚未确认 37 号接口的并发容量 <未验证>'],
+    }] })
+    const renderer = new HarnessSkillPrdRenderer({ run: async () => ({ stopReason: 'completed',
+      structured: { ...draft(baseline), assumptions: [], openQuestions: [] }, provider: 'p', model: 'm',
+    }) }, nodeSha256Utf8)
+    const result = await renderer.render({ baseline, prdRevisionId: PRD_ID, createdAt: CREATED_AT })
+    const section = result.markdown.split('## 假设与待确认问题')[1]!.split('## 附录')[0]!
+    expect(section).toContain('R1（分析阶段，待验证）：审批人拥有对应权限')
+    expect(section).toContain('R1（分析阶段，待确认）：尚未确认 37 号接口的并发容量 &lt;未验证&gt;')
+    expect(section).not.toContain('暂无额外假设')
+    expect(result.contentHash).toBe(nodeSha256Utf8(result.markdown))
+  })
+
+  it('does not equate missing historical assumptions with a verified absence of assumptions', async () => {
+    const { HarnessSkillPrdRenderer } = await import('../../packages/workbench/src/analysis/create-prd-renderer.js')
+    const baseline = structuredClone(publish())
+    Reflect.deleteProperty(baseline.items[0]!, 'assumptions')
+    Reflect.deleteProperty(baseline.items[0]!, 'unknowns')
+    const renderer = new HarnessSkillPrdRenderer({ run: async () => ({ stopReason: 'completed',
+      structured: { ...draft(baseline), assumptions: [], openQuestions: [] }, provider: 'p', model: 'm',
+    }) }, nodeSha256Utf8)
+    const result = await renderer.render({ baseline, prdRevisionId: PRD_ID, createdAt: CREATED_AT })
+    expect(result.markdown).not.toContain('暂无额外假设')
+    expect(result.markdown).toContain('未记录具体假设')
+  })
+
   it('writes useful proposed flows and acceptance while preserving confirmed scope, order, priority and evidence', async () => {
     const { HarnessSkillPrdRenderer } = await import('../../packages/workbench/src/analysis/create-prd-renderer.js')
     const baseline = publish()

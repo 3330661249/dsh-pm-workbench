@@ -10,6 +10,7 @@ import type { StoredProjectRecord } from '../../packages/workbench/src/domain/mo
 import { parseProductInput } from '../../packages/workbench/src/protocol/product.js'
 import { createFakeDomainTable } from './helpers/fake-domain-table.js'
 import { makeSmallActiveRecord, SMALL_PROJECT_ID } from './helpers/synthetic-records.js'
+import * as canonical from '../../packages/workbench/src/protocol/canonical-json.js'
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`
 const at = '2026-09-07T08:00:00.000Z'
@@ -43,6 +44,24 @@ function deferred() {
 }
 
 describe('durable project repository', () => {
+  it('reuses immutable unrelated record sizes but remeasures a replacement with the same version', async () => {
+    const otherId = projectIdSchema.parse(uuid(90))
+    const unrelated = makeSmallActiveRecord({ projectId: otherId })
+    const { service, table } = setup([makeSmallActiveRecord(), unrelated])
+    const measure = vi.spyOn(canonical, 'canonicalJsonUtf8Bytes')
+    try {
+      expect((await service.command(imported(101))).status).toBe('accepted')
+      expect(measure.mock.calls.filter(([value]) => value === unrelated)).toHaveLength(1)
+      measure.mockClear()
+      await service.command(imported(102, 2))
+      expect(measure.mock.calls.filter(([value]) => value === unrelated)).toHaveLength(0)
+      const replacement = { ...unrelated, header: { ...unrelated.header, name: 'a different snapshot at the same version' } }
+      await table.put(otherId, replacement)
+      await service.command(imported(103, 2))
+      expect(measure.mock.calls.filter(([value]) => value === replacement)).toHaveLength(1)
+    } finally { measure.mockRestore() }
+  })
+
   it('allows exactly one of concurrent twentieth and twenty-first creates', async () => {
     const records = Array.from({ length: 19 }, (_, index) => makeSmallActiveRecord({ projectId: projectIdSchema.parse(uuid(index + 1)) }))
     const { service, table } = setup(records)

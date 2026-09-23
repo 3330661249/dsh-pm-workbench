@@ -1,5 +1,9 @@
 # Third-party notices
 
+Current bundled runtime and Skill licenses are recorded in
+[the package notices](packages/workbench/docs/third-party.md). The original
+workbench code is now MIT licensed. The research table below is historical.
+
 The research-reference table below retains the Phase 0 provenance baseline.
 Its rows are **reference only**; no source from those reference projects was
 copied into the package. Official version research retained in this repository

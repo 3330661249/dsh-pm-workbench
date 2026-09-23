@@ -172,7 +172,7 @@ describe('strict Product protocol', () => {
   })
 
   it('keeps all business and outer errors closed and does not echo thrown data', () => {
-    expect(PRODUCT_ERROR_CODES).toEqual(['not-found', 'project-deleted', 'project-limit-reached', 'version-conflict', 'idempotency-key-reused', 'receipt-capacity-reached', 'limit-exceeded', 'synthetic-attestation-required', 'fixture-not-allowed', 'source-locked', 'analysis-already-reviewed', 'invalid-evidence', 'no-included-requirements', 'baseline-stale', 'stage-unavailable', 'cancelled', 'storage-failed'])
+    expect(PRODUCT_ERROR_CODES).toEqual(['not-found', 'project-deleted', 'project-limit-reached', 'version-conflict', 'idempotency-key-reused', 'receipt-capacity-reached', 'limit-exceeded', 'synthetic-attestation-required', 'fixture-not-allowed', 'source-locked', 'analysis-already-reviewed', 'invalid-evidence', 'no-included-requirements', 'baseline-stale', 'stage-unavailable', 'model-output-incomplete', 'cancelled', 'storage-failed'])
     for (const code of PRODUCT_ERROR_CODES) expect(parseProductOutcome('health', { status: 'rejected', error: { code } })).toEqual({ status: 'rejected', error: { code } })
     for (const error of [{ code: 'unknown' }, { code: 'storage-failed', message: 'secret quote/path' }]) expect(() => parseProductOutcome('health', { status: 'rejected', error })).toThrowError('invalid-outcome')
     const outer = safeProductOuterError(new Error('secret material /private/path stack'))

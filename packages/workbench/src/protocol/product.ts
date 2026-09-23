@@ -28,7 +28,7 @@ export const PRODUCT_ERROR_CODES = Object.freeze([
   'idempotency-key-reused', 'receipt-capacity-reached', 'limit-exceeded',
   'synthetic-attestation-required', 'fixture-not-allowed', 'source-locked',
   'analysis-already-reviewed', 'invalid-evidence', 'no-included-requirements',
-  'baseline-stale', 'stage-unavailable', 'cancelled', 'storage-failed',
+  'baseline-stale', 'stage-unavailable', 'model-output-incomplete', 'cancelled', 'storage-failed',
 ] as const)
 export type ProductErrorCode = typeof PRODUCT_ERROR_CODES[number]
 export const STAGE3A_COMMAND_KINDS = Object.freeze([

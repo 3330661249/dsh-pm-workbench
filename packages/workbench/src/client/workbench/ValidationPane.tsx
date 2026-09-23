@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { PrdRevisionId } from '../../domain/ids.js'
-import { validationPlanSchema, type ValidationHandoff, type ValidationMode, type ValidationPlan,
+import { validationOutputSchema, validationPlanSchema, type ValidationHandoff, type ValidationMode, type ValidationPlan,
   type ValidationRequest, type ValidationRun, type ValidationTask, type ValidationVerdict } from '../../validation/model.js'
 import type { WorkbenchState } from './store.js'
 import { ValidationSession, type ValidationClient } from './validation-client.js'
@@ -243,6 +243,27 @@ export function ValidationTaskDetail({ task, disabled, onMutation, onReview, onH
   </>
 }
 
+function ValidationActualOutput({ actual }: { actual: string }) {
+  let value: unknown
+  try { value = JSON.parse(actual) } catch { return <pre>{actual || '没有返回结果'}</pre> }
+  const parsed = validationOutputSchema.safeParse(value)
+  if (!parsed.success) return <pre>{actual}</pre>
+  const { findings, followUps, inputGaps } = parsed.data
+  return <div className="pmwb-validation-output">
+    <section aria-label="业务发现"><h4>业务发现</h4>
+      {findings.length ? findings.map((item, index) => <article key={index}><h5>{item.title}</h5><p>{item.detail}</p>
+        {item.evidence.map((quote, i) => <blockquote key={i}>{quote}</blockquote>)}</article>)
+        : <p className="pmwb-validation-muted">模型未提取具体发现，请结合输入与追问核对。</p>}
+    </section>
+    {!!followUps.length && <section aria-label="待追问问题"><h4>待追问问题</h4><ol>{followUps.map((item, index) =>
+      <li key={index}><p>{item.question}</p><p className="pmwb-validation-muted">{item.reason}</p>
+        {item.evidence.map((quote, i) => <blockquote key={i}>{quote}</blockquote>)}</li>)}</ol></section>}
+    {!!inputGaps.length && <section className="pmwb-validation-notice" aria-label="输入缺失说明"><h4>输入缺失说明</h4>
+      <ul>{inputGaps.map((item, index) => <li key={index}><strong>{item.missingInput}</strong><p>{item.reason}</p></li>)}</ul></section>}
+    <details><summary>查看原始输出</summary><pre>{actual}</pre></details>
+  </div>
+}
+
 export function ValidationRunResults({ run, mode }: { run: ValidationRun; mode: ValidationMode }) {
   return <>
     <p className="pmwb-validation-muted">{run.status === 'completed' ? '运行完成' : run.status === 'failed' ? '运行失败' : '运行中'} · 计划第 {run.planVersion} 版</p>
@@ -252,7 +273,7 @@ export function ValidationRunResults({ run, mode }: { run: ValidationRun; mode: 
     {run.results.map((result, index) => <details className="pmwb-validation-case" key={result.caseId} open={mode === 'poc'}>
       <summary>案例 {index + 1}<span>{result.status === 'failed' ? '运行失败' : '已获得结果'}{result.checks.some(check => !check.passed) ? ' · 有待核对项' : ''}</span></summary>
       <div className="pmwb-validation-result-grid"><div><h4>输入</h4><pre>{result.input}</pre><h4>预期表现</h4><pre>{result.expected}</pre></div>
-        <div><h4>{result.provenance.kind === 'controlled-demo' ? '模拟结果' : '模型实际输出'}</h4><pre>{result.actual || '没有返回结果'}</pre></div></div>
+        <div><h4>{result.provenance.kind === 'controlled-demo' ? '模拟结果' : '模型实际输出'}</h4><ValidationActualOutput actual={result.actual} /></div></div>
       {result.error && <p role="alert">{result.error}</p>}
       {!!result.checks.length && <ul className="pmwb-validation-checks">{result.checks.map((check, index) => <li key={index}>{check.passed ? '✓' : '○'} {check.label} · {check.passed ? '满足' : '待核对'}</li>)}</ul>}
       <p className="pmwb-validation-muted">{result.provenance.kind === 'controlled-demo' ? '预设模拟数据，不代表真实能力' : `${result.provenance.provider} / ${result.provenance.model}`}</p>

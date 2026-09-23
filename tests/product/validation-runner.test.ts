@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { HarnessValidationRunner, defaultValidationPlan, type ValidationSource } from '../../packages/workbench/src/validation/runner.js'
+import { HarnessValidationRunner, defaultValidationPlan, type ValidationSource, type ValidationCheckpoint } from '../../packages/workbench/src/validation/runner.js'
 import type { AnalysisSubagentPort } from '../../packages/workbench/src/integration/harness-rc6/subagent-analysis-runner.js'
 
 const source = { baseline: { items: [{ requirementId: 'r', title: '需求提炼', description: '依据输入提炼需求', priority: 'high', evidence: [] }] },
   prd: { markdown: '# 访谈提炼' }, requirementIds: ['r'] } as unknown as ValidationSource
-function setup(result: { stopReason: string; structured: unknown } = { stopReason: 'completed', structured: { summary: '需求总结', items: [{ title: '整理访谈', detail: '提炼痛点', evidence: ['用户需要整理访谈'] }] } }) {
+function setup(result: { stopReason: string; structured: unknown } = { stopReason: 'completed', structured: { findings: [{ title: '整理访谈', detail: '提炼痛点', evidence: ['用户需要整理访谈'] }], followUps: [], inputGaps: [] } }) {
   const disposeChild = vi.fn(async () => {}), disposeParent = vi.fn(async () => {})
   const port: AnalysisSubagentPort = {
     currentSelection: () => ({ provider: 'real-provider-route', model: 'configured-model' }),
@@ -71,6 +71,42 @@ describe('Harness validation model executor', () => {
     const result = await s.runner.execute(source, 'poc', defaultValidationPlan(source, 'poc'), '实际输入', new AbortController().signal)
     expect(result.results[0]).toMatchObject({ status: 'failed', actual: '' }); expect(result.demo).toBeNull()
   })
+  it.each(['环\ufffd\ufffd', '环\ud800', '环\udc00'])('flags damaged model text but retains the exact result for review', async summary => {
+    const structured = { findings: [{ title: '整理访谈', detail: summary, evidence: ['用户需要整理访谈'] }], followUps: [], inputGaps: [] }
+    const s = setup({ stopReason: 'completed', structured })
+    const result = await s.runner.execute(source, 'poc', defaultValidationPlan(source, 'poc'), '用户需要整理访谈', new AbortController().signal)
+    expect(JSON.parse(result.results[0]!.actual)).toEqual(structured)
+    expect(result.results[0]!.checks).toContainEqual({ label: '输出含疑似损坏字符，需核对原始结果；系统未自动改写', passed: false })
+    expect(s.port.start).toHaveBeenCalledOnce()
+  })
+  it('does not flag valid Chinese, emoji or composed characters as damaged', async () => {
+    const s = setup({ stopReason: 'completed', structured: { findings: [], followUps: [], inputGaps: [{ missingInput: '环节 🐳 👨‍👩‍👧 e\u0301', reason: '缺少原文' }] } })
+    const result = await s.runner.execute(source, 'poc', defaultValidationPlan(source, 'poc'), '', new AbortController().signal)
+    expect(result.results[0]!.checks).toContainEqual({ label: '输出未发现替换字符或孤立代理字符（不代表语义正确）', passed: true })
+  })
+  it('separates findings, follow-up questions and missing input without a free-form summary', async () => {
+    const structured = { findings: [], followUps: [{ question: '请描述具体经历', reason: '尚未说明场景', evidence: ['不好用'] }], inputGaps: [] }
+    const s = setup({ stopReason: 'completed', structured })
+    const result = await s.runner.execute(source, 'poc', defaultValidationPlan(source, 'poc'), '客户Z：不好用', new AbortController().signal)
+    expect(JSON.parse(result.results[0]!.actual)).toEqual(structured)
+    expect(result.results[0]!.checks[1]!.passed).toBe(true)
+    const request = vi.mocked(s.port.start).mock.calls[0]![0]
+    expect(request.outputSchema.required).toEqual(['findings', 'followUps', 'inputGaps'])
+    expect(request.prompt).toContain('不好用')
+    expect(request.prompt).toContain('技术原因未知不等于问题现象未知')
+    expect(s.port.start).toHaveBeenCalledOnce()
+  })
+  it('checks follow-up evidence as well as finding evidence', async () => {
+    const s = setup({ stopReason: 'completed', structured: { findings: [], followUps: [{ question: '请说明场景', reason: '需澄清', evidence: ['编造的话'] }], inputGaps: [] } })
+    const result = await s.runner.execute(source, 'poc', defaultValidationPlan(source, 'poc'), '不好用', new AbortController().signal)
+    expect(result.results[0]!.checks[1]!.passed).toBe(false)
+  })
+  it('refuses the old free-form shape for new calls without retrying', async () => {
+    const s = setup({ stopReason: 'completed', structured: { summary: '无法比对', items: [] } })
+    const result = await s.runner.execute(source, 'poc', defaultValidationPlan(source, 'poc'), '不好用', new AbortController().signal)
+    expect(result.results[0]!.status).toBe('failed')
+    expect(s.port.start).toHaveBeenCalledOnce()
+  })
   it('marks fabricated quotes as failing deterministic checks', async () => {
     const s = setup()
     const result = await s.runner.execute(source, 'poc', defaultValidationPlan(source, 'poc'), '没有相关证据', new AbortController().signal)
@@ -91,4 +127,24 @@ describe('Harness validation model executor', () => {
     await expect(pending).rejects.toThrow('cancelled')
     expect(s.disposeChild).toHaveBeenCalledOnce(); expect(s.disposeParent).toHaveBeenCalledOnce()
   })
+  it('awaits the completed-case checkpoint before starting the next model call', async () => {
+    const s = setup(), plan = defaultValidationPlan(source, 'capability'), controller = new AbortController()
+    let persisted = false, release!: () => void
+    const checkpoint = vi.fn<ValidationCheckpoint>(async () => { await new Promise<void>(resolve => { release = resolve }); persisted = true })
+    const pending = s.runner.execute(source, 'capability', plan, undefined, controller.signal, checkpoint)
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledOnce())
+    expect(s.port.start).toHaveBeenCalledOnce()
+    expect(checkpoint.mock.calls[0]![0].results[0]!.status).toBe('completed')
+    controller.abort(); release()
+    await expect(pending).rejects.toThrow()
+    expect(persisted).toBe(true)
+    expect(s.port.start).toHaveBeenCalledOnce()
+  })
+  it('stops further model calls if the completed-case checkpoint cannot be persisted', async () => {
+    const s = setup(), plan = defaultValidationPlan(source, 'capability')
+    const checkpoint = vi.fn(async () => { throw new Error('disk-full') })
+    await expect(s.runner.execute(source, 'capability', plan, undefined, new AbortController().signal, checkpoint)).rejects.toThrow('disk-full')
+    expect(s.port.start).toHaveBeenCalledOnce()
+  })
+
 })

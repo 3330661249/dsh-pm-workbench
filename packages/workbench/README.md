@@ -1,6 +1,6 @@
 # DSH PM Workbench
 
-Private, unofficial `@knight/dsh-pm-workbench@0.1.0` package for Harness `0.1.0-rc.6`.
+MIT-licensed, unofficial preview `@knight/dsh-pm-workbench@0.1.0` package for Harness `0.1.0-rc.6`.
 
 ## AI PM Skill suite
 
@@ -18,7 +18,7 @@ validation center. Content submitted in a
 Harness conversation is processed by the model provider configured for that
 session; do not submit customer data unless that processing is authorized.
 
-## Stage 3A Product panel
+## Workbench panel
 
 The Product workflow is materials → requirements → priority review → PRD →
 validation → engineering handoff. Its
@@ -103,13 +103,19 @@ included in this version.
 
 ## Evidence boundary
 
-Task 11 verifies the static Product code graphs, nine package members and a
-retained archive bound to a clean source commit. No Task 11 result proves a real
-install, Harness UI behavior, persistence across a Harness restart, or removal
-and re-add recovery. Task 12 must consume and validate the same retained tgz for
-those observations; it must never repack it. Stage 2 and the Task 3 storage gate
-are historical evidence for their own artifacts, not this Product package.
+Local macOS + Harness rc.6 runs have exercised the installed panel and real
+DeepSeek-V4-Flash calls with synthetic material. This is a local pilot, not proof
+of production readiness, customer outcomes, or compatibility with other versions.
+The September 23 retest still has repeated explanations and leading follow-up
+questions; business judgments require human review. See the repository preview
+notes for the exact scope and known limitations.
 
-The repository's separate standalone Demo is an in-memory fixture tool and is
-excluded from this package. This package is private, unofficial, UNLICENSED,
-and not published.
+Static package verification checks contents and import boundaries; it does not
+prove model correctness or clean-machine installation. Historical Stage 2/3A
+reports describe their own old artifacts, not the current release.
+
+Original code is MIT licensed; bundled Zod and create-prd retain their notices
+in docs/third-party.md. The manifest remains private:true only to prevent an
+accidental npm publish. GitHub source and downloadable preview archives can
+still be distributed under their applicable licenses. This package does not
+include the separate ripple theme, its shaders, or its background photograph.

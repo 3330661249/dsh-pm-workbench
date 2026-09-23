@@ -107,17 +107,24 @@ export function publishRequirementBaseline(
 
   const decisions = new Map(project.humanDecisions.map(item => [item.requirementId, item]))
   const items: RequirementBaselineItem[] = []
+  const excludedRequirements: NonNullable<RequirementBaseline['excludedRequirements']>[number][] = []
   for (const requirementId of project.requirementOrder) {
     const draft = drafts.find(item => item.requirementId === requirementId) ?? failBaseline()
     const decision = decisions.get(requirementId) ?? failBaseline()
     const text = selectedText(project, draft, decision)
-    if (decision.decision !== 'include') continue
+    if (decision.decision !== 'include') {
+      excludedRequirements.push({ requirementId, title: text.title, description: text.description,
+        decision: decision.decision, humanReason: decision.humanReason })
+      continue
+    }
     items.push({
       rank: items.length + 1,
       requirementId,
       ...text,
       priority: decision.priority,
       humanReason: decision.humanReason,
+      assumptions: [...draft.assumptions],
+      unknowns: [...draft.unknowns],
       evidence: verifiedEvidence(project, draft, input.sha256Utf8).map(item => structuredClone(item)),
     })
   }
@@ -133,6 +140,7 @@ export function publishRequirementBaseline(
     projectVersion: project.header.projectVersion,
     contentVersion: project.header.contentVersion,
     items,
+    excludedRequirements,
     createdAt: input.createdAt,
   }
   if (!requirementBaselineSchema.safeParse(baseline).success) failBaseline('limit-exceeded')

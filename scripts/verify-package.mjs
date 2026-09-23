@@ -372,7 +372,7 @@ function assertPackageManifest(manifest) {
     '@deepseek-ai/dsh-subagent': '0.1.0-rc.6', '@deepseek-ai/dsh-tools': '0.1.0-rc.6',
     react: '18.3.1', 'react-dom': '18.3.1',
   }
-  if (manifest.type !== 'module' || manifest.license !== 'UNLICENSED' || manifest.main !== './lib/index.js'
+  if (manifest.type !== 'module' || manifest.license !== 'MIT' || manifest.main !== './lib/index.js'
     || !exact(manifest.exports, { '.': './lib/index.js', './client': './lib/client.js', './package.json': './package.json' })
     || !exact(manifest.files, ['lib', 'skills', 'cordis.patch.yml', 'README.md', 'LICENSE', 'docs'])
     || !exact(manifest.dsh, { bundle: { patch: './cordis.patch.yml' }, client: { platform: 'web', inject: ['@deepseek-ai/dsh-client-connection', '@deepseek-ai/dsh-client-runtime', '@deepseek-ai/dsh-client-ui-layout', '@deepseek-ai/dsh-client-ui-sidebar'] } })

@@ -28,6 +28,7 @@
     "packages/workbench/src/analysis/fixture-engine.ts",
     "packages/workbench/src/analysis/fixture-manifest.ts",
     "packages/workbench/src/analysis/harness-model-engine.ts",
+    "packages/workbench/src/analysis/source-segments.ts",
     "packages/workbench/src/analysis/types.ts",
     "packages/workbench/src/application/clock.ts",
     "packages/workbench/src/application/node-sha256.ts",

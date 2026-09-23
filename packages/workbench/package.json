@@ -2,7 +2,7 @@
   "name": "@knight/dsh-pm-workbench",
   "version": "0.1.0",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "main": "./lib/index.js",
   "exports": {
@@ -103,5 +103,5 @@
   "scripts": {
     "build": "node --experimental-strip-types build.mjs"
   },
-  "description": "Private AI PM workbench with an interview-to-PRD Skill suite for DeepSeek Harness."
+  "description": "Unofficial AI PM workbench preview for DeepSeek Harness: evidence, human decisions, PRD and bounded validation."
 }

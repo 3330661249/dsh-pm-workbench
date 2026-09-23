@@ -82,6 +82,14 @@ export const validationCss = `
 .pmwb-validation-result-grid { display: grid; grid-template-columns: 1fr 1.15fr; gap: 20px; }
 .pmwb-validation-result-grid > div { min-width: 0; }
 .pmwb-validation pre { margin: 7px 0 14px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--pmwb-muted); font-size: 12px; font-family: inherit; line-height: 1.85; max-height: 460px; overflow: auto; }
+.pmwb-validation-output { overflow-wrap: anywhere; font-size: 12px; line-height: 1.8; }
+.pmwb-validation-output > section + section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--pmwb-line-soft); }
+.pmwb-validation-output h5 { margin: 14px 0 4px; font-size: 13px; font-weight: 600; }
+.pmwb-validation-output p { margin: 5px 0; white-space: pre-wrap; }
+.pmwb-validation-output ol, .pmwb-validation-output ul { padding-left: 20px; }
+.pmwb-validation-output li + li { margin-top: 12px; }
+.pmwb-validation-output blockquote { margin: 8px 0 14px; padding: 6px 12px; border-left: 2px solid var(--pmwb-line); color: var(--pmwb-muted); white-space: pre-wrap; }
+.pmwb-validation-output > details { margin-top: 20px; color: var(--pmwb-muted); }
 .pmwb-validation-checks { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 12px 0; list-style: none; font-size: 12px; color: var(--pmwb-muted); }
 .pmwb-validation-judgment { margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--pmwb-line); }
 .pmwb-validation-judgment > p { margin: 7px 0 15px; }

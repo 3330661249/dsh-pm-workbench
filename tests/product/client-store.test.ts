@@ -48,6 +48,51 @@ async function setup() {
   return { store, t, ids, commands, service, external, record, requirementId: record().requirementOrder[0]!,
     intercept: (fn?: typeof intercept) => { intercept = fn } }
 }
+it('persists a long typing session as one field edit and leaves the project writable', async () => {
+  const h = await setup()
+  for (let length = 1; length <= 260; length++) {
+    expect(h.store.editRequirement(h.requirementId, { humanReason: 'a'.repeat(length) }).ok).toBe(true)
+  }
+  expect(h.store.getSnapshot().drafts).toHaveLength(1)
+  expect((await h.store.flushProjectEdits()).ok).toBe(true)
+  expect(h.commands).toHaveLength(1)
+  expect(h.record().humanDecisions[0]?.humanReason).toBe('a'.repeat(260))
+  expect(h.store.getSnapshot()).toMatchObject({ dirty: false, dirtyRevision: 260, savedDraftRevision: 260 })
+  h.store.editRequirement(h.requirementId, { decision: 'include' })
+  expect((await h.store.flushProjectEdits()).ok).toBe(true)
+  expect(h.record().humanDecisions[0]?.decision).toBe('include')
+})
+it('seals a save snapshot before its microtask starts, leaving later typing for the next save', async () => {
+  const h = await setup()
+  h.store.editRequirement(h.requirementId, { humanReason: 'first' })
+  h.store.editRequirement(h.requirementId, { humanReason: 'first complete' })
+  const first = h.store.flushProjectEdits()
+  h.store.editRequirement(h.requirementId, { humanReason: 'second' })
+  h.store.editRequirement(h.requirementId, { humanReason: 'second complete' })
+  expect((await first).ok).toBe(true)
+  expect(h.record().humanDecisions[0]?.humanReason).toBe('first complete')
+  expect(h.store.getSnapshot()).toMatchObject({ dirty: true, savedDraftRevision: 2, dirtyRevision: 4 })
+  expect((await h.store.flushProjectEdits()).ok).toBe(true)
+  expect(h.record().humanDecisions[0]?.humanReason).toBe('second complete')
+  expect(h.commands).toHaveLength(2)
+  expect(h.store.getSnapshot()).toMatchObject({ dirty: false, savedDraftRevision: 4 })
+})
+it('retains an exact uncertain coalesced command while newer field edits remain distinct', async () => {
+  const h = await setup()
+  h.intercept(async (endpoint, _input, next) => { const result = await next(); if (endpoint === 'projects.command') throw new Error('lost'); return result })
+  for (let length = 1; length <= 20; length++) h.store.editRequirement(h.requirementId, { humanReason: 'a'.repeat(length) })
+  await h.store.flushProjectEdits()
+  const retry = h.store.getSnapshot().pendingRetry!
+  h.store.editRequirement(h.requirementId, { humanReason: 'later' })
+  h.store.editRequirement(h.requirementId, { humanReason: 'later complete' })
+  h.intercept()
+  expect((await h.store.retryUncertain()).ok).toBe(true)
+  expect(h.commands[1]).toEqual(retry)
+  expect(h.store.getSnapshot()).toMatchObject({ dirty: true, savedDraftRevision: 20 })
+  expect((await h.store.flushProjectEdits()).ok).toBe(true)
+  expect(h.record().humanDecisions[0]?.humanReason).toBe('later complete')
+  expect(h.commands).toHaveLength(3)
+})
 it('serializes text, priority, decision, reason and reorder intents using each accepted version', async () => {
   const h = await setup()
   h.store.editRequirement(h.requirementId, { title: '人工标题' })

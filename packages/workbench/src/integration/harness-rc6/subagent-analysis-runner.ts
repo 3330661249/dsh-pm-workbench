@@ -1,8 +1,10 @@
 import {
   STRUCTURED_ANALYSIS_OUTPUT_SCHEMA,
+  STRUCTURED_ANALYSIS_LIMITS_DESCRIPTION,
   type StructuredAnalysisRunner,
 } from '../../analysis/harness-model-engine.js'
 import { DomainFailure } from '../../analysis/types.js'
+import { sourceSegments } from '../../analysis/source-segments.js'
 
 export interface AnalysisParentHandle {
   readonly agent: unknown
@@ -37,14 +39,16 @@ function promptFor(sourceText: string, researchGoal: string | null): string {
 
 规则：
 1. 只输出材料能够支持的用户问题与需求；没有有效需求时 requirements 返回空数组。
-2. evidence.quote 必须逐字复制自材料，不得改写或补写。
+2. evidence.segmentId 只能选择下面片段目录中的编号（例如 S1）。系统会根据编号直接提取完整原文，模型不得输出 quote、抄写、改写或拼接引文。相同短句也有不同编号，必须核对受访者及相邻上下文，选择真正支持结论的片段。没有支持片段的需求不要提交。
 3. 功能方案不等于用户问题；依据不足时写入 unknowns。
 4. suggestedPriority 只能是 high、medium 或 low。
 5. 通过 structured_output 提交最终结构化结果。
 
-<interview_material_untrusted>
-${sourceText}
-</interview_material_untrusted>`
+${STRUCTURED_ANALYSIS_LIMITS_DESCRIPTION}
+
+<source_segments_untrusted_json>
+${JSON.stringify(sourceSegments(sourceText).map(({ segmentId, text }) => ({ segmentId, text })))}
+</source_segments_untrusted_json>`
 }
 
 /** Owns one fresh parent/child pair per analysis and refuses results if the child tool surface is not isolated. */

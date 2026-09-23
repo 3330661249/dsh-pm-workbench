@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ValidationPane } from '../../packages/workbench/src/client/workbench/ValidationPane.js'
+import { ValidationPane, ValidationRunResults } from '../../packages/workbench/src/client/workbench/ValidationPane.js'
 import type { WorkbenchState } from '../../packages/workbench/src/client/workbench/store.js'
 import type { ValidationSnapshot } from '../../packages/workbench/src/client/workbench/validation-client.js'
 import { projectViewOf } from '../../packages/workbench/src/application/project-views.js'
@@ -54,5 +54,26 @@ describe('validation and handoff workspace presentation', () => {
     expect(html.match(/<button[^>]+data-dsh-pm-workbench="validation-handoff"[^>]*>/)?.[0]).toContain('disabled=""')
     expect(html).not.toContain('data-dsh-pm-workbench="download-handoff"')
     expect(request).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('structured validation results', () => {
+  const renderActual = (actual: string) => renderToStaticMarkup(<ValidationRunResults mode="poc" run={{ ...validationRun,
+    results: [{ ...validationRun.results[0]!, actual }] }} />)
+  it('groups new model output and keeps the original JSON available safely', () => {
+    const actual = JSON.stringify({ findings: [{ title: '数据不一致', detail: '<script>unsafe()</script>', evidence: ['数字不对'] }],
+      followUps: [{ question: '请描述经历', reason: '场景不明', evidence: ['不好用'] }],
+      inputGaps: [{ missingInput: '待比对引用', reason: '无法完成逐字比对' }] })
+    const html = renderActual(actual)
+    for (const label of ['业务发现', '待追问问题', '输入缺失说明', '查看原始输出', '请描述经历', '无法完成逐字比对']) expect(html).toContain(label)
+    expect(html).not.toContain('<script>')
+    expect(html).toContain('&lt;script&gt;')
+  })
+  it.each(['旧版纯文本', '{"summary":"旧结果","items":[]}', '<script>unsafe()</script>'])('preserves historical output without schema migration: %s', actual => {
+    const html = renderActual(actual)
+    expect(html).not.toContain('查看原始输出')
+    expect(html).not.toContain('<script>')
+    expect(html).toContain(actual.startsWith('<') ? '&lt;script&gt;' : actual.replaceAll('"', '&quot;'))
   })
 })

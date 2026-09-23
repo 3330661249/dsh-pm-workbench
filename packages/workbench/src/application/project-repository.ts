@@ -99,6 +99,9 @@ export class TableProjectRepository implements ProjectRepository {
   readonly #dependencies: ProjectRepositoryDependencies
   readonly #projects = new Map<ProjectId, Promise<void>>()
   readonly #pending = new Set<Promise<unknown>>()
+  // Table values are immutable snapshots. Object identity, not a possibly unchanged
+  // projectVersion (for rejected receipts), identifies a measured record.
+  readonly #recordBytes = new WeakMap<ActiveProjectRecord, number>()
   #membership: Promise<void> = Promise.resolve()
   #closing = false
   #closed: Promise<void> | undefined
@@ -354,13 +357,24 @@ export class TableProjectRepository implements ProjectRepository {
     }) }
   }
 
+  #measuredBytes(record: ActiveProjectRecord): number {
+    const cached = this.#recordBytes.get(record)
+    if (cached !== undefined) return cached
+    const bytes = canonicalJsonUtf8Bytes(record)
+    // Recovered snapshots need not already be frozen. Establish immutability once
+    // before memoizing; all writes replace the snapshot through the table API.
+    deepFreeze(record)
+    this.#recordBytes.set(record, bytes)
+    return bytes
+  }
+
   #validateCandidate(candidate: ActiveProjectRecord): void {
     assertProjectReadable(candidate)
     const active = [...this.#table.entries()].flatMap(([id, record]) =>
       id !== candidate.header.id && record.kind === 'active' ? [record] : [])
     active.push(candidate)
     if (active.length > MAX_ACTIVE_PROJECTS
-      || active.reduce((sum, record) => sum + canonicalJsonUtf8Bytes(record), 0) > MAX_PROFILE_ACTIVE_RECORD_UTF8_BYTES) throw new Error('limit-exceeded')
+      || active.reduce((sum, record) => sum + this.#measuredBytes(record), 0) > MAX_PROFILE_ACTIVE_RECORD_UTF8_BYTES) throw new Error('limit-exceeded')
     parseProductOutcome('projects.list', { status: 'accepted', value: active.map(projectSummaryOf) })
   }
 
