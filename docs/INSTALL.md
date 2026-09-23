@@ -3,7 +3,7 @@
 ## 前提
 
 - 已安装并可启动 DeepSeek Harness **0.1.0-rc.6**，`dsh --version` 可用。
-- 当前有界实测环境是 macOS。其他平台与其他 Harness 版本尚未验证。
+- 首发支持范围限定为 **macOS 26 + Harness rc.6**（本机实测 26.6.2）。其他系统版本、平台与 Harness 版本尚未验证。
 - 先备份自己的 Harness profile。首次试用建议使用独立的 `DSH_HOME`，不要复制密钥或真实材料到示例目录。
 - 模型由你在 Harness 中配置，本插件不附带账号或额度。
 
@@ -29,7 +29,7 @@ dsh web --host 127.0.0.1 --port 3080
 
 ## 从源码构建
 
-在仓库根目录，使用 Node.js 24.14.0：
+在仓库根目录，使用 macOS 26 和官方 `.pkg` 内的 Node.js 24.14.0 / npm 11.9.0：
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
