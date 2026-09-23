@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noImplicitAny": true,
+    "skipLibCheck": false,
+    "noEmit": true,
+    "lib": ["ES2022"],
+    "types": []
+  },
+  "files": [
+    "tools/harness-rc6-declarations/contracts/harness-host-rc6-surface.ts"
+  ]
+}

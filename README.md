@@ -1,169 +1,82 @@
-# DSH PM Workbench
+# AI PM 工作台 · DeepSeek Harness
 
-> Private, unofficial research repository. This project is not affiliated with,
-> endorsed by, or maintained by DeepSeek.
+**把访谈材料变成可核对的需求，经人工确认后生成 PRD，再验证一个核心场景。**
 
-DSH PM Workbench is an experimental codebase for exploring how an AI product
-manager could organize evidence from product discovery through requirement
-analysis, prioritization, and later POC planning inside a DeepSeek Harness
-extension.
+非官方社区插件 · 早期预览版 · 原创代码 MIT · 当前适配 macOS 26 + DeepSeek Harness `0.1.0-rc.6`
 
-The long-term Harness workflow is a product direction. The standalone browser
-Demo described below is implemented; it does not establish Harness integration.
+> 不是 DeepSeek 官方产品。AI 输出需要人工核对；本项目是本地试用与合成材料验证，不代表生产系统或真实客户业务效果。
 
-## Current implementation: standalone four-step Demo
+## 一条工作流，保留人的决定
 
-A deterministic, in-memory browser Demo implements the four-step
-`材料 → 需求 → 优先级 → PRD` workflow. It accepts synthetic text or text files,
-generates fixture requirement cards with exact citations using local Demo rules,
-supports human edits, priorities and inclusion decisions, and previews/downloads
-Markdown containing only included cited requirements. These are local fixture
-results, not AI analysis or real model output. State exists only in the current
-page and is lost on refresh or close.
-
-From the repository root:
-
-```sh
-npm run demo:serve
+```text
+导入材料 → 提炼候选需求与原文依据 → 人工确认优先级 → 生成 PRD
+                                                     ↓
+                     交互 Demo / 核心能力验证 / 文本 POC
+                                                     ↓
+                        人工结论 → 返回修改或导出交付包
 ```
 
-Open [the local Demo](http://127.0.0.1:4173/). The server builds the three browser
-files in `.tmp/dsh-pm-workbench/demo/` and listens only on `127.0.0.1`.
-`npm run demo:build` builds the same files without starting a server. Use only
-synthetic, non-identifying material.
+| 环节 | 当前可以做什么 | 边界 |
+| --- | --- | --- |
+| 材料 | 粘贴文本，导入 TXT、Markdown、Word | 不支持录音转写、PDF、多访谈合并 |
+| 需求 | 调用当前 Harness 模型分析，并保存原文依据 | 引用检查不等于业务理解正确 |
+| 确认 | 人工编辑需求、决定纳入范围和优先级 | 不自动决定产品方向 |
+| PRD | 按已确认基线起草，保留版本，下载可编辑 Word | 流程、验收和发布建议仍需审查 |
+| Demo | 标准模板内的模拟输入、结果、确认交互 | 不是任意产品原型生成器 |
+| 核心验证 | 运行 3–20 个文本案例，对照预期与实际结果 | 不执行 UI、数据库或外部接口 |
+| 文本 POC | 输入材料，真实调用模型并返回结构化结果 | 不是独立部署的任意应用 |
+| 交付 | 人工判定后导出带范围和限制的交付材料 | 部分需求通过不代表整个产品通过 |
 
-The approved scope is §8.1 of the
-[simple Demo/Alpha design](docs/superpowers/specs/2026-09-04-dsh-pm-workbench-simple-alpha-design.md),
-implemented through the
-[standalone interactive Demo plan](docs/superpowers/plans/2026-09-05-dsh-pm-workbench-interactive-demo.md).
-That design supersedes the older complex rollout as the current implementation
-scope; the earlier documents remain research history.
+验证结果按业务发现、待追问问题、必要缺失输入展示，并保留原始输出。需求变化后，旧 PRD 和验证记录仍保留为历史，不能冒充当前审批结果。
 
-The separately packaged Harness Host/Web Client is still a no-op skeleton.
-Real Harness installation/mounting, model calls, Host-owned persistence, restart
-recovery, and the Alpha privacy/real-data capability remain unimplemented and
-unverified. The Demo is not an installed Harness plugin. The historical Typert
-**NO-GO** remains historical, and Connection RPC Gate A′ has **not run**.
+## 先试一份虚构材料
 
-## Historical Harness investigation and gate status
+导入 [示例访谈](examples/synthetic-interview.md)，提炼候选需求后，人工决定纳入哪些内容，再生成 PRD。
 
-The canonical Harness investigation and gate-status ledger, with append-only run blocks, is
-[`docs/probe-results.md`](docs/probe-results.md). Future phase and gate evidence
-commits update that ledger and bind observations to exact source/tgz hashes;
-this README provides orientation and must not be used to infer a newer runtime
-state. README/compatibility files packed inside any tgz describe only that
-artifact's build-time state, while the external ledger is authoritative for
-later observed runs of the same hash.
+这份示例故意包含：同一客户重复反馈、速度正常但数据不对、模糊评价和互相冲突的要求。检查 AI 是否保留了这些区别，而不只是看文档是否写得流畅。
 
-The historical architecture required generated, strict Typert Host/Client Remote
-artifacts. The initial isolated `0.1.0-rc.6` probe discovered the workspace
-package but emitted no Remote artifacts. A later hardened frozen matrix repeated
-the same synthetic probe across eight exact official cohorts from
-`0.1.0-rc.6` through `0.1.2-alpha.4`. All eight completed as
-`FAIL_COMPATIBILITY / GENERATION_EMPTY`: automatic and forced generation each
-returned zero outputs, so none produced the five required files. The selection
-decision is `NO_ELIGIBLE_CANDIDATE`; that generated-Typert Gate A remains a
-historical **NO-GO**.
+## 安装与开发
 
-On 2026-09-02, the owner approved a revised architecture specification:
-public Connection RPC, a shared strict Zod endpoint registry, Host-owned state,
-and a `WorkbenchTransport` abstraction that preserves a later Typert migration
-path. The approved canonical specification is
-[`docs/superpowers/specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md`](docs/superpowers/specs/2026-09-02-dsh-pm-workbench-v0.1-connection-rpc-design.md).
-Its historical gated implementation plan set is retained at
-[`docs/superpowers/plans/2026-09-02-dsh-pm-workbench-v0.1-rollout.md`](docs/superpowers/plans/2026-09-02-dsh-pm-workbench-v0.1-rollout.md).
-That Harness integration plan has not been executed. The later approved simple
-design governs the current standalone Demo scope. Gate A′ has **not run**;
-approving the architecture does not establish that Connection RPC works from
-this third-party tarball.
+先阅读 [安装说明](docs/INSTALL.md)。插件需要已经可运行的 Harness rc.6，并使用用户自己配置的模型服务；仓库不含 API Key，也不提供模型额度。
 
-The source-free canonical result set is retained in
-[`docs/matrix-results/2026-09-02-darwin-arm64/`](docs/matrix-results/2026-09-02-darwin-arm64/).
+```sh
+npm ci --ignore-scripts --no-audit --no-fund
+npm run typecheck
+npm test
+npm run build
+npm run verify:package
+```
 
-Alongside the implemented standalone Demo, the repository retains the private
-static Harness package skeleton and technical evidence. The canonical Harness
-ledger has **not** established that the package:
+需要 Node.js **24.14.0**。构建输出在 `packages/workbench/lib/`。完整套件中的历史安全验收还绑定了官方 macOS `.pkg` 内的通用 Node 二进制和 npm 11.9.0；同版本的 Linux 或架构专用归档不能替代它。CI 使用固定 SHA-256 的官方安装包，在临时目录解包后运行，不修改系统 Node。
 
-- can be installed into DeepSeek Harness;
-- can load or mount in a Harness profile;
-- is compatible with any Harness version;
-- can persist projects or requirements;
-- can perform model-based interview analysis inside Harness;
-- can call a real model;
-- can process real user data.
+测试搬移过程会验证原目录未变；请不要在同一 checkout 同时运行多套测试、安装依赖或修改源码。Linux 继续运行独立的离线版本矩阵检查，不代表已验证 Linux 安装版工作台。macOS 15 的只读目录重命名验收曾失败，因此首版不承诺兼容该系统；CI 对这一行为先做快速检查，不放宽原有安全校验。
 
-No handwritten descriptor, copied generated file, private HTTP fallback,
-dynamic Cordis fallback, protocol vendoring, or generator patch is accepted as
-proof that the historical Gate A passed. The newly selected Connection RPC seam
-must instead pass its own isolated Gate A′.
+`npm run demo:serve` 提供单独的旧版浏览器学习 Demo：固定规则、内存状态、无真实模型，**不是安装版工作台**。
 
-## Completed investigation and current decision
+## 当前质量与已知限制
 
-The approved official-version matrix is complete. It reused one fixed synthetic
-Remote probe, exact reviewed locks, a clean committed runner, and source-free
-canonical evidence for every tested version. Independent adversarial review
-found no remaining P0 or P1 issue in the evidence path; its residual P2 findings
-are recorded alongside the results.
+- 本地 macOS 26.6.2 + Harness rc.6 已运行安装版界面和 DeepSeek-V4-Flash 合成案例。
+- 模型仍可能重复解释、提出带预设的追问，PRD 也可能存在条件不够严谨的地方。最近合成复测结论是**部分通过**。
+- 自动检查覆盖结构、逐字引用和部分异常字符，不证明语义、来源归属或业务结论完全正确。
+- 当前仅验证本机环境，不承诺 Windows、Linux 或其他 Harness 版本兼容。
+- 安装版数据保存在 Harness profile；卸载插件不等于删除数据。请自行备份。
 
-No tested candidate is eligible for an isolated mount probe under the old
-strict generated-Remote architecture. The owner has approved Connection RPC as
-the next architecture boundary, not as a proved compatibility result. The older
-rollout proposed an F0 foundation and bounded Gate A′ using `health`, a synthetic
-persisted counter, an additive launcher/overlay, and a real tarball in an isolated
-profile. That proposal is retained as investigation history, not the current
-Demo task list. Any later Harness Alpha work needs its own approved implementation
-scope and observed integration evidence. The standalone Demo does not authorize
-a real model, real interviews, installation into the user's active Harness
-profile, merge, or public distribution.
+详细边界见 [预览说明](docs/PREVIEW.md) 和 [隐私说明](packages/workbench/docs/privacy.md)。历史 `docs/probe-results.md`、矩阵记录和阶段设计仅描述当时的实验，不代表当前能力。
 
-## Data boundary
+## 隐私与费用
 
-Only synthetic, non-identifying fixtures may enter this repository.
+材料分析、PRD 起草、验证计划和真实文本验证会将相应材料发送给 Harness 当前配置的模型服务，可能产生费用。导入真实材料前，请确认具备处理授权，尽量去除个人和客户标识。
 
-Never commit or attach:
+Word 导出在本地完成，不上传飞书等云文档。支持的浏览器会建议保存到桌面；其他浏览器遵循自己的下载位置设置。
 
-- real interview recordings or meeting audio/video;
-- real transcripts, notes, summaries, quotations, or uploaded documents;
-- names, contact details, account identifiers, customer data, or other personal
-  information;
-- API keys, access tokens, cookies, browser sessions, credentials, `.npmrc`,
-  local Harness profiles, or provider responses;
-- private model prompts or outputs produced from real user data.
+不要在 Issues、PR、日志或截图中提交密钥、真实客户材料或本机配置。安全问题请参阅 [SECURITY.md](SECURITY.md)。
 
-If sensitive material is committed accidentally, treat it as compromised:
-revoke or rotate credentials where applicable, remove the material from Git
-history, and review any clones, logs, artifacts, and Pull Requests that may
-contain it.
+## 涟漪背景是独立项目
 
-## Development and Pull Requests
+工作台可以在 Harness 默认背景下运行，不依赖涟漪。涟漪主题的组件再分发与图片授权仍在核查，**本仓库与安装包不包含该主题、shader 或底图**。
 
-`main` is the reviewed baseline. Development happens on short-lived branches,
-using the `codex/` prefix for Codex-authored work.
+## 许可证与致谢
 
-Every functional change should arrive through a Pull Request that states:
+原创部分采用 [MIT](LICENSE)。随包的 Zod 与 `phuryn/pm-skills` 的 create-prd Skill 保留各自许可和署名，详见 [第三方说明](packages/workbench/docs/third-party.md)。Harness 本身不随包分发。
 
-- what changed and why;
-- which gate or approved scope permits it;
-- the exact checks actually run and their observed results;
-- whether any compatibility claim is proven, failed, proposed, or still
-  unknown;
-- whether dependencies or third-party source references changed;
-- whether the data boundary or privacy surface changed.
-
-A passing build alone is not compatibility evidence. A PR must not claim that
-the plugin is installable, compatible, secure, or ready for real interview data
-unless the corresponding gate has been explicitly passed with reproducible
-evidence.
-
-Direct pushes to `main`, force pushes, secret-bearing commits, generated caches,
-and real user data are outside the repository workflow.
-
-## Distribution and license
-
-This repository is private and **UNLICENSED**. No permission is granted to use,
-copy, modify, publish, distribute, sublicense, or sell this code. Private GitHub
-visibility is an access setting; it does not grant a reuse license.
-
-Third-party dependencies and reference projects remain subject to their own
-licenses. Their presence in documentation does not mean their source code was
-copied or approved for redistribution.
+`private: true` 仅阻止误发到 npm，不能用来判断 GitHub 仓库可见性。本项目首版通过 GitHub 源码与预览附件分发，不要求发布 npm 包。

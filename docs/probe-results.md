@@ -118,3 +118,40 @@ synthetic counter data. The canonical scope and claim boundary are in
 | State | Not run; blocked until installation, product, model, privacy and distribution gates pass |
 | Result | A private, unofficial GitHub research repository and its `origin` remote have been created to hold governance, the plugin skeleton, research, and matrix work. This private research setup is not a public Alpha. No public repository, public release, package publication, installable Alpha, deployment, public license grant, or merge to `main` has been completed. |
 | Decision | Do not publish or deploy. Keep the research repository private, keep the workbench `UNLICENSED`, and do not treat a private branch or Pull Request as Gate E approval. |
+
+## Source implementation checkpoint — 2026-09-07
+
+**Status: SOURCE IMPLEMENTATION PRESENT / RUNTIME NOT RUN.** This append-only
+checkpoint records a change in the repository source after the Gate A′ table
+above was written. The historical rows and run blocks remain unchanged. This
+checkpoint supersedes their stale source-availability descriptions only; it
+does not change any `Not run` runtime state or gate decision.
+
+The Stage 2 source now contains:
+
+- a closed strict-Zod Probe registry for only `health` and
+  `counter.increment`;
+- a Host-owned `storageDomain` aggregate for a synthetic integer counter,
+  aggregate version and bounded idempotency receipts;
+- the single `/dsh-pm-workbench-v1` Connection RPC route configured with
+  `authority: 'loopback'`;
+- strict Client request/outcome revalidation, closed sanitized Client errors,
+  an eight-request in-flight limit, cancellation/generation handling and an
+  explicit uncertain state for a mutation whose validated result is lost;
+- exactly one additive `sidebar.footer.action` launcher and one additive
+  `shell.overlay`, with no Harness root replacement; and
+- package-build rules that bundle Zod 4.4.3 into Host and Client outputs while
+  removing Zod from published runtime dependencies and retaining its full MIT
+  notice.
+
+This is still a synthetic Probe, not the AI product-manager workflow. It has no
+model call, free-text endpoint, interview analysis, recording/transcript input,
+workspace/session read, credential access or real-data authorization.
+
+The following remain **not observed**: installing the real tgz into a fresh
+Harness profile; Host or Client loading; a real Connection RPC health round
+trip; rendered browser clicks or focus; persisted-state recovery after a real
+Harness restart; disable/remove/reinstall behavior; coexistence with the
+existing chat and ripple theme; and runtime log/browser leakage checks. Task 3
+must perform those observations in the isolated non-`3080` environment before
+any runtime, compatibility, persistence or Gate A′ claim is allowed.
